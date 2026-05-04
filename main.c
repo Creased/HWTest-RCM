@@ -542,6 +542,39 @@ static void probe_battery(void)
             "  Cycles       : %d\n", v);
     }
 
+    /* Predictive / learning fields not exposed by max17050_get_property:
+     *   TTE  (REG11) : time-to-empty, LSB = 5.625 s. 0xFFFF = invalid /
+     *                  charging. A live, settled gauge under load reports
+     *                  a real number here; persistent 0 / 0xFFFF on a
+     *                  discharging unit means the gauge can't predict.
+     *   QH   (REG4D) : coulomb counter high word.
+     *   QL   (REG4E) : coulomb counter low word.
+     *   dQacc (REG45)/dPacc (REG46) : learning slew accumulators - non-
+     *                  zero means the gauge is still relearning capacity.
+     * The full QH:QL read is the absolute coulomb count since gauge POR;
+     * we expose both halves so a tech can spot a stuck counter (both
+     * always-zero) without doing the per-LSB unit math at this stage. */
+    u16 tte = 0, qh = 0, ql = 0, dqacc = 0, dpacc = 0;
+    i2c_recv_buf_small((u8 *)&tte,   2, I2C_1, MAXIM17050_I2C_ADDR, MAX17050_TTE);
+    i2c_recv_buf_small((u8 *)&qh,    2, I2C_1, MAXIM17050_I2C_ADDR, MAX17050_QH);
+    i2c_recv_buf_small((u8 *)&ql,    2, I2C_1, MAXIM17050_I2C_ADDR, MAX17050_QL);
+    i2c_recv_buf_small((u8 *)&dqacc, 2, I2C_1, MAXIM17050_I2C_ADDR, MAX17050_dQacc);
+    i2c_recv_buf_small((u8 *)&dpacc, 2, I2C_1, MAXIM17050_I2C_ADDR, MAX17050_dPacc);
+    if (tte == 0xFFFF) {
+        LOG("  TTE          : invalid / charging\n");
+    } else {
+        /* tte * 5.625 sec -> minutes = tte * 5625 / (60 * 1000) = tte * 9 / 96. */
+        u32 min = ((u32)tte * 9) / 96;
+        LOG("  TTE          : 0x%04X (%d min)\n", tte, min);
+    }
+    /* Slash-separated pair name in the key column: the host parser
+     * splits each row on the first colon, so "QH:QL" would put "QL ..."
+     * into the value column and "QH" into the key. Slash is safe. */
+    LOG("  QH/QL        : 0x%04X / 0x%04X (coulomb counter, raw)\n", qh, ql);
+    log_color((dqacc | dpacc) ? COL_DEFAULT : COL_WARN,
+        "  dQacc/dPacc  : 0x%04X / 0x%04X%s\n", dqacc, dpacc,
+        (dqacc | dpacc) ? " (gauge learning)" : " (no learning activity)");
+
     /* Identity + STATUS + FSTAT come from raw I2C reads, Hekate's
      * max17050_get_property only handles the curated charging fields
      * above. STATUS bit definitions (per the datasheet REG00):
@@ -736,6 +769,50 @@ static void probe_charger(void)
 
     if (bq24193_get_property(BQ24193_DevID, &v) == 0)
         LOG("  DevID        : 0x%02X\n", v);
+
+    /* Configuration fields not exposed by bq24193_get_property. These
+     * matter when "charging looks fine but never reaches 100 %" or
+     * "charger is silently offline":
+     *   REG03 IPRECHG  : pre-charge current (high nibble). 128 + N*128 mA
+     *                    range 128-2048 mA. 0 means dead-battery
+     *                    revival is impossible.
+     *   REG03 ITERM    : termination current (low nibble). Same encoding.
+     *                    If ITERM is below the cell's natural taper-end
+     *                    current, "Done" is never reached.
+     *   REG05 ENTIMER  : safety timer enable. Disabled = no upper bound
+     *                    on charge time (datasheet warns against this).
+     *   REG05 CHGTIMER : safety timer duration (5h/8h/12h/20h).
+     *   REG05 WATCHDOG : I2C watchdog (off/40s/80s/160s). HOS resets
+     *                    this periodically; if expired the charger
+     *                    falls back to default config.
+     *   REG07 BATFET_DI: BATFET disable latch. If 1 the battery is
+     *                    electrically disconnected from the system rail
+     *                    and no amount of VBUS will help. */
+    u8 reg03 = i2c_recv_byte(I2C_1, BQ24193_I2C_ADDR, BQ24193_PreChrgTerm);
+    u8 reg05 = i2c_recv_byte(I2C_1, BQ24193_I2C_ADDR, BQ24193_ChrgTermTimer);
+    u8 reg07 = i2c_recv_byte(I2C_1, BQ24193_I2C_ADDR, BQ24193_Misc);
+    u32 iprechg = ((reg03 >> 4) & 0xF) * 128 + 128;
+    u32 iterm   = ((reg03     ) & 0xF) * 128 + 128;
+    log_color(iprechg < 256 ? COL_WARN : COL_OK,
+        "  IPRECHG      : %d mA (REG03 high nibble)\n", iprechg);
+    log_color(iterm < 128 ? COL_WARN : COL_OK,
+        "  ITERM        : %d mA (REG03 low nibble)\n", iterm);
+    bool entimer = (reg05 & BQ24193_CHRGTERM_ENTIMER_MASK) != 0;
+    static const char *chgtimer_str[4] = {"5h", "8h", "12h", "20h"};
+    static const char *watchdog_str[4] = {"disabled", "40s", "80s", "160s"};
+    u8  chgtimer_idx = (reg05 & BQ24193_CHRGTERM_CHGTIMER_MASK) >> 1;
+    u8  wdog_idx     = (reg05 & BQ24193_CHRGTERM_WATCHDOG_MASK) >> 4;
+    log_color(entimer ? COL_OK : COL_WARN,
+        "  Safety timer : %s (CHGTIMER=%s)\n",
+        entimer ? "ON" : "DISABLED", chgtimer_str[chgtimer_idx]);
+    LOG("  I2C watchdog : %s\n", watchdog_str[wdog_idx]);
+    bool batfet_off = (reg07 & BQ24193_MISC_BATFET_DI_MASK) != 0;
+    log_color(batfet_off ? COL_ERR : COL_OK,
+        "  BATFET       : %s%s\n",
+        batfet_off ? "DISABLED" : "enabled",
+        batfet_off ? " (battery isolated from system!)" : "");
+    dx_set("charger_batfet", batfet_off ? DX_FAIL : DX_PASS,
+        batfet_off ? "BATFET latched off" : "");
 
     /* Cross-check via Hekate's bq24193_get_version helper, it reads
      * VendorPart (reg 0x0A) and confirms it equals 0x2F for the genuine
@@ -977,12 +1054,97 @@ static void probe_thermal(void)
         "  SoC die temp : %02d.%d C\n", soc_int, (soc & 0xFF) / 10);
     log_color(health_color(pcb_int, HEALTH_NONE, 40, HEALTH_NONE, 55),
         "  PCB temp     : %02d.%d C\n", pcb_int, (pcb & 0xFF) / 10);
+
+    /* Status register (0x02) and conversion rate. TMP451 status:
+     *   bit 7 BUSY, bit 6 LHIGH, bit 5 LLOW, bit 4 RHIGH, bit 3 RLOW,
+     *   bit 2 OPEN (remote diode open circuit - SoC sensor unhooked),
+     *   bit 1 RTHRM, bit 0 LTHRM (THERM2 trip flags).
+     * OPEN is the failure mode that matters most for repair: a mechanically
+     * loose or unsoldered diode line on the SoC under-fill.
+     *
+     * Note on register addresses: TMP451 uses split read / write
+     * addresses for the configuration and limit registers (the BDK's
+     * TMP451_CNV_RATE_REG = 0x0A is the *write* address). To read
+     * them back we use the corresponding read addresses:
+     *   0x03 = Config (read)        | 0x09 (write)
+     *   0x04 = Cnv rate (read)      | 0x0A (write)
+     *   0x05 = Local high limit     | 0x0B (write)
+     *   0x06 = Local low limit      | 0x0C (write)
+     *   0x07 = Remote high limit MSB| 0x0D (write)
+     *   0x08 = Remote low limit MSB | 0x0E (write) */
+    u8 status   = i2c_recv_byte(I2C_1, TMP451_I2C_ADDR, 0x02);
+    u8 cnv      = i2c_recv_byte(I2C_1, TMP451_I2C_ADDR, 0x04);
+    u8 lhigh    = i2c_recv_byte(I2C_1, TMP451_I2C_ADDR, 0x05);
+    u8 llow     = i2c_recv_byte(I2C_1, TMP451_I2C_ADDR, 0x06);
+    u8 rhigh    = i2c_recv_byte(I2C_1, TMP451_I2C_ADDR, 0x07);
+    u8 rlow     = i2c_recv_byte(I2C_1, TMP451_I2C_ADDR, 0x08);
+    bool open = (status & 0x04) != 0;
+    log_color(open ? COL_ERR : COL_OK,
+        "  Status       : 0x%02X%s%s%s%s%s%s\n", status,
+        open            ? " OPEN(remote-diode)" : "",
+        (status & 0x80) ? " BUSY"   : "",
+        (status & 0x40) ? " LHIGH"  : "",
+        (status & 0x20) ? " LLOW"   : "",
+        (status & 0x10) ? " RHIGH"  : "",
+        (status & 0x08) ? " RLOW"   : "");
+    /* Conversion rate: 2^cnv / 16 Hz (0x06 = 4 Hz, default after init).
+     *   cnv >= 4: rate = 1 << (cnv - 4) Hz (1, 2, 4, 8, 16, 32, 64)
+     *   cnv <  4: rate = 1 / (1 << (4 - cnv)) Hz (1/16, 1/8, 1/4, 1/2) */
+    static const char *cnv_str[] = {
+        "1/16 Hz", "1/8 Hz", "1/4 Hz", "1/2 Hz",
+        "1 Hz", "2 Hz", "4 Hz", "8 Hz",
+        "16 Hz", "32 Hz", "64 Hz"
+    };
+    LOG("  Cnv rate     : 0x%02X (%s)\n", cnv,
+        cnv < (sizeof(cnv_str)/sizeof(cnv_str[0])) ? cnv_str[cnv] : "?");
+
+    /* Alert thresholds. The IC raises THERM and ALERT lines when
+     * the corresponding limit is crossed. Limits are signed degrees
+     * Celsius in the 8-bit MSB (the LSB sub-degree limits are not
+     * used for thresholding on Switch). HOS / Hekate program these
+     * to bracket the operating range; a unit with WRONG limits (or
+     * default 0/85 from POR) is interesting because it means
+     * software hasn't configured the sensor — we'd see a missing
+     * thermal-management init somewhere. */
+    LOG("  PCB limits   : low %d C / high %d C\n", (s8)llow, (s8)lhigh);
+    LOG("  SoC limits   : low %d C / high %d C\n", (s8)rlow, (s8)rhigh);
+
+    /* Cross-check against MAX17050's battery internal temperature.
+     * The three sensors (TMP451 SoC die, TMP451 PCB, MAX17050 battery)
+     * sample physically different things but in a console at thermal
+     * equilibrium they should agree within ~10-15 C. A bigger spread
+     * means one sensor is wrong (loose diode, mis-calibrated gauge,
+     * dead thermistor) — surface the worst-pair gap as a diagnostic. */
+    int batt_temp = 0;
+    bool batt_ok = max17050_get_property(MAX17050_TEMP, &batt_temp) == 0;
+    if (batt_ok) {
+        /* MAX17050 returns deg C * 10 (centi-degrees). */
+        int batt_int = batt_temp / 10;
+        int spread = soc_int > pcb_int ? soc_int - pcb_int : pcb_int - soc_int;
+        int batt_spread_a = soc_int > batt_int ? soc_int - batt_int : batt_int - soc_int;
+        int batt_spread_b = pcb_int > batt_int ? pcb_int - batt_int : batt_int - pcb_int;
+        int max_spread = spread;
+        if (batt_spread_a > max_spread) max_spread = batt_spread_a;
+        if (batt_spread_b > max_spread) max_spread = batt_spread_b;
+        log_color(max_spread > 20 ? COL_ERR :
+                  max_spread > 12 ? COL_WARN : COL_OK,
+            "  Sensor agree : SoC %d C / PCB %d C / Batt %d C  (max gap %d C)\n",
+            soc_int, pcb_int, batt_int, max_spread);
+        dx_set("temp_agree",
+            max_spread > 20 ? DX_FAIL :
+            max_spread > 12 ? DX_WARN : DX_PASS,
+            max_spread > 12 ? "%d C spread" : "", max_spread);
+    }
+
     /* Verdict signals. Tegra X1 throttles at 85 C; >70 C in handheld
      * idle is suspicious. PCB skin shouldn't exceed ~45 C even under
-     * sustained load, so the threshold is tighter on channel 0. */
+     * sustained load, so the threshold is tighter on channel 0. An OPEN
+     * remote diode invalidates the SoC reading regardless of value. */
     dx_set("soc_die_temp",
+        open          ? DX_FAIL :
         soc_int >= 85 ? DX_FAIL :
         soc_int >= 70 ? DX_WARN : DX_PASS,
+        open          ? "remote diode OPEN" :
         soc_int >= 85 ? "%d C >= throttle" :
         soc_int >= 70 ? "%d C warm" : "", soc_int);
     dx_set("pcb_temp",
@@ -1402,6 +1564,41 @@ static void probe_dram(void)
         sym1 ? "OK" : "MISMATCH");
     dx_set("dram_sym", (sym0 && sym1) ? DX_PASS : DX_FAIL,
         (sym0 && sym1) ? "" : "channel asymmetry");
+
+    /* MR4 Refresh Rate / Temperature class (per JEDEC LPDDR4):
+     *   bits 2:0 RR encode:
+     *     000 below operating limit (very cold)
+     *     001 4x refresh (<=45 C)
+     *     010 2x refresh (<=65 C)
+     *     011 1x refresh, normal (65..85 C)
+     *     100 0.5x refresh (85..95 C, derating required)
+     *     101 0.25x refresh (95..105 C, derating)
+     *     110 high-temp + DRT (105..125 C, vendor-specific)
+     *     111 above operating limit (>125 C, shutdown imminent)
+     *   bit 7   TUF (temperature update flag)
+     * MR4 reading "high temp" while TMP451 reads cool means the LPDDR
+     * has a hotspot or torn die - useful triage signal. */
+    emc_mr_data_t mr4 = sdram_read_mrx(MR4_TEMP);
+    static const char *rr_str[8] = {
+        "below limit",       "4x refresh",          "2x refresh",
+        "1x normal",         "0.5x refresh",        "0.25x refresh",
+        "high-temp + DRT",   "above limit (>125C)"
+    };
+    int n_dram_warm = 0;
+    for (int c = 0; c < 2; c++) {
+        u8 m = c ? mr4.chip1.rank0_ch0 : mr4.chip0.rank0_ch0;
+        u8 rr = m & 0x7;
+        bool tuf = (m & 0x80) != 0;
+        u32 col = (rr >= 6) ? COL_ERR
+                : (rr >= 4 || rr <= 1) ? COL_WARN
+                : COL_OK;
+        if (rr >= 4) n_dram_warm++;
+        log_color(col,
+            "  Chip %d MR4   : 0x%02X (%s%s)\n",
+            c, m, rr_str[rr], tuf ? ", TUF" : "");
+    }
+    dx_set("dram_mr4", n_dram_warm ? DX_WARN : DX_PASS,
+        n_dram_warm ? "%d die in derating mode" : "", n_dram_warm);
 }
 
 static void probe_display(void)
@@ -2535,6 +2732,41 @@ static void probe_clocks(void)
     LOG("  CLK_OUT_ENB_U: 0x%08X\n", CLOCK(0x18));
     LOG("  CLK_OUT_ENB_X: 0x%08X\n", CLOCK(0x280));
 
+    /* PLL ENABLE / LOCK status. Per the Tegra X1 TRM each PLLx_BASE
+     * register has bit 27 = LOCK (read-only, set when the loop is
+     * locked) and bit 30 = ENABLE. A PLL that is enabled but not locked
+     * means the loop is hunting - "console boots, then hangs after a
+     * few seconds" symptoms map onto this. n_unlocked is the verdict
+     * signal: an enabled PLL that hasn't locked is always wrong. */
+    log_color(COL_INFO, "[Clocks - PLL lock status]\n");
+    struct pll_entry { u32 off; const char *name; };
+    static const struct pll_entry plls[] = {
+        {0x80,  "PLLC "},
+        {0x90,  "PLLM "},
+        {0xA0,  "PLLP "},
+        {0xB0,  "PLLA "},
+        {0xC0,  "PLLU "},
+        {0xD0,  "PLLD "},
+        {0xE0,  "PLLX "},
+        {0x4B8, "PLLD2"},
+        {0x590, "PLLDP"},
+        {0x4C4, "PLLRE"},
+    };
+    int n_unlocked = 0;
+    for (size_t i = 0; i < sizeof(plls)/sizeof(plls[0]); i++) {
+        u32 base   = CLOCK(plls[i].off);
+        bool en    = (base & (1u << 30)) != 0;
+        bool lock  = (base & (1u << 27)) != 0;
+        bool fail  = en && !lock;
+        if (fail) n_unlocked++;
+        log_color(fail ? COL_ERR : (en ? COL_OK : COL_DEFAULT),
+            "  %s        : %s%s\n", plls[i].name,
+            en ? (lock ? "ENABLED, LOCKED" : "ENABLED, NO-LOCK") : "disabled",
+            fail ? " (loop is hunting)" : "");
+    }
+    dx_set("plls", n_unlocked ? DX_FAIL : DX_PASS,
+        n_unlocked ? "%d enabled but not locked" : "", n_unlocked);
+
     /* Decoded frequencies via the PTO (Pulse Tag Observer) cell. The
      * BPMP couples the named clock to a 32.768 kHz reference for one
      * window and counts ticks; clock_get_dev_freq() returns the result
@@ -2855,6 +3087,62 @@ static void probe_uart_b(void)
     LOG("  UART_LCR     : 0x%02X (DLAB=%d, word=%d)\n",
         lcr, (lcr >> 7) & 1, (lcr & 3) + 5);
     LOG("  UART_MCR     : 0x%02X\n", mcr);
+
+    /* Baud-rate divisor (DLL / DLM) — shadowed at offsets 0x00 / 0x04
+     * when LCR.DLAB=1. We flip DLAB, snapshot the divisor latches,
+     * then restore the original LCR. The whole sequence completes in
+     * microseconds — no in-flight TX bytes are lost (THR continues to
+     * empty since the shift register is independent of the latch
+     * mux). A divisor of 0 means the UART was never initialised.
+     *
+     * The UART input clock is *not* OSC. Tegra X1 routes it through
+     * CLK_SOURCE_UARTB (CLOCK 0x17C):
+     *   bits 31:30 = source: 00=PLLP_OUT0 (408 MHz fixed),
+     *                01=PLLC2_OUT0, 10=PLLC_OUT0, 11=CLK_M (= OSC).
+     *   bit   24   = UART_SRC_CLK_DIV_EN — when 0 the source-side
+     *                divisor is BYPASSED (clock passes straight
+     *                through); when 1 it's applied. Hekate only sets
+     *                bit 24 for the 1 M / 3 M baud paths; for 115 200
+     *                the divisor field still reads 2 but the divider
+     *                is bypassed, so UART_B input = 408 MHz directly.
+     *   bits  7:0  = N (encodes 1+N/2 fractional division when bit 24
+     *                is set; ignored when not).
+     * Canonical 115 200 baud: src=0, bit 24=0, divisor latch=221 →
+     * effective baud = 408_000_000 / (16 * 221) = 115_345 (0.13 %
+     * fast — well within UART tolerance). */
+    uart[3] = (lcr | 0x80);          /* set DLAB */
+    u8 dll = uart[0] & 0xFF;
+    u8 dlm = uart[1] & 0xFF;
+    uart[3] = lcr;                   /* restore */
+    u32 divisor = ((u32)dlm << 8) | dll;
+
+    u32 clk_src_reg = CLOCK(0x17C);
+    u32 clk_src     = (clk_src_reg >> 30) & 0x3;
+    bool src_div_en = (clk_src_reg & (1u << 24)) != 0;
+    u32 clk_div_n   = clk_src_reg & 0xFF;
+    u32 src_khz;
+    const char *src_name;
+    switch (clk_src) {
+    case 0: src_khz = 408000;                src_name = "PLLP_OUT0"; break;
+    case 3: src_khz = clock_get_osc_freq();  src_name = "CLK_M";     break;
+    /* PLLC / PLLC2 paths exist but hekate doesn't use them for UART. */
+    default: src_khz = 0;                    src_name = "PLLC?";     break;
+    }
+    /* When bit 24 is clear the source-side divider is bypassed - input
+     * == source. When set, input = src * 2 / (N + 2). */
+    u32 uart_in_khz = !src_khz ? 0
+                      : src_div_en ? (src_khz * 2) / (clk_div_n + 2)
+                                   : src_khz;
+    u32 baud = (divisor && uart_in_khz)
+               ? (uart_in_khz * 1000) / (16 * divisor) : 0;
+    LOG("  CLK_SOURCE   : 0x%08X (src=%s, src-div=%s, %d kHz in)\n",
+        clk_src_reg, src_name,
+        src_div_en ? "ON" : "bypassed", uart_in_khz);
+    log_color((divisor && baud >= DEBUG_UART_BAUDRATE * 95 / 100
+                       && baud <= DEBUG_UART_BAUDRATE * 105 / 100)
+              ? COL_OK : COL_WARN,
+        "  Baud divisor : %d (DLL=0x%02X DLM=0x%02X) -> %d baud (target %d)\n",
+        divisor, dll, dlm, baud, DEBUG_UART_BAUDRATE);
     LOG("  UART_LSR     : 0x%02X (%s%s%s%s%s%s%s%s)\n", lsr,
         (lsr & 0x80) ? "FIFOE "  : "",
         (lsr & 0x40) ? "TMTY "   : "",
