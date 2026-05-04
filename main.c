@@ -2654,8 +2654,32 @@ static void probe_kfuse(void)
             break;
         }
     }
-    LOG("  KFUSE_STATE  : 0x%08X\n", KFUSE(KFUSE_STATE));
+    u32 state = KFUSE(KFUSE_STATE);
     clock_disable_kfuse();
+
+    /* KFUSE_STATE bit map:
+     *   bits  5:0  CURBLOCK  - current block being decoded (0..143)
+     *   bits 13:8  ERRBLOCK  - block index where CRC failed (only meaningful
+     *                          when CRCPASS=0 at completion)
+     *   bit  16    DONE      - decode complete
+     *   bit  17    CRCPASS   - CRC verified across all 144 blocks
+     *   bit  24    RESTART   - controller in restart state
+     *   bit  25    STOP      - controller stopped
+     *   bit  31    SOFTRESET - block held in soft reset
+     *
+     * On a healthy unit you'll see ~0x00030030 = DONE | CRCPASS | CURBLOCK=48
+     * (CURBLOCK lands wherever the FSM finished; pattern varies by silicon
+     * rev). On a broken HDCP block, ERRBLOCK pinpoints the failing word
+     * which is the only useful diagnostic short of replacing the SoC. */
+    LOG("  KFUSE_STATE  : 0x%08X\n", state);
+    LOG("  CURBLOCK     : %d\n", state & KFUSE_STATE_CURBLOCK_MASK);
+    if (done && !crc_pass) {
+        u32 errblk = (state & KFUSE_STATE_ERRBLOCK_MASK) >> KFUSE_STATE_ERRBLOCK_SHIFT;
+        log_color(COL_ERR, "  ERRBLOCK     : %d (CRC failure at this block)\n", errblk);
+    }
+    if (state & KFUSE_STATE_RESTART)   log_color(COL_WARN, "  RESTART set  : controller in restart\n");
+    if (state & KFUSE_STATE_STOP)      log_color(COL_WARN, "  STOP set     : controller stopped\n");
+    if (state & KFUSE_STATE_SOFTRESET) log_color(COL_WARN, "  SOFTRESET set: block held in reset\n");
 
     if (!done) {
         log_color(COL_ERR, "  status       : TIMEOUT (block did not assert DONE)\n");
