@@ -2179,6 +2179,49 @@ static void probe_storage(void)
                 khz / 1000, (khz / 10) % 100, khz);
         }
         _print_sd_init_mode();
+
+        /* SD performance classes from SD_STATUS (ACMD13). Already cached
+         * in sd_storage.ssr by sd_initialize() so this is just a print.
+         * Speed/UHS/Video/App class meanings:
+         *   speed_class : 0/2/4/6/10 = no spec / C2 / C4 / C6 / C10
+         *                 (sustained sequential write floor in MB/s)
+         *   uhs_grade   : 0=none, 1=U1 (10 MB/s), 3=U3 (30 MB/s)
+         *   video_class : 0/6/10/30/60/90 = no spec / V6 / V10 / V30 ...
+         *                 (sustained video-recording write floor)
+         *   app_class   : 0/1/2 = no spec / A1 / A2
+         *                 (random IOPS floor: A1=1500R/500W, A2=4000R/2000W)
+         * For Switch use, U3 / V30 / A2 is the modern target. Anything
+         * lower is functional but explains "loads slowly" complaints
+         * for game-card replacement scenarios. */
+        const char *uhs_str =
+            sd_storage.ssr.uhs_grade == 1 ? "U1" :
+            sd_storage.ssr.uhs_grade == 3 ? "U3" : "none";
+        char video_buf[8] = "none";
+        if (sd_storage.ssr.video_class)
+            s_printf(video_buf, "V%d", sd_storage.ssr.video_class);
+        const char *app_str =
+            sd_storage.ssr.app_class == 1 ? "A1" :
+            sd_storage.ssr.app_class == 2 ? "A2" : "none";
+        log_color(sd_storage.ssr.speed_class >= 10 ? COL_OK : COL_WARN,
+            "  speed class  : C%d\n", sd_storage.ssr.speed_class);
+        log_color(sd_storage.ssr.uhs_grade == 3 ? COL_OK :
+                  sd_storage.ssr.uhs_grade ? COL_WARN : COL_DEFAULT,
+            "  uhs grade    : %s\n", uhs_str);
+        log_color(sd_storage.ssr.video_class >= 30 ? COL_OK :
+                  sd_storage.ssr.video_class ? COL_WARN : COL_DEFAULT,
+            "  video class  : %s\n", video_buf);
+        log_color(sd_storage.ssr.app_class == 2 ? COL_OK :
+                  sd_storage.ssr.app_class ? COL_WARN : COL_DEFAULT,
+            "  app class    : %s\n", app_str);
+        /* AU (Allocation Unit) sizes: relevant for filesystem alignment
+         * and large-file write performance. uhs_au_size takes precedence
+         * if set (UHS-mode AU); falls back to legacy au_size. Encoded as
+         * 4-bit tier where N -> 16 KiB << N. */
+        u8 au = sd_storage.ssr.uhs_au_size ? sd_storage.ssr.uhs_au_size
+                                           : sd_storage.ssr.au_size;
+        if (au && au <= 14)
+            LOG("  AU size      : %d KiB%s\n", 16 << (au - 1),
+                sd_storage.ssr.uhs_au_size ? " (UHS)" : "");
     } else {
         log_color(COL_WARN, "  sd_initialize FAILED (ejected? unsupported?)\n");
     }
