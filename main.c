@@ -1446,6 +1446,44 @@ static void probe_inputs(void)
     log_color(!jc_l ? COL_OK : COL_DEFAULT,
         "  JC-L rail  : %s    (PE6=%d, IsAttached active-low)\n",
         !jc_l ? "ATTACHED" : "empty   ", jc_l);
+
+    /* MAX77620 power-button + wake-source configuration. Two registers:
+     *   ONOFFCNFG1 (0x41):
+     *     bit 7    SFT_RST   - 1=SFT shutdown on long-press / 0=hard reset
+     *     bits 5:3 MRT       - manual reset hold time (encoded 2..16 s)
+     *     bit 2    SLPEN     - SLEEP enable
+     *     bit 1    PWR_OFF   - power-off command latch
+     *   ONOFFCNFG2 (0x42):
+     *     bit 7 SFT_RST_WK   - wake from sleep on soft-reset event
+     *     bit 6 WD_RST_WK    - wake on watchdog reset
+     *     bit 4 WK_ACOK      - wake on AC-adapter insert
+     *     bit 3 WK_MBATT     - wake on main-battery event
+     *     bit 2 WK_ALARM1    - wake on RTC alarm 1
+     *     bit 1 WK_ALARM2    - wake on RTC alarm 2
+     *     bit 0 WK_EN0       - wake on POWER button press
+     * For repair: a tech seeing "POWER btn does nothing" can verify
+     * WK_EN0 isn't masked here. A console that wakes spontaneously
+     * usually has an unintended wake source set (WK_MBATT on a
+     * deteriorating battery is the classic). */
+    u8 cnfg1 = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_ONOFFCNFG1);
+    u8 cnfg2 = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_ONOFFCNFG2);
+    u8 mrt   = (cnfg1 & MAX77620_ONOFFCNFG1_MRT_MASK) >> MAX77620_ONOFFCNFG1_MRT_SHIFT;
+    /* MRT encoding: each tick = 2 s, range 2..16 s. Switch HOS programs
+     * 8 s (mrt code 011) — a held POWER triggers a hard reset after 8 s,
+     * matching the documented "press and hold POWER for 8 seconds to
+     * force-reset" behavior. */
+    LOG("  ONOFFCNFG1 : 0x%02X (MRT=%d -> %d s, %s)\n",
+        cnfg1, mrt, (mrt + 1) * 2,
+        (cnfg1 & MAX77620_ONOFFCNFG1_SFT_RST) ? "long-press = SFT shutdown"
+                                              : "long-press = hard reset");
+    LOG("  ONOFFCNFG2 : 0x%02X (wake:%s%s%s%s%s%s%s)\n", cnfg2,
+        (cnfg2 & MAX77620_ONOFFCNFG2_WK_EN0)    ? " POWER"   : "",
+        (cnfg2 & MAX77620_ONOFFCNFG2_WK_ACOK)   ? " ACOK"    : "",
+        (cnfg2 & MAX77620_ONOFFCNFG2_WK_MBATT)  ? " MBATT"   : "",
+        (cnfg2 & MAX77620_ONOFFCNFG2_WK_ALARM1) ? " ALARM1"  : "",
+        (cnfg2 & MAX77620_ONOFFCNFG2_WK_ALARM2) ? " ALARM2"  : "",
+        (cnfg2 & MAX77620_ONOFFCNFG2_WD_RST_WK) ? " WDOG"    : "",
+        (cnfg2 & MAX77620_ONOFFCNFG2_SFT_RST_WK)? " SFT-RST" : "");
 }
 
 /* ------------------------------------------------------------------------ */
