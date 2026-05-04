@@ -1,0 +1,16 @@
+build/
+build-jc/
+*.bin
+*.elf
+*.o
+*.d
+
+# Captured UART logs from the host viewer or external terminals.
+hwtest_uart_*.txt
+
+# Python artefacts in host_tools/.
+host_tools/__pycache__/
+*.pyc
+
+# Dear ImGui auto-saved window layout for the host viewer.
+hwtest_viewer.ini

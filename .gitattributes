@@ -1,0 +1,12 @@
+# Normalise every text file to LF in both the index AND the working tree.
+# Removes the fragility of relying on each contributor's core.autocrlf
+# setting -- without this, a fresh `git status` on Windows can show
+# Makefile / *.c / *.h as modified because the working-tree CRLF
+# doesn't match the LF stored in the index. With `eol=lf` the working
+# tree is checked out with LF too, so status is deterministic on every
+# platform.
+#
+# Submodule content is NOT covered by this file (third_party/hekate
+# manages its own .gitattributes inside the submodule).
+* text=auto eol=lf
+*.png binary

@@ -1,0 +1,374 @@
+=== hwtest === read-only, single write: backup/<emmc_serial>/hwtest.txt
+=== hwtest full UART dump ===
+--- SoC ---
+[SoC]
+  HIDREV       : 0x00000010
+  Chip ID      : 0x00 (T210 Erista)
+  Major.Minor  : 1.00
+--- Fuses ---
+[Fuses - identity]
+  PRODUCTION   : 0x00000001
+  SKU_INFO     : 0x00000083
+  ODM4         : 0x00000020 (DRAM ID 4)
+  HW state     : Prod
+  HW type      : 0
+  Keygen rev   : 0
+  Patched RCM  : no (exploitable)
+  Burnt fuses  : 0 | 0 (ODM7 | ODM6)
+[Fuses - speedo / IDDQ]
+  CPU SPEEDO 0 : 2289
+  CPU SPEEDO 1 : 2330
+  CPU SPEEDO 2 : 2342
+  SOC SPEEDO 0 : 1801
+  SOC SPEEDO 2 : 1817
+  CPU IDDQ     : 7144
+  GPU IDDQ     : 7500
+  SOC IDDQ     : 6000
+  BROM rev     : 0x80
+  FT rev       : 4.02 (0x82)
+  CP rev       : 8.00 (0x100)
+  USB ctrl     : USB2
+[Fuses - lot / wafer]
+  Vendor code  : 6
+  FAB / LOT    : IK1SHQ
+  Wafer ID     : 1
+  X / Y coord  : 5 / 12
+[Fuses - Public Key SHA-256]
+  PK0..3       : 5F1B7A4D8E2C6F09B3A815C7D4E0F26B
+  PK4..7       : A91F4C8B7D2E0653F1A8B4C7E0D962F4
+[Fuses - SBK / DK]
+  SBK          : C8E5719FA34D6B208E14F7B965A028D3
+  DK           : 47A1F39E
+--- Fuses ---
+[KFUSE (HDCP keys)]
+  KFUSE_STATE  : 0x00030000
+  status       : OK (CRC pass)
+--- Power & charging ---
+[MAX77620 main PMIC, I2C5 @ 0x3C]
+  CID3 Si rev  : 0x00 (max77620 v0)
+  CID4 OTP     : 0x35 (Erista)
+  CID5 ES rev  : 0x00
+[MAX77621 CPU/GPU regulators, I2C5 @ 0x1B/0x1C]
+  CPU CHIPID1  : 0x00 (max77621 v0)
+  GPU CHIPID1  : 0x00 (max77621 v0)
+  CPU VOUT     : off 0.606 V  (range 1.000 - 1.400 V)
+  CPU VOUT_DVS : off 0.606 V  (DVFS pre-load)
+  GPU VOUT     : off 0.606 V  (range 1.200 - 1.400 V)
+  GPU VOUT_DVS : off 0.606 V  (DVFS pre-load)
+--- Power & charging ---
+[MAX77620 GPIOs]
+  GPIO0        : 0x00  output open-drain  IN=0 OUT=0  (generic)
+  GPIO1        : 0x00  output open-drain  IN=0 OUT=0  (generic)
+  GPIO2        : 0x00  output open-drain  IN=0 OUT=0  (generic)
+  GPIO3        : 0x00  output open-drain  IN=0 OUT=0  (FPS - 3.3V rail)
+  GPIO4        : 0x00  output open-drain  IN=0 OUT=0  (generic)
+  GPIO5        : 0x00  output open-drain  IN=0 OUT=0  (FPS - CPU MAX77621)
+  GPIO6        : 0x00  output open-drain  IN=0 OUT=0  (FPS - GPU MAX77621)
+  GPIO7        : 0x00  output open-drain  IN=0 OUT=0  (FPS - LDO0 (DSI 1.2V))
+--- Power & charging ---
+[MAX77620 regulators]
+  SD0  (SoC CPU) : ON   0.600 V  (range 0.600 - 1.400 V)
+  SD1  (DRAM) : ON   0.600 V  (range 1.000 - 1.200 V) WRONG
+  SD2  (LDO src) : ON   0.600 V  (range 1.262 - 1.387 V) WRONG
+  SD3  (1V8 gen) : ON   0.600 V  (range 1.700 - 1.900 V) WRONG
+  LDO0 (Display) : off  0.800 V  (range 1.100 - 1.300 V)
+  LDO1 (XUSB+PCIE) : off  0.800 V  (range 0.950 - 1.150 V)
+  LDO2 (SDMMC1) : off  0.800 V  (range 1.700 - 3.400 V)
+  LDO3 (GC ASIC) : off  0.800 V  (range 2.900 - 3.300 V)
+  LDO4 (RTC) : off  0.800 V  (range 0.800 - 0.900 V)
+  LDO5 (GC Card) : off  0.800 V  (range 1.700 - 3.200 V)
+  LDO6 (Touch+ALS) : off  0.800 V  (range 2.700 - 3.000 V)
+  LDO7 (XUSB) : off  0.800 V  (range 0.950 - 1.150 V)
+  LDO8 (XUSB/DP) : off  0.800 V  (range 0.950 - 2.900 V)
+--- Power & charging ---
+[5V regulator]
+  FAN          : off
+  Joy-Con L    : off
+  Joy-Con R    : enabled
+--- Power & charging ---
+[MAX17050 fuel gauge, I2C1 @ 0x36]
+  SOC          : 80.0 %
+  VCELL        : 3950 mV
+  OCV          : 3960 mV
+  Temp         : 25.0 C
+  AvgCurrent   : 0 mA
+  Current      : 0 mA
+  RepCap       : 3500 mAh
+  FullCap      : 4000 mAh (92% of design)
+  DesignCap    : 4310 mAh
+  Min volt     : 3500 mV
+  Max volt     : 4200 mV
+  V_empty      : 3300 mV
+  Age          : 100 %
+  Cycles       : 0
+  DevName      : 0x00AC (MAX17050 verified)
+  ManName      : 0x0000
+  STATUS       : 0x0000 (no alerts)
+  FSTAT        : 0x0000 (no documented flags set)
+--- Power & charging ---
+[BQ24193 charger, I2C1 @ 0x6B]
+  VBUS_STAT    : 0 (none)
+  CHRG_STAT    : 0 (not charging)
+  PG_STAT      : 0
+  FAULT (since last) : 0x00 (none)
+  FAULT (now      ) : 0x00 (none)
+  IN current   : 2000 mA
+  IN voltage   : 4280 mV
+  System min   : 3500 mV
+  FastCharge   : 1856 mA
+  CV target    : 4208 mV
+  Therm thresh : 60 C (charge-throttle cutoff, IC default 120)
+  Batt NTC     : 0 (normal)
+  DevID        : 0x03
+  Vendor part  : 0x2F (BQ24193 verified)
+--- Power & charging ---
+[BM92T36 USB-PD, I2C1 @ 0x18]
+  Version      : 0x03B00036
+  Cable        : not inserted
+  PDO count    : 1
+    PDO[0]    : 5 V  1500 mA
+  STATUS2      : 0x00 0x00
+  Data role    : UFP (device)
+  CC orient.   : CC1 (cable normal)
+--- Power & charging ---
+[TMP451 thermal sensor, I2C1 @ 0x4C]
+  SoC die temp : 42.0 C
+  PCB temp     : 35.0 C
+--- Power & charging ---
+[Cooling fan]
+  Status       : Erista (T210), passive cooling (no fan)
+--- Memory & clocks ---
+[DRAM identity]
+  Type         : LPDDR4 (Erista)
+  Fuse DRAM ID : 4
+  Chip 0 vend  : Samsung
+  Chip 0 rev   : 2.00
+  Chip 0 dens  : 2GB
+  Chip 1 vend  : Samsung
+  Chip 1 rev   : 2.00
+  Chip 1 dens  : 2GB
+  Channel sym  : chip0 OK, chip1 OK
+--- Memory & clocks ---
+[Clocks]
+  PLLP_BASE    : 0x48000000
+  PLLP_OUTA    : 0x00000000
+  PLLP_OUTB    : 0x00000000
+  SCLK_BURST   : 0x00000000
+  SUPER_SCLK   : 0x00000000
+  CLK_SYSTEM   : 0x00000000
+  CLK_OUT_ENB_L: 0x00004000
+  CLK_OUT_ENB_H: 0x00000000
+  CLK_OUT_ENB_U: 0x00008000
+  CLK_OUT_ENB_X: 0x00000000
+[Clocks - decoded rates]
+  OSC          : 0.000 MHz
+  PLLP_OBS     : (idle / not clocked)
+  SCLK / BPMP  : (idle / not clocked)
+  EMC (DRAM)   : (idle / not clocked)
+  SDMMC4(eMMC) : (idle / not clocked)
+  SDMMC1(SD)   : (idle / not clocked)
+  CCLK_G(A57)  : (idle / not clocked)
+--- Storage ---
+[SD card (SDMMC1)]
+  manfid       : 0x03
+  oemid        : 0x5344
+  prod_name    : USDU1
+  hwrev/fwrev  : 1 / 0
+  serial       : 0xC0FFEE42
+  date         : 10/2024
+  size         : 896128 MiB
+  bus_width    : 1-bit
+  card_clock   : 24.72 MHz (raw 24728 kHz)
+  init mode    : UHS SDR104 (4-bit, max)
+[eMMC (SDMMC4)]
+  manfid       : 0x90
+  oemid        : 0x01
+  prod_name    : HBG4a2
+  prv          : 0x07
+  serial       : 0x12345678
+  date         : 06/2017
+  bus_width    : 1-bit
+  card_clock   : 51.00 MHz (raw 51000 kHz)
+  init mode    : HS400 (8-bit, DDR, max for Switch eMMC)
+--- Storage ---
+[Switch serial number (PRODINFO)]
+  BIS keys     : loaded from sd:/switch/prod.keys
+  Partition    : LBA 34..8191 (4079 KiB)
+  CAL0 magic   : CAL0
+  Serial       : XKJ70026481121
+--- Storage ---
+[eMMC partitions]
+  USER (GPP)   : 67108864 sectors (32768 MiB)
+  BOOT0        : 0 KiB
+  BOOT1        : 0 KiB
+  RPMB         : 0 KiB
+--- Storage ---
+[eMMC health & EXT_CSD]
+  PRE_EOL_INFO : 0x00 (unknown)
+  Life used A  : 0x00 (0-10%)
+  Life used B  : 0x00 (0-10%)
+  EXT_CSD rev  : 7
+  Card type    : 0x57
+  Cache size   : 0 KiB
+  bkops_en     : 0x00
+--- Storage ---
+[eMMC GPT]
+  signature    : OK ("EFI PART")
+  partitions   : 11 entries, 128 bytes each (LBA 2)
+  hdr CRC32    : 0x4356AD13 (stored 0x4356AD13) OK
+  ent CRC32    : 0x1F6705CF (stored 0x1F6705CF) OK
+   0. PRODINFO               :    3 MiB  [LBA 34..8191]
+   1. PRODINFOF              :    4 MiB  [LBA 8192..16383]
+   2. BCPKG2-1-Normal-Main   :    8 MiB  [LBA 16384..32767]
+   3. BCPKG2-2-Normal-Sub    :    8 MiB  [LBA 32768..49151]
+   4. BCPKG2-3-SafeMode-Main :    8 MiB  [LBA 49152..65535]
+   5. BCPKG2-4-SafeMode-Sub  :    8 MiB  [LBA 65536..81919]
+   6. BCPKG2-5-Repair-Main   :    8 MiB  [LBA 81920..98303]
+   7. BCPKG2-6-Repair-Sub    :    8 MiB  [LBA 98304..114687]
+   8. SAFE                   :   64 MiB  [LBA 114688..245759]
+   9. SYSTEM                 : 2560 MiB  [LBA 245760..5488639]
+  10. USER                   : 26624 MiB  [LBA 5488640..60014591]
+--- Storage ---
+[BOOT0 / pkg1 fingerprint]
+  Note         : SoC=Erista, BOOT0=Mariko, using BOOT0 layout
+  bl_hdr ver   : 0x0000000D
+  bl_hdr size  : 0x0002EE30
+  bl_hdr load  : 0x40010000
+  bl_hdr entry : 0x40010040
+  pkg1 build   : 20220105094439
+  pkg1 keygen  : 0x0D
+  pkg1 version : 0x10
+  HOS version  : 13.2.1
+--- Storage ---
+[AutoRCM detection]
+  modulus[0x10]: 0x00 (expected 0xF7 for legit BCT)
+  modulus[0x11]: 0x00 (expected 0x86)
+  AutoRCM       : invalid (BCT[0] signature byte mismatch)
+--- Storage ---
+[SD card content]
+  0:/atmosphere                  : DIR
+  0:/atmosphere/contents         : DIR
+  0:/bootloader                  : DIR
+  0:/bootloader/payloads         : DIR
+  0:/switch                      : DIR
+  0:/emuMMC                      : absent
+  0:/Nintendo                    : absent
+  atmosphere   : version file absent, contents/ exists
+  hekate       : v6.5.2 (update.bin)
+  emummc.ini   : absent
+--- Display ---
+[DSI panel ID]
+  Raw ID bytes : 10 93 09
+  Decoded ID   : 0x0010
+  Model        : JDI 062M (generic)
+--- Display ---
+[Display backlight & PWM]
+  PWM_CSR_0    : 0x80640000
+  PWM enabled  : yes
+  PWM duty     : 100 / 255 (39%)
+  DCS BL level : 0x00000000 (DSI-internal path, OLED panels)
+  BL_PWM mux   : 0x00000005 (func 1 - PWM0, driven, pull-down)
+  BL_EN  mux   : 0x00000004
+  GPIO PV1 SIG : HIGH (LCD_BL_EN, low on some Mariko panels)
+  Verdict      : PWM0 driving BL_PWM @ duty 100 - backlight lit
+--- Inputs ---
+[Touch panel (FTS4, I2C3 @ 0x49)]
+  power-on     : OK
+  chip_id      : 0x3670
+  fw_ver       : 0x0001
+  config_id    : 0x00
+  config_ver   : 0x00
+  clone        : no
+  vendor       : NISSHA NFT-K12D (idx 0)
+  fw_id        : 32.00.00.01
+  ftb_ver      : 0x0123
+  fw_rev       : 0x4567 (display 6745)
+  pairing      : OK
+--- Inputs ---
+[Joy-Con detection + version]
+  JC-R rail  : ATTACHED   (PH6 IsAttached)
+  JC-L rail  : ATTACHED   (PE6 IsAttached)
+  Joy-Con poll : disabled (UART_B owned by debug log)
+--- Inputs ---
+[Input census]
+  POWER btn  : released   (ONOFFSTAT.EN0=0)
+  AC adapter : absent     (ONOFFSTAT.ACOK=0)
+  ONOFFSTAT  : 0x00
+  VOL+ btn   : released   (PX6=1)
+  VOL- btn   : released   (PX7=1)
+  HOME btn   : N/A (no physical switch on this SKU)   (PY1=0)
+  JC-R rail  : ATTACHED    (PH6=0, IsAttached active-low)
+  JC-L rail  : ATTACHED    (PE6=0, IsAttached active-low)
+--- Raw state ---
+[GPIO pin census]
+  PA5  : fn=1 no-pull drv ie=0 GPIO OE=1 OUT=1 IN=1  (5V regulator EN)
+  PI0  : pmx=(n/a)              GPIO OE=1 OUT=1 IN=1  (LCD AVDD CH2 EN)
+  PI1  : pmx=(n/a)              GPIO OE=1 OUT=1 IN=1  (LCD AVDD CH1 EN)
+  PV0  : fn=1 pull-dn drv ie=0 SPIO OE=1 OUT=0 IN=0  (LCD BL PWM)
+  PV1  : fn=0 pull-dn drv ie=0 GPIO OE=1 OUT=1 IN=1  (LCD BL EN)
+  PV2  : fn=0 pull-dn drv ie=0 GPIO OE=1 OUT=1 IN=1  (LCD reset (act-low))
+  PK3  : fn=2 pull-dn drv ie=0 GPIO OE=1 OUT=1 IN=1  (JC-R charge EN)
+  PG0  : fn=0 no-pull drv ie=0 SPIO OE=0 OUT=0 IN=0  (UART2_TX (JC-R))
+  PG1  : fn=0 pull-up drv ie=1 SPIO OE=0 OUT=0 IN=0  (UART2_RX (JC-R))
+  PH6  : fn=0 no-pull tri ie=1 GPIO OE=0 OUT=0 IN=0  (JC-R attach detect)
+  PCC3 : pmx=(n/a)              SPIO OE=0 OUT=0 IN=0  (JC-L charge EN)
+  PD1  : fn=0 no-pull drv ie=0 GPIO OE=0 OUT=0 IN=0  (UART3_TX (JC-L))
+  PD0  : fn=0 no-pull drv ie=0 SPIO OE=0 OUT=0 IN=0  (UART3_RX (JC-L))
+  PE6  : fn=0 no-pull tri ie=1 GPIO OE=0 OUT=0 IN=0  (JC-L attach detect)
+  PX6  : pmx=(n/a)              GPIO OE=0 OUT=0 IN=1  (VOL+ btn (act-low))
+  PX7  : pmx=(n/a)              GPIO OE=0 OUT=0 IN=1  (VOL- btn (act-low))
+  PY1  : pmx=(n/a)              GPIO OE=0 OUT=0 IN=0  (HOME btn (Lite SKU))
+--- Raw state ---
+[UART_B debug port]
+  UART2_RX pmx : 0x00000048
+  pad config   : fn=0 (UART), drive-allowed, pull-up, input-enable
+  idle anchor  : internal PULL_UP (line idles HIGH on its own)
+  PA5 (5V_EN)  : HIGH (driven)   (CNF=1 OE=1 OUT=1 IN=1)
+  PK3 (JC-R EN): HIGH (driven)   (CNF=1 OE=1 OUT=1 IN=1)
+  UART_LCR     : 0x00 (DLAB=0, word=5)
+  UART_MCR     : 0x00
+  UART_LSR     : 0x60 (TMTY THRE )
+  VENDOR_STAT  : 0x00000000 (RX_FIFO=0 byte(s))
+[raw PG1 sample (10 ms via GPIO)]
+    samples      : 0 high, 2632 low, 0 edges
+    Verdict      : line stuck LOW - shifter unpowered or shorted to GND
+--- Raw state ---
+[Reset + PMIC latches + RTC + Hekate intent]
+  PMC RST_STATUS: 0 (POR (cold boot - power-on reset))
+  PMIC NVERC   : 0x00 (clean)
+  PMIC INTLBT  : 0x00 (no thermal/low-batt events)
+  PMIC IRQSD   : 0x00 (no SD-rail power faults)
+  RTC raw      : 2000-00-00 00:00:00  (calendar unset, HOS keeps its own offset)
+  RTC adjusted : 2025-12-31 00:00:00  (nyx.ini offset +823219200 s, auto-DST)
+--- Raw state ---
+[PMC scratch]
+  SCRATCH0     : 0x00000000
+  SCRATCH20    : 0x00000000
+  SCRATCH200   : 0x00000000
+  Hekate intent: none (normal boot, no override pending)
+--- Verdict ---
+[Verdict]
+  Boot integrity : FAIL (0 burnt < 16 expected)
+  PMIC           : FAIL (3 ON but out of band)
+  Charger        : pass
+  Battery        : pass
+  Thermal        : pass
+  Storage        : FAIL (1-bit (trace damage?))
+  Display        : pass
+  Inputs         : pass
+  Memory         : pass
+  Verdict      : 21 pass, 1 warn, 3 fail
+=== end of dump - pager active on LCD ===
+[save] backup/12345678/hwtest.txt (12726 bytes)
+--- Verdict ---
+[Verdict]
+  Boot integrity : FAIL (0 burnt < 16 expected)
+  PMIC           : FAIL (3 ON but out of band)
+  Charger        : pass
+  Battery        : pass
+  Thermal        : pass
+  Storage        : FAIL (1-bit (trace damage?))
+  Display        : pass
+  Inputs         : pass
+  Memory         : pass
+  Verdict      : 21 pass, 1 warn, 3 fail
