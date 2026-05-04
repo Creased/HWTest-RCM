@@ -2578,6 +2578,52 @@ static void probe_emmc_health(void)
     LOG("  Card type    : 0x%02X\n", emmc_storage.ext_csd.card_type);
     LOG("  Cache size   : %d KiB\n", emmc_storage.ext_csd.cache_size / 1024);
     LOG("  bkops_en     : 0x%02X\n", emmc_storage.ext_csd.bkops_en);
+
+    /* Additional JEDEC capability fields decoded from the raw EXT_CSD
+     * blob. These aren't parsed into the BDK's mmc_ext_csd_t struct
+     * but the full 512-byte response is cached in `raw_ext_csd[]`.
+     *
+     *   231 SEC_FEATURE_SUPPORT  - secure-erase, sanitize, trim caps
+     *   232 TRIM_MULT            - 0 = TRIM not supported (perf flag)
+     *   229 SEC_TRIM_MULT        - secure-trim timeout (0 = unsupported)
+     *    61 DATA_SECTOR_SIZE     - 0=512B, 1=4KiB native sector mode
+     *   503 HPI_FEATURES         - high-priority interrupt support
+     *   162 RST_N_FUNCTION       - hardware reset behaviour
+     *
+     * These are diagnostically useful for two repair scenarios:
+     *   - "eMMC works but HOS shutdown is glacially slow" -> often
+     *     missing HPI / trim / sanitize support (chip is replacement
+     *     part with reduced firmware features).
+     *   - "Game saves take forever to write after a few months" ->
+     *     trim disabled, wear leveling can't reclaim space efficiently. */
+    u8 sec_feat = emmc_storage.raw_ext_csd[231];
+    u8 trim_mlt = emmc_storage.raw_ext_csd[232];
+    u8 strim_mlt= emmc_storage.raw_ext_csd[229];
+    u8 sec_size = emmc_storage.raw_ext_csd[61];
+    u8 hpi_feat = emmc_storage.raw_ext_csd[503];
+    u8 rst_func = emmc_storage.raw_ext_csd[162];
+    log_color(COL_DEFAULT,
+        "  SEC_FEATURE  : 0x%02X (%s%s%s%s)\n", sec_feat,
+        (sec_feat & 0x01) ? "secure-erase " : "",
+        (sec_feat & 0x10) ? "auto-erase "   : "",
+        (sec_feat & 0x40) ? "sanitize "     : "",
+        sec_feat ? "" : "none");
+    log_color(trim_mlt ? COL_OK : COL_WARN,
+        "  TRIM_MULT    : 0x%02X (%s)\n", trim_mlt,
+        trim_mlt ? "TRIM supported" : "TRIM NOT supported");
+    LOG("  SEC_TRIM_MULT: 0x%02X\n", strim_mlt);
+    LOG("  Sector size  : %s native (DATA_SECTOR_SIZE=0x%02X)\n",
+        sec_size ? "4 KiB" : "512 B", sec_size);
+    log_color(hpi_feat & 0x01 ? COL_OK : COL_WARN,
+        "  HPI_FEATURES : 0x%02X (%s)\n", hpi_feat,
+        (hpi_feat & 0x01) ? ((hpi_feat & 0x02) ? "supported, CMD12"
+                                                : "supported, CMD13")
+                          : "NOT supported");
+    LOG("  RST_N_FUNC   : 0x%02X (%s)\n", rst_func,
+        (rst_func & 0x03) == 0x01 ? "permanently enabled" :
+        (rst_func & 0x03) == 0x02 ? "permanently disabled" :
+                                    "temporarily disabled");
+
     /* Verdict signal: PRE_EOL_INFO + worst of life-used A/B. */
     dx_set("emmc_health",
         (eol == 3 || a >= 0x09 || b >= 0x09) ? DX_FAIL :
