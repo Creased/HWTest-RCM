@@ -413,7 +413,12 @@ class App:
         # Left pane: list of pages.
         imgui.begin_child("##pages", imgui.ImVec2(220, avail.y),
                           imgui.ChildFlags_.borders.value)
-        imgui.text_colored(COL_HDR, "Pages")
+        # Plain text for the static UI label - COL_HDR (warm orange) is
+        # reserved for parsed-from-stream headers (page / section names
+        # mirroring the firmware's COL_HEADER). Tinting the static
+        # "Pages" caption in the same orange used by warning rows below
+        # makes the entire list look like it's in a warning state.
+        imgui.text("Pages")
         imgui.separator()
 
         # "Raw log" pseudo-page is always present.

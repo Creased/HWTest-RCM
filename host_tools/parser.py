@@ -300,10 +300,15 @@ class Parser:
         if line.startswith("===") and line.endswith("==="):
             return
 
+        # Discard everything that arrives before the first `--- name ---`
+        # boundary. The firmware emits a couple of `=== hwtest ===` banner
+        # lines and blank padding before the SoC page, all of which carry
+        # no diagnostic value - the raw log view still has them via
+        # report.raw_lines. We used to stash them under a synthetic
+        # "Boot banner" page, which always rendered empty (no sections,
+        # no rows) and just cluttered the page list.
         if self._cur_page is None:
-            # Pre-page free text (boot banner). Stash under a synthetic page.
-            self._cur_page = self.report.page("Boot banner")
-            self.report.latest_page = "Boot banner"
+            return
 
         self._cur_page.raw.append(line)
 
