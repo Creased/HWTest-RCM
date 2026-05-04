@@ -432,48 +432,193 @@ static void probe_pmic(void)
         otp_ok ? "" : "chip M%d, otp 0x%02X", chip_major, cid4);
     LOG("  CID5 ES rev  : 0x%02X\n", cid5);
 
-    HEADER("[MAX77621 CPU/GPU regulators, I2C5 @ 0x1B/0x1C]");
-    u8 cpu_id = i2c_recv_byte(I2C_5, MAX77621_CPU_I2C_ADDR, MAX77621_REG_CHIPID1);
-    u8 gpu_id = i2c_recv_byte(I2C_5, MAX77621_GPU_I2C_ADDR, MAX77621_REG_CHIPID1);
-    LOG("  CPU CHIPID1  : 0x%02X (max77621 v%d)\n", cpu_id, cpu_id & 0xF);
-    LOG("  GPU CHIPID1  : 0x%02X (max77621 v%d)\n", gpu_id, gpu_id & 0xF);
-    /* Output voltage from VOUT register (0x00) and VOUT_DVS register
-     * (0x01). Format: bit7 = enable, bits6:0 = voltage = 606250 + N * 6250 uV.
-     * VOUT is the active setting; VOUT_DVS is the pre-loaded DVS target
-     * (selected via the GPIO_DVS pin, see Hekate's max7762x.c). HOS
-     * uses both for fast CPU/GPU DVFS. We surface both per chip for the
-     * tech to compare. */
-    struct max77621_rail {
-        u32 i2c_addr;
-        const char *name;
-        u32 vmin_uv;
-        u32 vmax_uv;
-    };
-    static const struct max77621_rail bc_rails[] = {
-        {MAX77621_CPU_I2C_ADDR, "CPU", 1000000, 1400000},
-        {MAX77621_GPU_I2C_ADDR, "GPU", 1200000, 1400000},
-    };
-    for (size_t r = 0; r < sizeof(bc_rails)/sizeof(bc_rails[0]); r++) {
-        u8 vout     = i2c_recv_byte(I2C_5, bc_rails[r].i2c_addr, MAX77621_REG_VOUT);
-        u8 vout_dvs = i2c_recv_byte(I2C_5, bc_rails[r].i2c_addr, MAX77621_REG_VOUT_DVS);
-        bool en     = (vout & MAX77621_VOUT_ENABLE_MASK) != 0;
-        bool en_dvs = (vout_dvs & MAX77621_VOUT_ENABLE_MASK) != 0;
-        u32 uv      = ((vout     & MAX77621_DVC_DVS_VOLT_MASK) * 6250) + 606250;
-        u32 uv_dvs  = ((vout_dvs & MAX77621_DVC_DVS_VOLT_MASK) * 6250) + 606250;
-        bool ok     = en && uv >= bc_rails[r].vmin_uv && uv <= bc_rails[r].vmax_uv;
-        log_color(ok ? COL_OK : COL_WARN,
-            "  %s VOUT     : %s %d.%03d V  (range %d.%03d - %d.%03d V)\n",
-            bc_rails[r].name,
-            en ? "ON " : "off",
-            uv / 1000000, (uv / 1000) % 1000,
-            bc_rails[r].vmin_uv / 1000000, (bc_rails[r].vmin_uv / 1000) % 1000,
-            bc_rails[r].vmax_uv / 1000000, (bc_rails[r].vmax_uv / 1000) % 1000);
-        log_color(COL_DEFAULT,
-            "  %s VOUT_DVS : %s %d.%03d V  (DVFS pre-load)\n",
-            bc_rails[r].name,
-            en_dvs ? "ON " : "off",
-            uv_dvs / 1000000, (uv_dvs / 1000) % 1000);
+    /* MAX77621 is the Erista CPU/GPU buck regulator (two single-phase
+     * chips on I2C5 at 0x1B/0x1C). Mariko / OLED / Lite replace it with
+     * the multi-phase MAX77812 — handled by probe_max77812 below.
+     * Trying to read MAX77621 on Mariko returns NACK -> 0xFF on most
+     * lines and prints garbage. Gate by SoC chip-major. */
+    if (chip_major == 1) {
+        HEADER("[MAX77621 CPU/GPU regulators, I2C5 @ 0x1B/0x1C]");
+        u8 cpu_id = i2c_recv_byte(I2C_5, MAX77621_CPU_I2C_ADDR, MAX77621_REG_CHIPID1);
+        u8 gpu_id = i2c_recv_byte(I2C_5, MAX77621_GPU_I2C_ADDR, MAX77621_REG_CHIPID1);
+        LOG("  CPU CHIPID1  : 0x%02X (max77621 v%d)\n", cpu_id, cpu_id & 0xF);
+        LOG("  GPU CHIPID1  : 0x%02X (max77621 v%d)\n", gpu_id, gpu_id & 0xF);
+        /* Output voltage from VOUT register (0x00) and VOUT_DVS register
+         * (0x01). Format: bit7 = enable, bits6:0 = voltage = 606250 + N * 6250 uV.
+         * VOUT is the active setting; VOUT_DVS is the pre-loaded DVS target
+         * (selected via the GPIO_DVS pin, see Hekate's max7762x.c). HOS
+         * uses both for fast CPU/GPU DVFS. We surface both per chip for the
+         * tech to compare. */
+        struct max77621_rail {
+            u32 i2c_addr;
+            const char *name;
+            u32 vmin_uv;
+            u32 vmax_uv;
+        };
+        static const struct max77621_rail bc_rails[] = {
+            {MAX77621_CPU_I2C_ADDR, "CPU", 1000000, 1400000},
+            {MAX77621_GPU_I2C_ADDR, "GPU", 1200000, 1400000},
+        };
+        for (size_t r = 0; r < sizeof(bc_rails)/sizeof(bc_rails[0]); r++) {
+            u8 vout     = i2c_recv_byte(I2C_5, bc_rails[r].i2c_addr, MAX77621_REG_VOUT);
+            u8 vout_dvs = i2c_recv_byte(I2C_5, bc_rails[r].i2c_addr, MAX77621_REG_VOUT_DVS);
+            bool en     = (vout & MAX77621_VOUT_ENABLE_MASK) != 0;
+            bool en_dvs = (vout_dvs & MAX77621_VOUT_ENABLE_MASK) != 0;
+            u32 uv      = ((vout     & MAX77621_DVC_DVS_VOLT_MASK) * 6250) + 606250;
+            u32 uv_dvs  = ((vout_dvs & MAX77621_DVC_DVS_VOLT_MASK) * 6250) + 606250;
+            bool ok     = en && uv >= bc_rails[r].vmin_uv && uv <= bc_rails[r].vmax_uv;
+            log_color(ok ? COL_OK : COL_WARN,
+                "  %s VOUT     : %s %d.%03d V  (range %d.%03d - %d.%03d V)\n",
+                bc_rails[r].name,
+                en ? "ON " : "off",
+                uv / 1000000, (uv / 1000) % 1000,
+                bc_rails[r].vmin_uv / 1000000, (bc_rails[r].vmin_uv / 1000) % 1000,
+                bc_rails[r].vmax_uv / 1000000, (bc_rails[r].vmax_uv / 1000) % 1000);
+            log_color(COL_DEFAULT,
+                "  %s VOUT_DVS : %s %d.%03d V  (DVFS pre-load)\n",
+                bc_rails[r].name,
+                en_dvs ? "ON " : "off",
+                uv_dvs / 1000000, (uv_dvs / 1000) % 1000);
+        }
     }
+}
+
+/* MAX77812 — Mariko / OLED / Lite multi-phase buck regulator that
+ * replaces the dual MAX77621 setup found on Erista. Two retail
+ * variants exist:
+ *   PHASE211 @ I2C5 0x33 : 2-phase M1 (GPU) + 1-phase M3 (DRAM) +
+ *                          1-phase M4 (CPU). This is what every
+ *                          consumer Switch ships with.
+ *   PHASE31  @ I2C5 0x31 : 3-phase M1 + 1-phase M4. Dev-kit / high-power
+ *                          GPU variant; M3 is unused.
+ * Both probe with no harm — only one ACKs on a real board. We try
+ * 0x33 first (retail likelihood) and fall back to 0x31. If neither
+ * answers we mark the probe FAIL and skip; on Erista we don't run
+ * this probe at all.
+ *
+ * VOUT register encoding (M1..M4): vout_mv = 250 + N * 5, range
+ * 250..1525 mV (LV variant — Switch uses LV). Values quoted in
+ * the BDK's max77812.h match this. EN_CTRL holds per-phase enable
+ * bits at 0/2/4/6. BUCK_STAT reflects per-rail power-good /
+ * over-current latches; non-zero is a fault signal. */
+static u8 _max77812_probe_addr(u8 addr)
+{
+    /* Read VERSION register; valid silicon returns ES2_VERSION (0x04)
+     * or QS_VERSION (0x05) in the low 3 bits. A NACK on the bus
+     * surfaces as 0xFF; an unpowered chip as 0x00. Either way the
+     * masked-low-3-bits don't equal 4 or 5 so we reject. */
+    u8 ver = i2c_recv_byte(I2C_5, addr, MAX77812_REG_VERSION) & MAX77812_VERSION_MASK;
+    return (ver == MAX77812_ES2_VERSION || ver == MAX77812_QS_VERSION) ? ver : 0xFF;
+}
+
+static void probe_max77812(void)
+{
+    u32 chip_major = (APB_MISC(APB_MISC_GP_HIDREV) >> 4) & 0xF;
+    if (chip_major != 2) {
+        /* Erista doesn't have MAX77812; skip silently to keep the
+         * page list clean rather than emitting a "N/A" stub. */
+        return;
+    }
+    HEADER("[MAX77812 CPU/GPU/DRAM buck (Mariko), I2C5 @ 0x33/0x31]");
+
+    u8 addr = MAX77812_PHASE211_CPU_I2C_ADDR;
+    u8 ver  = _max77812_probe_addr(addr);
+    bool phase211 = true;
+    if (ver == 0xFF) {
+        addr = MAX77812_PHASE31_CPU_I2C_ADDR;
+        ver  = _max77812_probe_addr(addr);
+        phase211 = false;
+    }
+    if (ver == 0xFF) {
+        log_color(COL_ERR, "  No MAX77812 at either 0x33 or 0x31\n");
+        dx_set("max77812", DX_FAIL, "no MAX77812 ack");
+        return;
+    }
+    static const char *ver_str[] = {
+        [MAX77812_ES2_VERSION] = "ES2", [MAX77812_QS_VERSION] = "QS"
+    };
+    log_color(COL_OK,
+        "  Variant      : %s @ 0x%02X (%s silicon)\n",
+        phase211 ? "PHASE211 (retail)" : "PHASE31 (dev kit)",
+        addr, ver_str[ver]);
+
+    u8 en_ctrl   = i2c_recv_byte(I2C_5, addr, MAX77812_REG_EN_CTRL);
+    u8 buck_stat = i2c_recv_byte(I2C_5, addr, MAX77812_REG_BUCK_STAT);
+    u8 topsys    = i2c_recv_byte(I2C_5, addr, MAX77812_REG_TOPSYS_STAT);
+
+    /* Per-phase config: name + register offset + sane voltage range.
+     * On PHASE211 only M1 / M3 / M4 are populated; M2 reads back as
+     * the M1 master because of internal phase tying. We only enumerate
+     * the populated rails per variant. */
+    struct rail {
+        u8 vout_reg;
+        u8 en_mask;
+        const char *name;
+        u32 vmin_mv;
+        u32 vmax_mv;
+    };
+    /* PHASE211 retail layout: M1 = GPU, M3 = LPDDR4 VDD2 (1.1 V),
+     * M4 = CPU. Sane operating bands chosen to span the DVFS range
+     * documented for HOS plus a safety margin. */
+    static const struct rail rails_phase211[] = {
+        {MAX77812_REG_M1_VOUT, MAX77812_EN_CTRL_EN_M1_MASK, "M1 (GPU) ",  500, 1300},
+        {MAX77812_REG_M3_VOUT, MAX77812_EN_CTRL_EN_M3_MASK, "M3 (DRAM)",  900, 1200},
+        {MAX77812_REG_M4_VOUT, MAX77812_EN_CTRL_EN_M4_MASK, "M4 (CPU) ",  600, 1300},
+    };
+    static const struct rail rails_phase31[] = {
+        {MAX77812_REG_M1_VOUT, MAX77812_EN_CTRL_EN_M1_MASK, "M1 (GPU) ",  500, 1300},
+        {MAX77812_REG_M4_VOUT, MAX77812_EN_CTRL_EN_M4_MASK, "M4 (CPU) ",  600, 1300},
+    };
+    const struct rail *rails  = phase211 ? rails_phase211 : rails_phase31;
+    size_t       n_rails = phase211 ? sizeof(rails_phase211)/sizeof(rails_phase211[0])
+                                    : sizeof(rails_phase31)/sizeof(rails_phase31[0]);
+
+    int n_oob = 0, n_on = 0;
+    for (size_t i = 0; i < n_rails; i++) {
+        u8 vout = i2c_recv_byte(I2C_5, addr, rails[i].vout_reg);
+        u32 mv  = 250 + (vout & MAX77812_BUCK_VOLT_MASK) * 5;
+        bool en = (en_ctrl & rails[i].en_mask) != 0;
+        bool oob = en && (mv < rails[i].vmin_mv || mv > rails[i].vmax_mv);
+        if (en) n_on++;
+        if (oob) n_oob++;
+        u32 col = oob ? COL_ERR : (en ? COL_OK : COL_DEFAULT);
+        log_color(col,
+            "  %s    : %s  %d.%03d V  (range %d.%03d - %d.%03d V)%s\n",
+            rails[i].name,
+            en ? "ON " : "off",
+            mv / 1000, mv % 1000,
+            rails[i].vmin_mv / 1000, rails[i].vmin_mv % 1000,
+            rails[i].vmax_mv / 1000, rails[i].vmax_mv % 1000,
+            oob ? " WRONG" : "");
+    }
+
+    /* In RCM the BPMP runs hwtest with the A57 CPU and GPU offline and
+     * DRAM clocked through MAX77620 SD1 directly. MAX77812 is therefore
+     * expected to be present-but-dormant: chip ACKs, all rails off,
+     * EN_CTRL=0, no fault latches. Once HOS boots it brings the chip up.
+     * Surface this as a friendly "dormant" line instead of three "off"
+     * rails the tech might misread as faults. */
+    if (n_on == 0)
+        log_color(COL_DEFAULT,
+            "                 (all rails dormant - normal in RCM, HOS brings them up)\n");
+
+    LOG("  EN_CTRL      : 0x%02X\n", en_ctrl);
+    log_color(buck_stat ? COL_WARN : COL_OK,
+        "  BUCK_STAT    : 0x%02X%s\n", buck_stat,
+        buck_stat ? " (per-rail fault latch set - check rails above)" : "");
+    log_color(topsys ? COL_WARN : COL_OK,
+        "  TOPSYS_STAT  : 0x%02X%s\n", topsys,
+        topsys ? " (system-level fault: thermal / OV / UV)" : "");
+
+    /* Verdict: only fault on real signals. Rail-off in RCM is expected,
+     * not a fault. We FAIL when a rail is ON but VOUT is out of band
+     * (mis-programmed regulator) or when BUCK/TOPSYS latches are set. */
+    dx_set("max77812",
+        (n_oob || buck_stat || topsys) ? DX_FAIL : DX_PASS,
+        n_oob     ? "%d rails out of band" :
+        buck_stat ? "BUCK_STAT 0x%02X"     :
+        topsys    ? "TOPSYS_STAT 0x%02X"   : "",
+        n_oob ? n_oob : (buck_stat ? buck_stat : topsys));
 }
 
 static void probe_battery(void)
@@ -1802,6 +1947,47 @@ static void probe_touch(void)
     } else {
         log_color(COL_ERR, "  fw read FAILED\n");
     }
+}
+
+/* Rohm BH1730 ambient-light sensor on I2C2 @ 0x29. The ALS sits on the
+ * front bezel near the speaker grille and drives auto-brightness on
+ * stock HOS. A failing ALS makes the screen stuck at min or max
+ * brightness regardless of light, which a tech easily mistakes for a
+ * backlight or panel fault. Probe surfaces:
+ *   - chip ID byte (BH1730 returns 0x71: part 0x7, rev 0x1)
+ *   - configured gain / cycle (driver default = 64x, 38)
+ *   - raw visible / IR ADC counts after one integration window
+ *   - decoded lux (over-limit flagged when any channel saturates).
+ * als_power_on() enables LDO6 (already enabled by the regulator probe
+ * but idempotent), pinmuxes I2C2, and triggers a continuous-conversion
+ * mode. Default integration time is ~103 ms (cycle * 2.7 ms). */
+static void probe_als(void)
+{
+    HEADER("[BH1730 ambient light sensor, I2C2 @ 0x29]");
+    als_ctxt_t ctxt = {0};
+    u8 id = als_power_on(&ctxt);
+    bool id_ok = (id & 0xF0) == 0x70;
+    log_color(id_ok ? COL_OK : COL_ERR,
+        "  ID           : 0x%02X%s\n", id,
+        id_ok ? " (BH1730 verified)" : " (UNEXPECTED, no chip / I2C fault?)");
+    dx_set("als_id", id_ok ? DX_PASS : DX_FAIL,
+        id_ok ? "" : "ID 0x%02X != BH1730", id);
+    if (!id_ok)
+        return;
+
+    LOG("  Gain / cycle : %dx / %d\n",
+        (int[]){1,2,64,128}[ctxt.gain & 0x3], ctxt.cycle);
+
+    /* Wait one integration window (~103 ms at default cycle=38) so the
+     * first ADC sample is meaningful. The driver's continuous-conversion
+     * mode will keep updating after this. */
+    msleep(110);
+    get_als_lux(&ctxt);
+    log_color(ctxt.over_limit ? COL_WARN : COL_OK,
+        "  Visible      : %d counts%s\n", ctxt.vi_light,
+        ctxt.over_limit ? " (saturated)" : "");
+    LOG("  IR           : %d counts\n", ctxt.ir_light);
+    LOG("  Lux          : %d\n", ctxt.lux);
 }
 
 /* SD/eMMC global init state, reused by probe_storage and save_report. */
@@ -3775,18 +3961,19 @@ struct dx_macro {
 
 static const char *_k_boot[]    = { "soc_pmic_otp", "fuses_pkg1", NULL };
 static const char *_k_pmic[]    = { "pmic_rails", "pmic_nverc",
-                                    "pmic_irqsd", "pmic_intlbt", NULL };
+                                    "pmic_irqsd", "pmic_intlbt",
+                                    "max77812", NULL };
 static const char *_k_charger[] = { "charger_pg", "charger_fault",
-                                    "usb_pd", NULL };
+                                    "charger_batfet", "usb_pd", NULL };
 static const char *_k_battery[] = { "batt_health", "batt_ntc",
                                     "fuel_devname", "fuel_por", NULL };
 static const char *_k_thermal[] = { "soc_die_temp", "pcb_temp",
-                                    "fan_stalled", NULL };
+                                    "temp_agree", "fan_stalled", NULL };
 static const char *_k_storage[] = { "emmc_health", "emmc_bus", "sd_bus",
                                     "gpt", "kfuse", "prodinfo", NULL };
 static const char *_k_display[] = { "dsi_id", "backlight", NULL };
-static const char *_k_inputs[]  = { "touch_id", NULL };
-static const char *_k_memory[]  = { "dram_sym", NULL };
+static const char *_k_inputs[]  = { "touch_id", "als_id", NULL };
+static const char *_k_memory[]  = { "dram_sym", "dram_mr4", "plls", NULL };
 
 static const struct dx_macro _macros[] = {
     { "Boot integrity", _k_boot    },
@@ -3876,6 +4063,7 @@ static const struct page_entry g_pages[] = {
     /* Power & charging. Each probe gets its own LCD page; they all
      * share the "Power & charging" name so the host viewer groups them. */
     {probe_pmic,       "Power & charging"},
+    {probe_max77812,   "Power & charging"},
     {probe_pmic_gpios, "Power & charging"},
     {probe_regulators, "Power & charging"},
     {probe_5v,         "Power & charging"},
@@ -3905,8 +4093,9 @@ static const struct page_entry g_pages[] = {
     {probe_display,    "Display"},
     {probe_backlight,  "Display"},
 
-    /* Touch + Joy-Con + buttons. */
+    /* Touch + Joy-Con + buttons + ambient light. */
     {probe_touch,      "Inputs"},
+    {probe_als,        "Inputs"},
     {probe_joycon,     "Inputs"},
     {probe_inputs,     "Inputs"},
 

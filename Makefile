@@ -52,7 +52,7 @@ COMMON_OBJS = \
     sdmmc.o sdmmc_driver.o sd.o emmc.o nx_emmc_bis.o \
     bq24193.o max17050.o max7762x.o max77620-rtc.o bm92t36.o regulator_5v.o \
     tmp451.o \
-    touch.o \
+    touch.o als.o \
     hw_init.o \
     ff.o ffsystem.o ffunicode.o diskio.o
 
