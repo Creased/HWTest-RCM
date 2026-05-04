@@ -1060,7 +1060,16 @@ static void probe_5v(void)
 static void probe_pmic_gpios(void)
 {
     HEADER("[MAX77620 GPIOs]");
-    static const struct {
+    /* GPIO5/GPIO6 are FPS (Flexible Power Sequencer) source pins to the
+     * external buck regulator. On Erista that's the dual MAX77621
+     * (separate CPU and GPU chips); on Mariko/OLED/Lite it's the
+     * multi-phase MAX77812 (M1=GPU, M4=CPU). Pick the label per SoC. */
+    bool mariko = (((APB_MISC(APB_MISC_GP_HIDREV) >> 4) & 0xF) == 2);
+    const char *cpu_role = mariko ? "FPS - MAX77812 M4 (CPU)"
+                                  : "FPS - CPU MAX77621";
+    const char *gpu_role = mariko ? "FPS - MAX77812 M1 (GPU)"
+                                  : "FPS - GPU MAX77621";
+    const struct {
         u8 idx;
         const char *role;
     } pins[] = {
@@ -1069,8 +1078,8 @@ static void probe_pmic_gpios(void)
         {2, "generic"},
         {3, "FPS - 3.3V rail"},
         {4, "generic"},
-        {5, "FPS - CPU MAX77621"},
-        {6, "FPS - GPU MAX77621"},
+        {5, cpu_role},
+        {6, gpu_role},
         {7, "FPS - LDO0 (DSI 1.2V)"},
     };
     for (size_t i = 0; i < sizeof(pins)/sizeof(pins[0]); i++) {
@@ -1082,6 +1091,31 @@ static void probe_pmic_gpios(void)
         int out_val = (reg & 0x08) ? 1 : 0;
         LOG("  GPIO%d        : 0x%02X  %s %s  IN=%d OUT=%d  (%s)\n",
             pins[i].idx, reg, dir, drv, in_val, out_val, pins[i].role);
+    }
+
+    /* FPS (Flexible Power Sequencer) configuration. The MAX77620 has
+     * three FPS masters (FPS0, FPS1, FPS2) and each rail / GPIO can be
+     * assigned to one of them with a per-rail slot in the sequence.
+     * Reading FPS_CFGx surfaces the master config:
+     *   bit 0   ENFPS_SW   - SW-controlled enable
+     *   bits 2:1 EN_SRC    - which event triggers this FPS master
+     *   bits 5:3 TIME_PERIOD - per-slot dwell time, encoded as
+     *               40 us << N (so 0=40us .. 6=2560us, 7=reserved).
+     * Switch HOS programs FPS0 to a 1280-2560 us slot period; a
+     * mis-configured (very short) period can race rail ramp times
+     * and explain otherwise-mysterious boot stalls. */
+    static const u8 fps_regs[3] = {
+        MAX77620_REG_FPS_CFG0, MAX77620_REG_FPS_CFG1, MAX77620_REG_FPS_CFG2
+    };
+    for (int f = 0; f < 3; f++) {
+        u8 cfg = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, fps_regs[f]);
+        u8 tp_code = (cfg & MAX77620_FPS_TIME_PERIOD_MASK)
+                     >> MAX77620_FPS_TIME_PERIOD_SHIFT;
+        u8 en_src  = (cfg & MAX77620_FPS_EN_SRC_MASK)
+                     >> MAX77620_FPS_EN_SRC_SHIFT;
+        u32 tp_us  = tp_code < 7 ? (40u << tp_code) : 0;
+        LOG("  FPS%d cfg     : 0x%02X (slot=%d us, src=%d, sw_en=%d)\n",
+            f, cfg, tp_us, en_src, cfg & MAX77620_FPS_ENFPS_SW_MASK);
     }
 }
 
