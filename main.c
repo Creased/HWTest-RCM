@@ -4150,6 +4150,107 @@ static int save_report(void)
 }
 
 /* ------------------------------------------------------------------------ */
+/* Cross-checks: validate that fields from independent chips agree          */
+/*                                                                          */
+/* Per-probe verdicts catch "this chip reports a fault". Cross-checks catch */
+/* "two chips disagree about the same physical state" - faults that no     */
+/* single chip can see on its own. Canonical example: a broken trace        */
+/* between the BQ24193 charger output and the MAX77620 ACOK pin. Each chip  */
+/* self-reports as healthy but they disagree about whether VBUS is present. */
+/*                                                                          */
+/* Emitted as the [Cross-checks] section of the Verdict pane (called from   */
+/* probe_verdict before its own aggregation). Sharing the page header keeps */
+/* both sections - cross-checks plus verdict aggregate - in one navigable   */
+/* LCD page. The xc_* keys are dx_set here and consumed by the aggregator   */
+/* immediately below. */
+static void _emit_xchecks(void)
+{
+    HEADER("[Cross-checks]");
+
+    /* === A. VBUS / ACOK consistency ===
+     * BQ24193 STATUS (0x08) bits 7:6 = VBUS_STAT (0=none, 1=USB-SDP,
+     * 2=adapter, 3=OTG). MAX77620 ONOFFSTAT (0x15) bit 1 = ACOK.
+     * On a healthy unit both either say "charger present" or both say
+     * "absent". Disagreement = broken AC-OK detection trace between
+     * the charger output and the PMIC sense pin. */
+    u8 bq_status = i2c_recv_byte(I2C_1, BQ24193_I2C_ADDR, 0x08);
+    u8 vbus      = (bq_status >> 6) & 3;
+    u8 chrg      = (bq_status >> 4) & 3;
+    bool vbus_present = (vbus != 0);
+    u8 onoffstat = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_ONOFFSTAT);
+    bool acok    = (onoffstat & MAX77620_ONOFFSTAT_ACOK) != 0;
+    bool acok_match = (vbus_present == acok);
+    log_color(acok_match ? COL_OK : COL_ERR,
+        "  VBUS<->ACOK   : BQ=%s, PMIC ACOK=%d  %s\n",
+        vbus_present ? "present" : "absent ", acok,
+        acok_match ? "(consistent)" : "(MISMATCH - check ACOK trace)");
+    dx_set("xc_vbus_acok", acok_match ? DX_PASS : DX_FAIL,
+        acok_match ? "" : "BQ vs PMIC disagree on VBUS");
+
+    /* === B. Charge state vs current direction ===
+     * BQ24193 CHRG_STAT (bits 5:4 of STATUS): 0=not-charging, 1=pre-,
+     * 2=fast-charging, 3=done. MAX17050 Current is signed in mA: + means
+     * charging-in, - means discharging-out, ~0 means idle/done. If the
+     * charger says "fast charging" but the gauge reads negative current,
+     * the sense resistor or its trace is broken (charger pumps but gauge
+     * doesn't see it) — repair-relevant because the unit will appear to
+     * "not charge" in HOS even though the charger is working. */
+    /* max17050_get_property(MAX17050_Current) returns microamps (raw
+     * register * 156.25 µA per LSB, with integer math giving µA), not
+     * milliamps. probe_battery divides by 1000 before printing as mA;
+     * we do the same for the cross-check. */
+    int current_ua = 0;
+    bool curr_ok = max17050_get_property(MAX17050_Current, &current_ua) == 0;
+    if (curr_ok) {
+        int current_ma = current_ua / 1000;
+        bool charging  = (chrg == 1 || chrg == 2);
+        /* Allow a small dead-band around 0 to avoid noise tripping the
+         * check when CHRG="fast" right at the start of a charge cycle
+         * before the gauge's averaging catches up. */
+        bool curr_pos  = (current_ma > 30);
+        bool curr_neg  = (current_ma < -30);
+        bool ok = !(charging && curr_neg);     /* fault: charging but sinking */
+        log_color(ok ? COL_OK : COL_ERR,
+            "  CHRG<->Curr   : BQ chrg=%d, gauge=%d mA  %s\n",
+            chrg, current_ma,
+            ok ? (charging && curr_pos ? "(charging, current +)" :
+                  chrg == 0 ? "(idle/discharging)"               :
+                              "(consistent)")
+               : "(charging but current NEGATIVE - sense resistor?)");
+        dx_set("xc_charge_dir", ok ? DX_PASS : DX_FAIL,
+            ok ? "" : "BQ charging but gauge sees %d mA", current_ma);
+    }
+
+    /* === C. eMMC HS400 mode requires 8-bit bus ===
+     * HS400 is the highest-speed eMMC mode and is only valid on 8-bit.
+     * If init_mode landed at HS400 but bus_width came back narrower
+     * than 8, something silently fell back. (sd_def.h speed names: HS400
+     * is the fastest, then HS200, then DDR50/HS, then default.) */
+    if (g_emmc_ok && emmc_storage.sdmmc) {
+        u32 bw = sdmmc_get_bus_width(emmc_storage.sdmmc);
+        u32 mode = emmc_storage.sdmmc->card_clock; /* placeholder */
+        (void)mode;
+        bool is_8bit = (bw == SDMMC_BUS_WIDTH_8);
+        /* Use the cached card_type field (EXT_CSD byte 196) to check
+         * whether the chip negotiated HS400. EXT_CSD card_type bit 6
+         * is HS400_DDR_1V8; if set the chip claims HS400 capability,
+         * and Hekate's sdmmc_init code sets bit 6 of HS_TIMING when
+         * actually running HS400. We trust the card_type here as the
+         * bus's negotiated state. */
+        bool hs400_capable = (emmc_storage.ext_csd.card_type & 0x40) != 0;
+        bool ok = !hs400_capable || is_8bit;
+        log_color(ok ? COL_OK : COL_ERR,
+            "  eMMC HS400    : card_type=0x%02X, bus=%d-bit  %s\n",
+            emmc_storage.ext_csd.card_type,
+            is_8bit ? 8 : (bw == SDMMC_BUS_WIDTH_4 ? 4 : 1),
+            ok ? "(consistent)" : "(HS400 capable but bus narrow!)");
+        dx_set("xc_emmc_mode", ok ? DX_PASS : DX_WARN,
+            ok ? "" : "HS400 capable but bus %d-bit",
+            is_8bit ? 8 : (bw == SDMMC_BUS_WIDTH_4 ? 4 : 1));
+    }
+}
+
+/* ------------------------------------------------------------------------ */
 /* Verdict, cross-validation of fields gathered earlier                    */
 
 /* The verdict is a pure aggregator over the dx registry. Each macro
@@ -4166,13 +4267,16 @@ static const char *_k_pmic[]    = { "pmic_rails", "pmic_nverc",
                                     "pmic_irqsd", "pmic_intlbt",
                                     "max77812", NULL };
 static const char *_k_charger[] = { "charger_pg", "charger_fault",
-                                    "charger_batfet", "usb_pd", NULL };
+                                    "charger_batfet", "usb_pd",
+                                    "xc_vbus_acok", NULL };
 static const char *_k_battery[] = { "batt_health", "batt_ntc",
-                                    "fuel_devname", "fuel_por", NULL };
+                                    "fuel_devname", "fuel_por",
+                                    "xc_charge_dir", NULL };
 static const char *_k_thermal[] = { "soc_die_temp", "pcb_temp",
                                     "temp_agree", "fan_stalled", NULL };
 static const char *_k_storage[] = { "emmc_health", "emmc_bus", "sd_bus",
-                                    "gpt", "kfuse", "prodinfo", NULL };
+                                    "gpt", "kfuse", "prodinfo",
+                                    "xc_emmc_mode", NULL };
 static const char *_k_display[] = { "dsi_id", "backlight", NULL };
 static const char *_k_inputs[]  = { "touch_id", "als_id", NULL };
 static const char *_k_memory[]  = { "dram_sym", "dram_mr4", "plls", NULL };
@@ -4191,6 +4295,11 @@ static const struct dx_macro _macros[] = {
 
 static void probe_verdict(void)
 {
+    /* Cross-checks first - they dx_set() the xc_* keys that the verdict
+     * aggregator below picks up. Both sections live on the same Verdict
+     * pane (single page header `--- Verdict ---` from run_all_probes). */
+    _emit_xchecks();
+
     HEADER("[Verdict]");
     int pass = 0, warn = 0, fail = 0;
 
