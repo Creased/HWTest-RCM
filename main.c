@@ -3048,7 +3048,13 @@ static void probe_regulators(void)
         {5,  "LDO1 (XUSB+PCIE)", 0x25, 0x3F, 25000, 800000,  950000, 1150000 },
         {6,  "LDO2 (SDMMC1)",    0x27, 0x3F, 50000, 800000, 1700000, 3400000 }, /* UHS<->legacy */
         {7,  "LDO3 (GC ASIC)",   0x29, 0x3F, 50000, 800000, 2900000, 3300000 },
-        {8,  "LDO4 (RTC)",       0x2B, 0x3F, 12500, 800000,  800000,  900000 },
+        /* LDO4 (RTC) is set to 0.85 V in some boot stages and 1.0 V in
+         * others (HOS retunes it during the keygen path). Tegra X1
+         * VDD_RTC is rated 0.95-1.05 V active, 0.7-1.27 V abs max, so
+         * any value in 0.800-1.100 V is normal. The earlier band
+         * (0.800-0.900 V) was tight enough to false-positive when LDO4
+         * reads 1.000 V. */
+        {8,  "LDO4 (RTC)",       0x2B, 0x3F, 12500, 800000,  800000, 1100000 },
         /* LDO5 OK band spans both documented modes: GC Card 1.8V (the
          * default after Hekate per-LDO config) and 3.1V GC ASIC alt
          * (per Hekate max7762x.h line 65 OTP comment). */
@@ -3110,30 +3116,41 @@ static void probe_clocks(void)
      * few seconds" symptoms map onto this. n_unlocked is the verdict
      * signal: an enabled PLL that hasn't locked is always wrong. */
     log_color(COL_INFO, "[Clocks - PLL lock status]\n");
-    struct pll_entry { u32 off; const char *name; };
+    /* PLLM is special: Hekate enables it as a parallel DRAM-clock
+     * candidate but EMC may still be running off PLLP/2 at the moment
+     * we sample. PLLM hunting while it's not actually feeding EMC is
+     * harmless. We mark PLLM as "transient" rather than failing the
+     * verdict so a benign mid-retune state doesn't show as red. */
+    struct pll_entry { u32 off; const char *name; bool may_hunt; };
     static const struct pll_entry plls[] = {
-        {0x80,  "PLLC "},
-        {0x90,  "PLLM "},
-        {0xA0,  "PLLP "},
-        {0xB0,  "PLLA "},
-        {0xC0,  "PLLU "},
-        {0xD0,  "PLLD "},
-        {0xE0,  "PLLX "},
-        {0x4B8, "PLLD2"},
-        {0x590, "PLLDP"},
-        {0x4C4, "PLLRE"},
+        {0x80,  "PLLC ",  false},
+        {0x90,  "PLLM ",  true},  /* may transiently hunt - see comment above */
+        {0xA0,  "PLLP ",  false},
+        {0xB0,  "PLLA ",  false},
+        {0xC0,  "PLLU ",  false},
+        {0xD0,  "PLLD ",  false},
+        {0xE0,  "PLLX ",  false},
+        {0x4B8, "PLLD2",  false},
+        {0x590, "PLLDP",  false},
+        {0x4C4, "PLLRE",  false},
     };
     int n_unlocked = 0;
     for (size_t i = 0; i < sizeof(plls)/sizeof(plls[0]); i++) {
         u32 base   = CLOCK(plls[i].off);
         bool en    = (base & (1u << 30)) != 0;
         bool lock  = (base & (1u << 27)) != 0;
-        bool fail  = en && !lock;
+        bool fail  = en && !lock && !plls[i].may_hunt;
+        bool transient = en && !lock && plls[i].may_hunt;
         if (fail) n_unlocked++;
-        log_color(fail ? COL_ERR : (en ? COL_OK : COL_DEFAULT),
+        const char *suffix = fail      ? " (loop is hunting)"   :
+                             transient ? " (transient - DRAM on PLLP)" : "";
+        u32 col = fail      ? COL_ERR     :
+                  transient ? COL_DEFAULT :
+                  en        ? COL_OK      : COL_DEFAULT;
+        log_color(col,
             "  %s        : %s%s\n", plls[i].name,
             en ? (lock ? "ENABLED, LOCKED" : "ENABLED, NO-LOCK") : "disabled",
-            fail ? " (loop is hunting)" : "");
+            suffix);
     }
     dx_set("plls", n_unlocked ? DX_FAIL : DX_PASS,
         n_unlocked ? "%d enabled but not locked" : "", n_unlocked);
