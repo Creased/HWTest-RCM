@@ -4364,7 +4364,7 @@ static const struct page_entry g_pages[] = {
     /* Index 0: top-level verdict. Depends on globals populated by every
      * other probe, so run_all_probes runs it LAST. The pager shows it
      * as the first navigable page. */
-    {probe_verdict,    "Verdict"},
+    {probe_verdict,    "Diagnostics"},
 
     /* Identity. */
     {probe_soc,        "SoC"},
