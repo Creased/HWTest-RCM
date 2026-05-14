@@ -3763,10 +3763,32 @@ static void probe_boot0_pkg1(void)
         }
     }
 
-    /* Anti-downgrade cross-check: burnt fuses must be >= the minimum
-     * fuse count the detected HOS version requires, otherwise the eMMC
-     * was restored from a console with newer firmware (illegal
-     * downgrade). Mapping mirrors Hekate's _pkg1_ids[].fuses field. */
+    /* Anti-downgrade cross-check: HOS at boot compares the burnt fuse
+     * count against the minimum its pkg1 requires. Two failure modes:
+     *
+     *   burnt < required  -> eMMC was restored from a console with
+     *                        older HOS that hadn't yet burnt the fuses
+     *                        the current pkg1 needs. HOS refuses boot
+     *                        because it thinks the bootrom is too old.
+     *                        FAIL — the only fix is to downgrade pkg1
+     *                        to match, or burn fuses manually.
+     *
+     *   burnt > required  -> the inverse: this console was once on a
+     *                        newer HOS that burnt the next anti-
+     *                        downgrade fuse, then someone downgraded
+     *                        pkg1 to an older version. OFW black-screens
+     *                        at boot (the kernel reaches secure-monitor
+     *                        init, sees the fuse mismatch, halts). CFW
+     *                        like Atmosphère patches this check and
+     *                        still boots — this is the classic
+     *                        "OFW dead, CFW only" Switch state.
+     *                        FAIL with diagnostic so the tech knows
+     *                        the symptom comes from an over-burn.
+     *
+     * Mapping mirrors Hekate's _pkg1_ids[].fuses field. Note the
+     * table is per-pkg1-timestamp; a console at HOS 20.4.0 with the
+     * 20.0.0-20.5.0 pkg1 timestamp expects 21 burnt. 22 burnt means
+     * the console was once on 20.6+ and downgraded. */
     if (pk1_hos_idx >= 0) {
         int burnt = __builtin_popcount(fuse_read_odm(7));
         static const u8 kFusesByIdx[] = {
@@ -3776,10 +3798,10 @@ static void probe_boot0_pkg1(void)
         };
         int min_f = kFusesByIdx[pk1_hos_idx];
         dx_set("fuses_pkg1",
-            burnt < min_f         ? DX_FAIL :
-            burnt > min_f + 2     ? DX_WARN : DX_PASS,
-            burnt < min_f     ? "%d burnt < %d expected" :
-            burnt > min_f + 2 ? "%d burnt > %d expected" : "",
+            burnt < min_f ? DX_FAIL :
+            burnt > min_f ? DX_FAIL : DX_PASS,
+            burnt < min_f ? "%d burnt < %d (HOS pkg1 too NEW for this console)" :
+            burnt > min_f ? "%d burnt > %d (OFW won't boot - CFW only)" : "",
             burnt, min_f);
     }
 
