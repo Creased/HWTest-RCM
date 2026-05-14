@@ -2036,6 +2036,18 @@ static void probe_touch(void)
 static void probe_als(void)
 {
     HEADER("[BH1730 ambient light sensor, I2C2 @ 0x29]");
+    /* Switch Lite (HOAG) ships without the BH1730 — Nintendo omitted
+     * the ambient-light sensor on Lite (which is why auto-brightness
+     * is absent from Lite settings). Reading the I2C bus there gets
+     * NACK -> 0x00, which would otherwise false-FAIL the Inputs
+     * verdict. Short-circuit on HOAG with a clear "N/A" line and a
+     * neutral verdict. */
+    if (fuse_read_hw_type() == FUSE_NX_HW_TYPE_HOAG) {
+        log_color(COL_DEFAULT,
+            "  N/A          : Switch Lite has no ALS (auto-brightness omitted)\n");
+        dx_set("als_id", DX_PASS, "N/A on Lite");
+        return;
+    }
     als_ctxt_t ctxt = {0};
     u8 id = als_power_on(&ctxt);
     bool id_ok = (id & 0xF0) == 0x70;
