@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Build both variants
+        run: make all
+
+      - name: Show artifact sizes
+        run: ls -l build/hwtest.bin build-jc/hwtest_jc.bin
+
+      - name: Upload workflow artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: hwtest-bins
+          path: |
+            build/hwtest.bin
+            build-jc/hwtest_jc.bin
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/hwtest.bin
+            build-jc/hwtest_jc.bin
+          fail_on_unmatched_files: true
+          generate_release_notes: true
