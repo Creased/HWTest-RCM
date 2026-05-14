@@ -4036,11 +4036,16 @@ static void probe_sd_content(void)
     }
 
     /* Atmosphère version sources, in order of preference:
-     *   1. /atmosphere/release.txt   (older releases)
-     *   2. /atmosphere/version       (newer releases use this name)
-     * Either is plain ASCII like "1.7.1". If both are absent we still
-     * report whether /atmosphere/contents has any sysmodule directories
-     * as a fallback presence indicator. */
+     *   1. /atmosphere/release.txt   (older official releases)
+     *   2. /atmosphere/version       (newer official releases)
+     *   3. /manifest.json            (HATS pack - structured JSON,
+     *                                 most reliable source for HATS users)
+     *   4. /HATS_VERSION.txt         (HATS pack - markdown fallback)
+     * HATS doesn't ship the two official files; everything goes in
+     * manifest.json + HATS_VERSION.txt at SD root. JSON is preferred
+     * over markdown because the parsing is more deterministic.
+     * If all four are absent we report whether /atmosphere/contents/
+     * exists as a fallback presence indicator. */
     static const char *ams_paths[] = {
         "0:/atmosphere/release.txt",
         "0:/atmosphere/version",
@@ -4060,6 +4065,102 @@ static void probe_sd_content(void)
             buf[0] ? buf : "(empty)", ams_paths[i] + 2);  /* skip "0:" */
         ams_found = true;
         break;
+    }
+    /* HATS pack fallback A - look for manifest.json at SD root.
+     * Structured JSON, the most reliable HATS source. Layout:
+     *   {
+     *     ...
+     *     "components": {
+     *       "atmosphere": {
+     *         "name": "Atmosphere",
+     *         "version": "1.11.1",
+     *         ...
+     * Strategy: find the "atmosphere" key (this appears once near the
+     * top), then find the next "version" key after it, then read the
+     * quoted string value. The full file can be ~22 KB but the
+     * atmosphere block is in the first ~500 bytes so a 4 KB read is
+     * plenty. */
+    if (!ams_found) {
+        FRESULT fr = f_open(&fp, "0:/manifest.json", FA_READ);
+        if (fr == FR_OK) {
+            static char buf[4096];
+            UINT br = 0;
+            f_read(&fp, buf, sizeof(buf) - 1, &br);
+            f_close(&fp);
+            buf[br] = 0;
+            const char *atmo_needle = "\"atmosphere\"";
+            const u32   atmo_n = 12;
+            const char *p = buf;
+            const char *end = buf + br;
+            for (; p + atmo_n < end; p++)
+                if (memcmp(p, atmo_needle, atmo_n) == 0) break;
+            if (p + atmo_n < end) {
+                p += atmo_n;
+                const char *ver_needle = "\"version\"";
+                const u32   ver_n = 9;
+                for (; p + ver_n < end; p++)
+                    if (memcmp(p, ver_needle, ver_n) == 0) break;
+                if (p + ver_n < end) {
+                    p += ver_n;
+                    /* Skip past `:` and the opening `"`. */
+                    while (p < end && *p != '"') p++;
+                    if (p < end && *p == '"') {
+                        p++;
+                        char ver[16] = {0};
+                        int vlen = 0;
+                        while (vlen < 15 && p < end && *p != '"')
+                            ver[vlen++] = *p++;
+                        log_color(COL_OK,
+                            "  atmosphere   : %s (HATS manifest)\n",
+                            ver[0] ? ver : "(unknown)");
+                        ams_found = true;
+                    }
+                }
+            }
+        }
+    }
+    /* HATS pack fallback B - look for HATS_VERSION.txt at SD root and
+     * grep a "**Atmosphere** (X.Y.Z)" markdown line from its content.
+     * Used when manifest.json is absent (older HATS pack revisions
+     * shipped only the text changelog). Format snippet:
+     *   - **Atmosphere** (1.11.1) - Atmosphere-NX/Atmosphere
+     * The bold-wrap "**Atmosphere**" appears exactly once at the
+     * version-listing line; "Atmosphere" plain reappears later as
+     * "Atmosphere-NX/Atmosphere" which we avoid by anchoring on the
+     * markdown bold markers. */
+    if (!ams_found) {
+        FRESULT fr = f_open(&fp, "0:/HATS_VERSION.txt", FA_READ);
+        if (fr == FR_OK) {
+            static char buf[2048];
+            UINT br = 0;
+            f_read(&fp, buf, sizeof(buf) - 1, &br);
+            f_close(&fp);
+            buf[br] = 0;
+            const char *needle = "**Atmosphere**";
+            const u32   needle_n = 14;
+            const char *p = buf;
+            for (; p + needle_n < buf + br; p++) {
+                if (memcmp(p, needle, needle_n) == 0) break;
+            }
+            if (p + needle_n < buf + br) {
+                /* Skip past the bold markers and any whitespace, then
+                 * find the opening '(' that wraps the version literal. */
+                p += needle_n;
+                while (p < buf + br && *p != '(' && *p != '\n') p++;
+                if (p < buf + br && *p == '(') {
+                    p++;
+                    char ver[16] = {0};
+                    int vlen = 0;
+                    while (vlen < 15 && p < buf + br
+                           && *p != ')' && *p != '\n')
+                        ver[vlen++] = *p++;
+                    log_color(COL_OK,
+                        "  atmosphere   : %s (HATS pack)\n",
+                        ver[0] ? ver : "(unknown)");
+                    ams_found = true;
+                }
+            }
+        }
     }
     if (!ams_found) {
         FILINFO ams_fi;
