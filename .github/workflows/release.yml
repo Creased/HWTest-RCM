@@ -6,8 +6,14 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# TODO(2026-06-02): remove this env block. Node.js 24 becomes the runner
+# default on that date, making this opt-in a no-op. Node 20 is fully removed
+# on 2026-09-16, so the latest safe deletion date is mid-September 2026.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
-  build:
+  build-bins:
     runs-on: ubuntu-latest
     container: devkitpro/devkitarm:latest
     permissions:
@@ -43,5 +49,69 @@ jobs:
           files: |
             build/hwtest.bin
             build-jc/hwtest_jc.bin
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+
+  build-exe:
+    # Windows .exe build for host_tools/hwtest_viewer.py. Runs in parallel
+    # with build-bins; both publish to the same GitHub Release on tag pushes.
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        # No submodules needed -- host_tools is pure Python with no native deps
+        # beyond what pip pulls in.
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: host_tools/requirements.txt
+
+      - name: Install dependencies
+        working-directory: host_tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build hwtest_viewer.exe
+        working-directory: host_tools
+        # --onefile  : single self-contained .exe; bundles the Python
+        #   interpreter so end users don't need Python installed.
+        # --windowed : no console window pops up when launched from Explorer.
+        #   The script's CLI args (--port, --baud, --replay) are all optional
+        #   and still work when invoked from cmd/PowerShell, but the default
+        #   double-click flow goes straight into the imgui GUI.
+        # --collect-all imgui_bundle : imgui-bundle ships native DLLs and font
+        #   assets that PyInstaller's static scan misses; without this the
+        #   built exe crashes on import. Mandatory.
+        run: >
+          pyinstaller
+          --onefile
+          --windowed
+          --name hwtest_viewer
+          --collect-all imgui_bundle
+          hwtest_viewer.py
+
+      - name: Show artifact size
+        working-directory: host_tools
+        run: dir dist\hwtest_viewer.exe
+
+      - name: Upload workflow artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: hwtest-viewer-exe
+          path: host_tools/dist/hwtest_viewer.exe
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: host_tools/dist/hwtest_viewer.exe
           fail_on_unmatched_files: true
           generate_release_notes: true
