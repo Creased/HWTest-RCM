@@ -685,8 +685,10 @@ static void probe_battery(void)
     if (max17050_get_property(MAX17050_Age, &v) == 0)
         LOG("  Age          : %d %%\n", v);
     if (max17050_get_property(MAX17050_Cycles, &v) == 0) {
-        log_color(health_color(v, HEALTH_NONE, 200, HEALTH_NONE, 500),
-            "  Cycles       : %d\n", v);
+        /* Cycle count is purely informational: a high count on an otherwise
+         * healthy pack is normal, not a fault. FullCap-vs-DesignCap above is
+         * the actual wear signal. */
+        LOG("  Cycles       : %d\n", v);
     }
 
     /* Predictive / learning fields not exposed by max17050_get_property:
