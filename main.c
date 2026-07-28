@@ -1884,7 +1884,21 @@ static void probe_backlight(void)
      * pinmux routed to PWM0 means the WLED driver is being clocked.
      * This is the strongest signal we can get without poking the
      * driver IC over its own bus (which the Switch doesn't expose). */
-    if (pwm_en && pwm_mode && pwm_duty > 0) {
+    /* Mariko OLED (AULA, Samsung AMS699VC01) has NO PWM backlight: the
+     * panel is self-emissive and brightness is a MIPI-DCS command carried
+     * over DSI, with Hekate stashing the level in DC_DCS_BACKLIGHT_LEVEL.
+     * On AULA the PWM path sitting idle is the *expected* state, so judging
+     * it against PWM0 (the LCD path below) wrongly flags every OLED unit.
+     * Branch on the decoded panel ID and validate the DCS level instead. */
+    bool is_oled = (display_get_decoded_panel_id() == PANEL_SAM_AMS699VC01);
+    if (is_oled) {
+        bool lit = (dcs_lvl != 0);
+        log_color(lit ? COL_OK : COL_WARN,
+            "  Verdict      : OLED (AULA) DCS backlight 0x%08X%s\n",
+            dcs_lvl, lit ? "" : " (level 0 - screen dark)");
+        dx_set("backlight", lit ? DX_PASS : DX_WARN,
+            lit ? "" : "OLED DCS level 0");
+    } else if (pwm_en && pwm_mode && pwm_duty > 0) {
         log_color(COL_OK,
             "  Verdict      : PWM0 driving BL_PWM @ duty %d - backlight lit\n",
             pwm_duty);
