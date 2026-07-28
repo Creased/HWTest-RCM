@@ -399,7 +399,9 @@ static void probe_fuses(void)
         FUSE(FUSE_PRIVATE_KEY3) == 0xFFFFFFFF &&
         FUSE(FUSE_PRIVATE_KEY4) == 0xFFFFFFFF;
     if (locked) {
-        log_color(COL_WARN, "  SBK / DK     : locked out (bootrom)\n");
+        /* SBK/DK reading all-0xFFFFFFFF is the bootrom locking them out
+         * post-pkg1 -- the normal, expected state, not a fault or warning. */
+        log_color(COL_DEFAULT, "  SBK / DK     : locked out (bootrom)\n");
     } else {
         LOG("  SBK          : %08X%08X%08X%08X\n",
             byte_swap_32(FUSE(FUSE_PRIVATE_KEY0)),
