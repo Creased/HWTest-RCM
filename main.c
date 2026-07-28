@@ -1755,40 +1755,13 @@ static void probe_dram(void)
     dx_set("dram_sym", (sym0 && sym1) ? DX_PASS : DX_FAIL,
         (sym0 && sym1) ? "" : "channel asymmetry");
 
-    /* MR4 Refresh Rate / Temperature class (per JEDEC LPDDR4):
-     *   bits 2:0 RR encode:
-     *     000 below operating limit (very cold)
-     *     001 4x refresh (<=45 C)
-     *     010 2x refresh (<=65 C)
-     *     011 1x refresh, normal (65..85 C)
-     *     100 0.5x refresh (85..95 C, derating required)
-     *     101 0.25x refresh (95..105 C, derating)
-     *     110 high-temp + DRT (105..125 C, vendor-specific)
-     *     111 above operating limit (>125 C, shutdown imminent)
-     *   bit 7   TUF (temperature update flag)
-     * MR4 reading "high temp" while TMP451 reads cool means the LPDDR
-     * has a hotspot or torn die - useful triage signal. */
-    emc_mr_data_t mr4 = sdram_read_mrx(MR4_TEMP);
-    static const char *rr_str[8] = {
-        "below limit",       "4x refresh",          "2x refresh",
-        "1x normal",         "0.5x refresh",        "0.25x refresh",
-        "high-temp + DRT",   "above limit (>125C)"
-    };
-    int n_dram_warm = 0;
-    for (int c = 0; c < 2; c++) {
-        u8 m = c ? mr4.chip1.rank0_ch0 : mr4.chip0.rank0_ch0;
-        u8 rr = m & 0x7;
-        bool tuf = (m & 0x80) != 0;
-        u32 col = (rr >= 6) ? COL_ERR
-                : (rr >= 4 || rr <= 1) ? COL_WARN
-                : COL_OK;
-        if (rr >= 4) n_dram_warm++;
-        log_color(col,
-            "  Chip %d MR4   : 0x%02X (%s%s)\n",
-            c, m, rr_str[rr], tuf ? ", TUF" : "");
-    }
-    dx_set("dram_mr4", n_dram_warm ? DX_WARN : DX_PASS,
-        n_dram_warm ? "%d die in derating mode" : "", n_dram_warm);
+    /* NOTE: the MR4 (per-die refresh-rate / thermal class) readout was
+     * removed. In the RCM/BPMP context the LPDDR MR4 mode-register read
+     * does not return a trustworthy live value, so a threshold test on it
+     * produced false signals. Catching bad DRAM (marginal cells that stall
+     * HOS boot) requires a trained controller plus an actual R/W stress
+     * march -- a real memtester -- which is out of scope for this passive
+     * single-pass probe. */
 }
 
 static void probe_display(void)
@@ -4386,7 +4359,7 @@ static const char *_k_storage[] = { "emmc_health", "emmc_bus", "sd_bus",
                                     "xc_emmc_mode", NULL };
 static const char *_k_display[] = { "dsi_id", "backlight", NULL };
 static const char *_k_inputs[]  = { "touch_id", "als_id", NULL };
-static const char *_k_memory[]  = { "dram_sym", "dram_mr4", "plls", NULL };
+static const char *_k_memory[]  = { "dram_sym", "plls", NULL };
 
 static const struct dx_macro _macros[] = {
     { "Boot integrity", _k_boot    },
