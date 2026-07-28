@@ -1280,32 +1280,13 @@ static void probe_thermal(void)
     LOG("  PCB limits   : low %d C / high %d C\n", (s8)llow, (s8)lhigh);
     LOG("  SoC limits   : low %d C / high %d C\n", (s8)rlow, (s8)rhigh);
 
-    /* Cross-check against MAX17050's battery internal temperature.
-     * The three sensors (TMP451 SoC die, TMP451 PCB, MAX17050 battery)
-     * sample physically different things but in a console at thermal
-     * equilibrium they should agree within ~10-15 C. A bigger spread
-     * means one sensor is wrong (loose diode, mis-calibrated gauge,
-     * dead thermistor) — surface the worst-pair gap as a diagnostic. */
-    int batt_temp = 0;
-    bool batt_ok = max17050_get_property(MAX17050_TEMP, &batt_temp) == 0;
-    if (batt_ok) {
-        /* MAX17050 returns deg C * 10 (centi-degrees). */
-        int batt_int = batt_temp / 10;
-        int spread = soc_int > pcb_int ? soc_int - pcb_int : pcb_int - soc_int;
-        int batt_spread_a = soc_int > batt_int ? soc_int - batt_int : batt_int - soc_int;
-        int batt_spread_b = pcb_int > batt_int ? pcb_int - batt_int : batt_int - pcb_int;
-        int max_spread = spread;
-        if (batt_spread_a > max_spread) max_spread = batt_spread_a;
-        if (batt_spread_b > max_spread) max_spread = batt_spread_b;
-        log_color(max_spread > 20 ? COL_ERR :
-                  max_spread > 12 ? COL_WARN : COL_OK,
-            "  Sensor agree : SoC %d C / PCB %d C / Batt %d C  (max gap %d C)\n",
-            soc_int, pcb_int, batt_int, max_spread);
-        dx_set("temp_agree",
-            max_spread > 20 ? DX_FAIL :
-            max_spread > 12 ? DX_WARN : DX_PASS,
-            max_spread > 12 ? "%d C spread" : "", max_spread);
-    }
+    /* NOTE: the SoC-die / PCB / battery "sensor agreement" cross-check was
+     * removed. The three sensors measure physically different points with
+     * different thermal masses and response times; in a cold-boot RCM state
+     * (no sustained load) they legitimately disagree, and the battery NTC
+     * path in particular doesn't behave in a way that makes a spread
+     * threshold meaningful. It produced false signals rather than catching
+     * real faults. */
 
     /* Verdict signals. Tegra X1 throttles at 85 C; >70 C in handheld
      * idle is suspicious. PCB skin shouldn't exceed ~45 C even under
@@ -4399,7 +4380,7 @@ static const char *_k_battery[] = { "batt_health", "batt_ntc",
                                     "fuel_devname", "fuel_por",
                                     "xc_charge_dir", NULL };
 static const char *_k_thermal[] = { "soc_die_temp", "pcb_temp",
-                                    "temp_agree", "fan_stalled", NULL };
+                                    "fan_stalled", NULL };
 static const char *_k_storage[] = { "emmc_health", "emmc_bus", "sd_bus",
                                     "gpt", "kfuse", "prodinfo",
                                     "xc_emmc_mode", NULL };
