@@ -919,49 +919,37 @@ static void probe_charger(void)
     if (bq24193_get_property(BQ24193_DevID, &v) == 0)
         LOG("  DevID        : 0x%02X\n", v);
 
-    /* Configuration fields not exposed by bq24193_get_property. These
-     * matter when "charging looks fine but never reaches 100 %" or
-     * "charger is silently offline":
-     *   REG03 IPRECHG  : pre-charge current (high nibble). 128 + N*128 mA
-     *                    range 128-2048 mA. 0 means dead-battery
-     *                    revival is impossible.
+    /* Configuration fields not exposed by bq24193_get_property. These are
+     * printed INFORMATIONAL-ONLY (no pass/fail): in RCM the charger has not
+     * yet been configured by HOS, so REG03/05/07 may still hold POR defaults
+     * rather than the operational config. Judging them here produced false
+     * signals, so we surface the raw decode and let a tech interpret it
+     * against a known-good unit instead.
+     *   REG03 IPRECHG  : pre-charge current (high nibble). 128 + N*128 mA.
      *   REG03 ITERM    : termination current (low nibble). Same encoding.
-     *                    If ITERM is below the cell's natural taper-end
-     *                    current, "Done" is never reached.
-     *   REG05 ENTIMER  : safety timer enable. Disabled = no upper bound
-     *                    on charge time (datasheet warns against this).
-     *   REG05 CHGTIMER : safety timer duration (5h/8h/12h/20h).
-     *   REG05 WATCHDOG : I2C watchdog (off/40s/80s/160s). HOS resets
-     *                    this periodically; if expired the charger
-     *                    falls back to default config.
-     *   REG07 BATFET_DI: BATFET disable latch. If 1 the battery is
-     *                    electrically disconnected from the system rail
-     *                    and no amount of VBUS will help. */
+     *   REG05 ENTIMER  : safety timer enable / CHGTIMER duration.
+     *   REG05 WATCHDOG : I2C watchdog (off/40s/80s/160s).
+     *   REG07 BATFET_DI: BATFET disable latch (battery isolated when set).
+     * Note: a genuine BATFET-off fault is only reliably observable once HOS
+     * has configured the charger; that check belongs in an in-HOS test. */
     u8 reg03 = i2c_recv_byte(I2C_1, BQ24193_I2C_ADDR, BQ24193_PreChrgTerm);
     u8 reg05 = i2c_recv_byte(I2C_1, BQ24193_I2C_ADDR, BQ24193_ChrgTermTimer);
     u8 reg07 = i2c_recv_byte(I2C_1, BQ24193_I2C_ADDR, BQ24193_Misc);
     u32 iprechg = ((reg03 >> 4) & 0xF) * 128 + 128;
     u32 iterm   = ((reg03     ) & 0xF) * 128 + 128;
-    log_color(iprechg < 256 ? COL_WARN : COL_OK,
-        "  IPRECHG      : %d mA (REG03 high nibble)\n", iprechg);
-    log_color(iterm < 128 ? COL_WARN : COL_OK,
-        "  ITERM        : %d mA (REG03 low nibble)\n", iterm);
+    LOG("  IPRECHG      : %d mA (REG03 high nibble, RCM default)\n", iprechg);
+    LOG("  ITERM        : %d mA (REG03 low nibble, RCM default)\n", iterm);
     bool entimer = (reg05 & BQ24193_CHRGTERM_ENTIMER_MASK) != 0;
     static const char *chgtimer_str[4] = {"5h", "8h", "12h", "20h"};
     static const char *watchdog_str[4] = {"disabled", "40s", "80s", "160s"};
     u8  chgtimer_idx = (reg05 & BQ24193_CHRGTERM_CHGTIMER_MASK) >> 1;
     u8  wdog_idx     = (reg05 & BQ24193_CHRGTERM_WATCHDOG_MASK) >> 4;
-    log_color(entimer ? COL_OK : COL_WARN,
-        "  Safety timer : %s (CHGTIMER=%s)\n",
+    LOG("  Safety timer : %s (CHGTIMER=%s)\n",
         entimer ? "ON" : "DISABLED", chgtimer_str[chgtimer_idx]);
     LOG("  I2C watchdog : %s\n", watchdog_str[wdog_idx]);
     bool batfet_off = (reg07 & BQ24193_MISC_BATFET_DI_MASK) != 0;
-    log_color(batfet_off ? COL_ERR : COL_OK,
-        "  BATFET       : %s%s\n",
-        batfet_off ? "DISABLED" : "enabled",
-        batfet_off ? " (battery isolated from system!)" : "");
-    dx_set("charger_batfet", batfet_off ? DX_FAIL : DX_PASS,
-        batfet_off ? "BATFET latched off" : "");
+    LOG("  BATFET       : %s (REG07, informational in RCM)\n",
+        batfet_off ? "DISABLED" : "enabled");
 
     /* Cross-check via Hekate's bq24193_get_version helper, it reads
      * VendorPart (reg 0x0A) and confirms it equals 0x2F for the genuine
@@ -4406,8 +4394,7 @@ static const char *_k_pmic[]    = { "pmic_rails", "pmic_nverc",
                                     "pmic_irqsd", "pmic_intlbt",
                                     "max77812", NULL };
 static const char *_k_charger[] = { "charger_pg", "charger_fault",
-                                    "charger_batfet", "usb_pd",
-                                    "xc_vbus_acok", NULL };
+                                    "usb_pd", "xc_vbus_acok", NULL };
 static const char *_k_battery[] = { "batt_health", "batt_ntc",
                                     "fuel_devname", "fuel_por",
                                     "xc_charge_dir", NULL };
