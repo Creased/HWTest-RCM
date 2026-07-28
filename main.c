@@ -2978,8 +2978,7 @@ static void probe_regulators(void)
     /* For each rail surface:
      *   - Power-OK bit (rail crossed ~80% of target during ramp)
      *   - Configured voltage from the per-rail VOLT register
-     *   - Sane operating range (low / high), picked per-rail to allow for
-     *     DVFS where Hekate / HOS legitimately retunes the rail at runtime
+     *   - Exact expected voltage for the FIXED-target rails
      *
      * Voltage registers per Hekate's _pmic_regulators table:
      *   SD0..SD3   = 0x16..0x19 (12.5 mV steps from 600 mV, mask varies)
@@ -2987,13 +2986,20 @@ static void probe_regulators(void)
      *               step 25 mV (LDO0/1/4) or 50 mV (LDO2/3/5/6/7/8)
      * Decoded uV = (reg_val & mask) * uv_step + uv_min.
      *
-     * Sane ranges below are intentionally wide on the rails that DVFS:
-     *   SD0  (CPU)  - 0.6 V idle / BPMP, up to 1.4 V under CPU load
-     *   LDO2 (SD3V) - 1.8 V on UHS (SDR104), 3.3 V on legacy SD
-     * For fixed-target rails the band is +/-10 % of the configured value.
-     * Anything outside the band gets a WRONG flag; rails that are off get
-     * no flag (the configured voltage is meaningless when the rail is
-     * disabled). */
+     * `expect_uv` is the exact value BDK's max77620_config_default() programs
+     * (the uv_default column of _pmic_regulators in max7762x.c). A fixed rail
+     * that is ON must read this value EXACTLY -- no tolerance band. A band
+     * would hide a mis-programmed regulator, so we compare for equality.
+     *
+     * A handful of rails genuinely move and cannot be checked against a
+     * single value, so they carry expect_uv = 0 and are reported
+     * informational-only (no verdict contribution):
+     *   SD0  (CPU)   - DVFS, 0.6 V BPMP-idle up to 1.4 V under CPU load
+     *   LDO2 (SDMMC1)- 1.8 V on UHS (SDR104) <-> 3.3 V on legacy SD
+     *   LDO4 (RTC)   - 0.85 V at BDK default, 1.0 V after HOS keygen retune
+     *   LDO8 (XUSB/DP)- multi-purpose, 1.05 V .. 2.8 V depending on use
+     * Rails that are OFF also get no verdict (the configured voltage is
+     * meaningless when the rail is disabled). */
     struct rail {
         int  id;
         const char *name;
@@ -3001,66 +3007,56 @@ static void probe_regulators(void)
         u8   mask;
         u32  step_uv;
         u32  base_uv;
-        u32  ok_min_uv;
-        u32  ok_max_uv;
+        u32  expect_uv;   /* exact expected; 0 = variable/DVFS, info-only */
     };
-    /* Rail labels and ranges cross-referenced against Hekate's
-     * bdk/power/max7762x.h "Switch Power domains (max77620)" table.
-     * The earlier labels (LDO3=USB, LDO5=USB1, LDO6=TS, LDO8=HDMI)
-     * were guesses and wrong: LDO3/LDO5 are the GAME-CARD slot rails,
-     * LDO6 powers Touch + ALS, LDO8 is a multi-purpose XUSB/DP/MCU
-     * rail. Voltage tolerances copied from Hekate's per-LDO defaults. */
+    /* Rail labels cross-referenced against Hekate's bdk/power/max7762x.h
+     * "Switch Power domains" table; expect_uv values are the uv_default
+     * column of _pmic_regulators in max7762x.c. */
     static const struct rail rails[] = {
-        /* id  name              volt_reg  mask  step    base    ok_min   ok_max  */
-        {0,  "SD0  (SoC CPU)",   0x16, 0x7F, 12500, 600000,  600000, 1400000 }, /* DVFS */
-        {1,  "SD1  (DRAM)",      0x17, 0x7F, 12500, 600000, 1000000, 1200000 },
-        {2,  "SD2  (LDO src)",   0x18, 0xFF, 12500, 600000, 1262500, 1387500 },
-        {3,  "SD3  (1V8 gen)",   0x19, 0xFF, 12500, 600000, 1700000, 1900000 },
-        {4,  "LDO0 (Display)",   0x23, 0x3F, 25000, 800000, 1100000, 1300000 },
-        {5,  "LDO1 (XUSB+PCIE)", 0x25, 0x3F, 25000, 800000,  950000, 1150000 },
-        {6,  "LDO2 (SDMMC1)",    0x27, 0x3F, 50000, 800000, 1700000, 3400000 }, /* UHS<->legacy */
-        {7,  "LDO3 (GC ASIC)",   0x29, 0x3F, 50000, 800000, 2900000, 3300000 },
-        /* LDO4 (RTC) is set to 0.85 V in some boot stages and 1.0 V in
-         * others (HOS retunes it during the keygen path). Tegra X1
-         * VDD_RTC is rated 0.95-1.05 V active, 0.7-1.27 V abs max, so
-         * any value in 0.800-1.100 V is normal. The earlier band
-         * (0.800-0.900 V) was tight enough to false-positive when LDO4
-         * reads 1.000 V. */
-        {8,  "LDO4 (RTC)",       0x2B, 0x3F, 12500, 800000,  800000, 1100000 },
-        /* LDO5 OK band spans both documented modes: GC Card 1.8V (the
-         * default after Hekate per-LDO config) and 3.1V GC ASIC alt
-         * (per Hekate max7762x.h line 65 OTP comment). */
-        {9,  "LDO5 (GC Card)",   0x2D, 0x3F, 50000, 800000, 1700000, 3200000 },
-        {10, "LDO6 (Touch+ALS)", 0x2F, 0x3F, 50000, 800000, 2700000, 3000000 },
-        {11, "LDO7 (XUSB)",      0x31, 0x3F, 50000, 800000,  950000, 1150000 },
-        {12, "LDO8 (XUSB/DP)",   0x33, 0x3F, 50000, 800000,  950000, 2900000 },
+        /* id  name              volt_reg  mask  step    base    expect_uv */
+        {0,  "SD0  (SoC CPU)",   0x16, 0x7F, 12500, 600000,       0 }, /* DVFS */
+        {1,  "SD1  (DRAM)",      0x17, 0x7F, 12500, 600000, 1125000 },
+        {2,  "SD2  (LDO src)",   0x18, 0xFF, 12500, 600000, 1325000 },
+        {3,  "SD3  (1V8 gen)",   0x19, 0xFF, 12500, 600000, 1800000 },
+        {4,  "LDO0 (Display)",   0x23, 0x3F, 25000, 800000, 1200000 },
+        {5,  "LDO1 (XUSB+PCIE)", 0x25, 0x3F, 25000, 800000, 1050000 },
+        {6,  "LDO2 (SDMMC1)",    0x27, 0x3F, 50000, 800000,       0 }, /* UHS<->legacy */
+        {7,  "LDO3 (GC ASIC)",   0x29, 0x3F, 50000, 800000, 3100000 },
+        {8,  "LDO4 (RTC)",       0x2B, 0x3F, 12500, 800000,       0 }, /* 0.85<->1.0 */
+        {9,  "LDO5 (GC Card)",   0x2D, 0x3F, 50000, 800000, 1800000 },
+        {10, "LDO6 (Touch+ALS)", 0x2F, 0x3F, 50000, 800000, 2900000 },
+        {11, "LDO7 (XUSB)",      0x31, 0x3F, 50000, 800000, 1050000 },
+        {12, "LDO8 (XUSB/DP)",   0x33, 0x3F, 50000, 800000,       0 }, /* multi-use */
     };
     for (size_t i = 0; i < sizeof(rails)/sizeof(rails[0]); i++) {
         int ok = max77620_regulator_get_status(rails[i].id);
         u8  reg_val = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, rails[i].volt_reg);
         u32 uv = ((u32)(reg_val & rails[i].mask)) * rails[i].step_uv + rails[i].base_uv;
-        u32 col = COL_DEFAULT;
-        const char *flag = "";
-        if (ok) {
-            if (uv < rails[i].ok_min_uv || uv > rails[i].ok_max_uv) {
-                col = COL_ERR;
-                flag = " WRONG";
-                n_wrong++;
-            } else {
-                col = COL_OK;
-            }
+        u32 expect = rails[i].expect_uv;
+        if (!ok) {
+            /* Rail off: configured voltage is meaningless, report neutral. */
+            log_color(COL_DEFAULT,
+                "  %s : off  %d.%03d V\n",
+                rails[i].name, uv / 1000000, (uv / 1000) % 1000);
+        } else if (expect == 0) {
+            /* Variable/DVFS rail: report the live value, no verdict. */
+            log_color(COL_OK,
+                "  %s : ON   %d.%03d V  (variable / DVFS)\n",
+                rails[i].name, uv / 1000000, (uv / 1000) % 1000);
+        } else {
+            /* Fixed rail: must match the expected value EXACTLY. */
+            bool match = (uv == expect);
+            if (!match) n_wrong++;
+            log_color(match ? COL_OK : COL_ERR,
+                "  %s : ON   %d.%03d V  (expect %d.%03d V)%s\n",
+                rails[i].name,
+                uv / 1000000, (uv / 1000) % 1000,
+                expect / 1000000, (expect / 1000) % 1000,
+                match ? "" : " WRONG");
         }
-        log_color(col,
-            "  %s : %s  %d.%03d V  (range %d.%03d - %d.%03d V)%s\n",
-            rails[i].name,
-            ok ? "ON " : "off",
-            uv / 1000000, (uv / 1000) % 1000,
-            rails[i].ok_min_uv / 1000000, (rails[i].ok_min_uv / 1000) % 1000,
-            rails[i].ok_max_uv / 1000000, (rails[i].ok_max_uv / 1000) % 1000,
-            flag);
     }
     dx_set("pmic_rails", n_wrong ? DX_FAIL : DX_PASS,
-        n_wrong ? "%d ON but out of band" : "", n_wrong);
+        n_wrong ? "%d ON but wrong voltage" : "", n_wrong);
 }
 
 static void probe_clocks(void)
