@@ -4230,6 +4230,84 @@ static void probe_sd_content(void)
 }
 
 /* ------------------------------------------------------------------------ */
+/* SDMMC error counters                                                     */
+/*                                                                          */
+/* The BDK's sdmmc layer keeps three counters per device and bumps them from */
+/* inside the transfer path (bdk/storage/sdmmc.c, _sdmmc_storage_readwrite   */
+/* and _sdmmc_storage_handle_io_error):                                     */
+/*                                                                          */
+/*   RW_RETRY   a transfer failed and was retried (up to 5x, 50 ms apart)   */
+/*   RW_FAIL    the retries ran out, forcing a re-init at a lower speed     */
+/*   INIT_FAIL  that recovery re-init itself failed                        */
+/*                                                                          */
+/* Nothing else in this payload surfaces these, and they cost two pointer   */
+/* reads. They matter because a card can initialise perfectly and still be  */
+/* retrying on every transfer - which is exactly the "it works but          */
+/* everything loads slowly" complaint that no identity or health probe      */
+/* here can see.                                                            */
+/*                                                                          */
+/* This probe runs LAST in the Storage group on purpose, so the counts      */
+/* cover every read the earlier probes performed: GPT, PRODINFO via BIS,    */
+/* EXT_CSD, BOOT0/pkg1, AutoRCM and the SD content scan. Running it first   */
+/* would report zeros no matter how sick the card is.                       */
+/*                                                                          */
+/* Caveat, verified in bdk/storage/sdmmc.c: the RW_RETRY increment sits in  */
+/* the shared read/write path and unconditionally calls                     */
+/* sd_error_count_increment(), even when the transfer was on eMMC. So the   */
+/* SD retry figure covers BOTH devices, and EMMC_ERROR_RW_RETRY is never    */
+/* incremented by anything (Nyx displays it anyway). We report what the     */
+/* numbers actually mean instead of printing a zero that looks reassuring. */
+static void probe_storage_errors(void)
+{
+    HEADER("[SDMMC error counters]");
+
+    u16 *sd_err   = sd_get_error_count();
+    u16 *emmc_err = emmc_get_error_count();
+
+    /* --- eMMC --- */
+    u16 e_init = emmc_err[EMMC_ERROR_INIT_FAIL];
+    u16 e_rw   = emmc_err[EMMC_ERROR_RW_FAIL];
+
+    log_color(e_init ? COL_ERR : COL_OK,
+        "  eMMC init failures : %d\n", e_init);
+    log_color(e_rw ? COL_ERR : COL_OK,
+        "  eMMC R/W failures  : %d\n", e_rw);
+    log_color(COL_DEFAULT,
+        "  eMMC R/W retries   : n/a (BDK counts these against SD)\n");
+
+    dx_set("emmc_errors",
+        (e_init || e_rw) ? DX_FAIL : DX_PASS,
+        e_init ? "%d init fail" : e_rw ? "%d R/W fail" : "",
+        e_init ? e_init : e_rw);
+
+    /* --- SD --- */
+    u16 s_init  = sd_err[SD_ERROR_INIT_FAIL];
+    u16 s_rw    = sd_err[SD_ERROR_RW_FAIL];
+    u16 s_retry = sd_err[SD_ERROR_RW_RETRY];
+
+    log_color(s_init ? COL_ERR : COL_OK,
+        "  SD init failures   : %d\n", s_init);
+    log_color(s_rw ? COL_ERR : COL_OK,
+        "  SD R/W failures    : %d\n", s_rw);
+    /* Retries that eventually succeeded are not a failure, but they are the
+     * earliest sign of a dirty slot, a worn card or a marginal trace. */
+    log_color(s_retry ? COL_WARN : COL_OK,
+        "  R/W retries        : %d  (SD + eMMC combined)\n", s_retry);
+
+    dx_set("sd_errors",
+        (s_init || s_rw) ? DX_FAIL :
+        s_retry          ? DX_WARN : DX_PASS,
+        s_init  ? "%d init fail"  :
+        s_rw    ? "%d R/W fail"   :
+        s_retry ? "%d retries"    : "",
+        s_init ? s_init : s_rw ? s_rw : s_retry);
+
+    if (!g_sd_ok)
+        log_color(COL_DEFAULT,
+            "  (SD never initialised - counts reflect that)\n");
+}
+
+/* ------------------------------------------------------------------------ */
 /* SD-card report                                                           */
 
 static FATFS s_fs;
@@ -4414,7 +4492,8 @@ static const char *_k_thermal[] = { "soc_die_temp", "pcb_temp",
                                     "fan_stalled", NULL };
 static const char *_k_storage[] = { "emmc_health", "emmc_bus", "sd_bus",
                                     "gpt", "kfuse", "prodinfo",
-                                    "xc_emmc_mode", NULL };
+                                    "xc_emmc_mode", "emmc_errors",
+                                    "sd_errors", NULL };
 static const char *_k_display[] = { "dsi_id", "backlight", NULL };
 static const char *_k_inputs[]  = { "touch_id", "als_id", NULL };
 static const char *_k_memory[]  = { "dram_sym", "plls", NULL };
@@ -4537,6 +4616,9 @@ static const struct page_entry g_pages[] = {
     {probe_boot0_pkg1, "Storage"},
     {probe_autorcm,    "Storage"},
     {probe_sd_content, "Storage"},
+    /* Last in the group: the counters must account for every read the
+     * probes above performed. */
+    {probe_storage_errors, "Storage"},
 
     /* Display + backlight. */
     {probe_display,    "Display"},
