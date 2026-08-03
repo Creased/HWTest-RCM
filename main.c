@@ -1111,35 +1111,71 @@ static void probe_pmic_gpios(void)
     }
 }
 
-/* Cooling fan probe, Mariko only.
+/* Cooling fan probe.
  *
- * Mariko (T210B01) Switch and Mariko Switch Lite both have an active
- * cooling fan driven by Tegra PWM channel 1 with the tach feedback
- * wired to GPIO_PORT_S pin 7. Erista (T210) has passive cooling
- * (fanless) so this probe early-outs there.
+ * Every Switch model is actively cooled: Erista, Mariko, Lite and OLED all
+ * have a fan on Tegra PWM channel 1 with tach feedback on GPIO_PORT_S pin 7.
+ * The only SoC difference is that the tach line needs an internal pull-up on
+ * T210 and not on T210B01, which fan_set_duty() applies for us. (OLED/AULA
+ * additionally needs the PWM clock enabled, also handled there.)
  *
  * Two readings:
  *   - PWM duty: instantaneous, derived from PWM_CSR_1 bits 16:23.
  *     0 = fan off, ~236 = max speed (Hekate inverts the polarity
  *     so the register value 0xEC = 0% to the fan).
- *   - Tach RPM: requires counting rising edges on the tach line over
- *     a sampling window. We use 500 ms (vs Hekate's 2 s) to keep the
- *     boot dump fast; this gives ~2x lower precision but still
- *     distinguishes fan-running from fan-stuck.
+ *   - Tach RPM: counted from edges on the tach line (PORT_S pin 7).
  *
- * Repair-tech use case: a Mariko unit running hot in HOS with the fan
- * showing 0 RPM here while duty > 0 is a clear "fan dead, replace it"
- * verdict. Fan running at ~2000-4000 RPM with non-zero duty = healthy. */
+ * This is the one probe that deliberately DRIVES the hardware instead of
+ * only reading it, because a passive fan check cannot work: in RCM the fan
+ * is off, so a healthy stopped fan and a dead fan both read 0 RPM and are
+ * indistinguishable. To get an answer we have to command a duty and see
+ * whether the tach responds.
+ *
+ * The probe therefore runs in two parts:
+ *   1. Report the state the fan was FOUND in (passive, as before).
+ *   2. Spin it up at a fixed duty, measure, then restore the found state.
+ *
+ * fan_set_duty() is self-contained: it sets up the tach pinmux/GPIO, enables
+ * the PWM clock on AULA, and brings REGULATOR_5V_FAN up (and back down on
+ * duty 0), so the 5 V supply can't be the reason for a false stall.
+ *
+ * Repair-tech use case: 0 RPM while we are commanding a duty is a clear
+ * "fan dead / seized / unplugged, or tach line broken" verdict. A few
+ * thousand RPM is healthy. */
+
+/* Commanded duty for the active test. 236 is max; ~64% starts any working
+ * fan from standstill without running it at full blast. */
+#define FAN_TEST_DUTY   150
+/* Time allowed to reach steady state from standstill before sampling. */
+#define FAN_SPINUP_MS   800
+/* Tach sampling window. At the test duty this is a few hundred edges,
+ * far more resolution than the alive/dead question needs. */
+#define FAN_SAMPLE_MS   400
+
+/* Count tach transitions on PORT_S pin 7 for `ms`, and convert to RPM.
+ * Each revolution yields 2 tach pulses = 4 edges, so
+ * rpm = (edges / 4) * (60000 / ms). */
+static u32 _fan_measure_rpm(u32 ms, int *out_edges)
+{
+    int edges = 0, last = -1;
+    u32 deadline = get_tmr_us() + ms * 1000;
+
+    while ((s32)(deadline - get_tmr_us()) > 0) {
+        int v = gpio_read(GPIO_PORT_S, GPIO_PIN_7);
+        if (last != -1 && v != last)
+            edges++;
+        last = v;
+    }
+
+    if (out_edges)
+        *out_edges = edges;
+
+    return (u32)edges / 4 * (60000 / ms);
+}
+
 static void probe_fan(void)
 {
     HEADER("[Cooling fan]");
-
-    u32 chip_major = (APB_MISC(APB_MISC_GP_HIDREV) >> 4) & 0xF;
-    if (chip_major != 2) {
-        log_color(COL_DEFAULT,
-            "  Status       : Erista (T210), passive cooling (no fan)\n");
-        return;
-    }
 
     /* PWM_CSR_1 layout for the fan channel:
      *   bit 31    : PWM_CSR_EN , channel enable
@@ -1168,49 +1204,61 @@ static void probe_fan(void)
         : abs_off ? "  [absolute 0%% override]"
                   : "");
 
-    /* Tach: count rising edges on PORT_S pin 7 over 500 ms. We don't
-     * pre-init the GPIO/PINMUX, if the fan was set up by Hekate's
-     * fan_set_duty before launching us (some launch paths do this),
-     * the pin is already in input-tristate-with-pullup. If not, we'd
-     * read 0 RPM and the operator can compare against duty to spot a
-     * driver/fan mismatch. */
-    int high = 0, low = 0, edges = 0, last = -1;
-    u32 deadline = get_tmr_us() + 500000;     /* 500 ms */
-    while ((s32)(deadline - get_tmr_us()) > 0) {
-        int v = gpio_read(GPIO_PORT_S, GPIO_PIN_7);
-        if (v) high++;
-        else low++;
-        if (last != -1 && v != last) edges++;
-        last = v;
-    }
-    /* Each fan revolution produces 2 tach pulses (Hekate /2 in
-     * fan_get_speed). Edges count both rising AND falling, so divide
-     * by 4 to get revolutions during 500 ms, then x120 for RPM. */
-    u32 rpm = edges / 4 * 120;
-    /* Verdict signal: only flag a stalled fan when we actually
-     * commanded one to spin (channel enabled + duty > 0). With duty=0
-     * a zero rpm reading is the correct, expected state. */
-    if (ch_en && duty > 0) {
-        dx_set("fan_stalled", rpm > 0 ? DX_PASS : DX_FAIL,
-            rpm > 0 ? "" : "duty %d but rpm 0", duty);
-    } else {
-        dx_set("fan_stalled", DX_PASS, "");
+    /* If the fan was already commanded before we ran (some launch paths do
+     * this), report what it's doing right now without disturbing it. */
+    if (duty > 0) {
+        int idle_edges = 0;
+        u32 idle_rpm = _fan_measure_rpm(FAN_SAMPLE_MS, &idle_edges);
+        log_color(idle_rpm ? COL_OK : COL_ERR,
+            "  As found     : ~%d RPM at duty %d\n", idle_rpm, duty);
     }
 
-    if (!ch_en) {
-        log_color(COL_DEFAULT,
-            "  Tach RPM     : not measured (PWM channel disabled in RCM)\n");
-    } else if (duty == 0 && rpm == 0) {
-        log_color(COL_DEFAULT,
-            "  Tach RPM     : 0 (fan idle - duty=0, expected)\n");
-    } else if (duty > 0 && rpm == 0) {
+    /* --- Active test: command a known duty and see if the tach answers. --- */
+    log_color(COL_INFO,
+        "  Spin-up test : driving duty %d for %d ms...\n",
+        FAN_TEST_DUTY, FAN_SPINUP_MS + FAN_SAMPLE_MS);
+
+    fan_set_duty(FAN_TEST_DUTY);
+    msleep(FAN_SPINUP_MS);
+
+    int edges = 0;
+    u32 rpm = _fan_measure_rpm(FAN_SAMPLE_MS, &edges);
+
+    /* Read the duty back through the same decode, so a PWM block that
+     * silently ignored the write is distinguishable from a dead fan. */
+    u32 csr_test      = PWM(PWM_CONTROLLER_PWM_CSR_1);
+    u32 inv_duty_test = (csr_test >> 16) & 0xFF;
+    bool test_en      = (csr_test & (1u << 31)) != 0;
+    bool test_abs_off = (csr_test & (1u << 24)) != 0;
+    u32 duty_readback = (!test_en || test_abs_off) ? 0
+                      : (inv_duty_test >= 236)     ? 0
+                                                   : (236 - inv_duty_test);
+
+    /* Restore whatever we found. In RCM that is almost always 0, which also
+     * drops REGULATOR_5V_FAN and parks the pinmux. */
+    fan_set_duty(duty);
+
+    log_color(duty_readback == FAN_TEST_DUTY ? COL_OK : COL_ERR,
+        "  PWM readback : %d/236 (commanded %d)%s\n",
+        duty_readback, FAN_TEST_DUTY,
+        duty_readback == FAN_TEST_DUTY ? "" : "  - PWM did not take!");
+
+    if (duty_readback != FAN_TEST_DUTY) {
+        /* The PWM controller itself is the fault; the fan never got a
+         * signal, so we cannot judge the fan or its tach. */
         log_color(COL_ERR,
-            "  Tach RPM     : 0 - fan should be spinning (duty %d) but isn't!\n",
-            duty);
+            "  Tach RPM     : %d - inconclusive, PWM never applied\n", rpm);
+        dx_set("fan_stalled", DX_FAIL, "PWM readback %d", duty_readback);
+    } else if (rpm == 0) {
+        log_color(COL_ERR,
+            "  Tach RPM     : 0 at duty %d - fan dead, seized, unplugged,"
+            " or tach line broken\n", FAN_TEST_DUTY);
+        dx_set("fan_stalled", DX_FAIL, "0 rpm at duty %d", FAN_TEST_DUTY);
     } else {
         log_color(COL_OK,
-            "  Tach RPM     : ~%d (high=%d low=%d edges=%d in 500 ms)\n",
-            rpm, high, low, edges);
+            "  Tach RPM     : ~%d at duty %d (%d edges in %d ms)\n",
+            rpm, FAN_TEST_DUTY, edges, FAN_SAMPLE_MS);
+        dx_set("fan_stalled", DX_PASS, "");
     }
 }
 
