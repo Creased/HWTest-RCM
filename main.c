@@ -4430,14 +4430,30 @@ static void _emit_xchecks(void)
          * before the gauge's averaging catches up. */
         bool curr_pos  = (current_ma > 30);
         bool curr_neg  = (current_ma < -30);
-        bool ok = !(charging && curr_neg);     /* fault: charging but sinking */
+
+        /* "Charging but the gauge sinks" is only evidence of a broken sense
+         * path when the supply could actually cover the system draw. On a
+         * current-limited source - a USB-SDP capped at 500 mA is the common
+         * case on a repair bench - the console legitimately runs off the pack
+         * while the BQ still reports CHRG_STAT=fast, so the gauge reads
+         * negative on a perfectly healthy unit. Measured on a real Erista:
+         * VBUS=USB-SDP, IN limit 500 mA, gauge -224 mA, everything fine.
+         * Only judge when the input is a proper adapter with headroom. */
+        int in_lim_ma = 0;
+        bool lim_ok = bq24193_get_property(BQ24193_InputCurrentLimit,
+                                           &in_lim_ma) == 0;
+        bool input_limited = (vbus == 1) ||          /* USB-SDP */
+                             (!lim_ok) || (in_lim_ma <= 500);
+        bool suspicious = charging && curr_neg && !input_limited;
+        bool ok = !suspicious;
         log_color(ok ? COL_OK : COL_ERR,
             "  CHRG<->Curr   : BQ chrg=%d, gauge=%d mA  %s\n",
             chrg, current_ma,
-            ok ? (charging && curr_pos ? "(charging, current +)" :
-                  chrg == 0 ? "(idle/discharging)"               :
-                              "(consistent)")
-               : "(charging but current NEGATIVE - sense resistor?)");
+            suspicious ? "(charging but current NEGATIVE - sense resistor?)"
+            : (charging && curr_neg) ? "(input-limited, pack supplements - ok)"
+            : (charging && curr_pos) ? "(charging, current +)"
+            : chrg == 0              ? "(idle/discharging)"
+                                     : "(consistent)");
         dx_set("xc_charge_dir", ok ? DX_PASS : DX_FAIL,
             ok ? "" : "BQ charging but gauge sees %d mA", current_ma);
     }
