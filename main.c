@@ -102,13 +102,55 @@ static void _log_capture_append(const char *s, u32 n)
 
 /* Emit `_log_buf` to all sinks. Caller has already filled the buffer via
  * s_printf / s_vprintf. `color` only matters for the gfx sink. */
+/* LCD geometry: 1280x720 landscape, 16 px per char = 80 columns, no auto-wrap
+ * in gfx_putc. (The LOG/log_color width assert below reuses this.) */
+#define LCD_COLS 80
+
+/* Emit to the LCD, folding anything wider than the panel onto a continuation
+ * line instead of letting it run off the right edge.
+ *
+ * The LOG/log_color _Static_assert only measures the format-string LITERAL;
+ * a runtime %s / %d substitution can still push the rendered line past 80
+ * columns, and gfx_putc does not wrap. That is how "(charging but current
+ * NEGATIVE - sense resistor?)" ended up truncated mid-word on a real console.
+ * Folding here catches every such case for good, and only affects the LCD -
+ * UART and the SD report keep the full untouched line. */
+static void _gfx_puts_folded(const char *s)
+{
+    char line[LCD_COLS + 1];
+    u32 col = 0;
+    for (const char *p = s; *p; p++) {
+        if (*p == '\n') {
+            line[col] = 0;
+            gfx_puts(line);
+            gfx_puts("\n");
+            col = 0;
+            continue;
+        }
+        if (col == LCD_COLS) {
+            line[col] = 0;
+            gfx_puts(line);
+            gfx_puts("\n");
+            col = 0;
+            /* Indent the continuation so it reads as a wrapped row. */
+            line[col++] = ' ';
+            line[col++] = ' ';
+        }
+        line[col++] = *p;
+    }
+    if (col) {
+        line[col] = 0;
+        gfx_puts(line);
+    }
+}
+
 static void _log_emit(u32 color)
 {
     u32 n = strlen(_log_buf);
     if (!_log_uart_only) {
         u32 prev = gfx_con.fgcol;
         gfx_con.fgcol = color;
-        gfx_puts(_log_buf);
+        _gfx_puts_folded(_log_buf);
         gfx_con.fgcol = prev;
     }
     if (!_log_no_uart)
@@ -116,25 +158,17 @@ static void _log_emit(u32 color)
     _log_capture_append(_log_buf, n);
 }
 
-/* LCD geometry: the panel is 1280x720 in landscape; gfx_putc renders 16
- * pixels per char, so each row holds 80 chars and there's no auto-wrap.
- * A format string that's wider than this just spills off the right edge
- * of the screen with no warning. We catch obvious overflow at compile
- * time below.
+/* The assert below catches a format-string LITERAL that is already too wide.
+ * It cannot see runtime substitutions, so a short format with a long %s can
+ * still exceed 80 columns -- _gfx_puts_folded() above is what actually keeps
+ * those on-screen, by folding onto a continuation line. Prefer keeping the
+ * rendered line under 80 anyway; folding is the backstop, not the plan.
  *
- * The check has two practical limitations the caller has to keep in mind:
- *   - It measures the format-string LITERAL only. A runtime substitution
- *     (`%d` / `%s` / etc.) can still push the rendered line past 80 cols
- *     -- the check catches static overflow, not dynamic.
- *   - It measures TOTAL length, treating each `\n` as one column too. So
- *     a multi-line format string whose individual lines all fit but
- *     whose total length exceeds the budget will be flagged. The fix is
- *     to split such cases into separate LOG calls (which is also
- *     friendlier to read). Two existing multi-line format strings were
- *     split when this check was added.
+ * The assert measures TOTAL length, counting each `\n` as a column, so a
+ * multi-line format whose individual lines fit may still trip it. Split such
+ * cases into separate LOG calls (which also reads better).
  *
  * The +2 budget covers a trailing `\n` plus the implicit nul. */
-#define LCD_COLS 80
 
 #define LOG(fmt, ...) do {                                \
     _Static_assert(sizeof(fmt) <= LCD_COLS + 2,           \
@@ -1255,8 +1289,8 @@ static void probe_fan(void)
         dx_set("fan_stalled", DX_FAIL, "PWM readback %d", duty_readback);
     } else if (rpm == 0) {
         log_color(COL_ERR,
-            "  Tach RPM     : 0 at duty %d - fan dead, seized, unplugged,"
-            " or tach line broken\n", FAN_TEST_DUTY);
+            "  Tach RPM     : 0 at duty %d - fan dead/seized/unplugged"
+            " or tach broken\n", FAN_TEST_DUTY);
         dx_set("fan_stalled", DX_FAIL, "0 rpm at duty %d", FAN_TEST_DUTY);
     } else {
         log_color(COL_OK,
@@ -4449,8 +4483,10 @@ static void _emit_xchecks(void)
         log_color(ok ? COL_OK : COL_ERR,
             "  CHRG<->Curr   : BQ chrg=%d, gauge=%d mA  %s\n",
             chrg, current_ma,
-            suspicious ? "(charging but current NEGATIVE - sense resistor?)"
-            : (charging && curr_neg) ? "(input-limited, pack supplements - ok)"
+            /* Keep these short: the fixed prefix already eats 44 of the 80
+             * LCD columns, so anything past ~36 chars runs off the panel. */
+            suspicious ? "(NEGATIVE - sense resistor?)"
+            : (charging && curr_neg) ? "(input-limited, pack helps)"
             : (charging && curr_pos) ? "(charging, current +)"
             : chrg == 0              ? "(idle/discharging)"
                                      : "(consistent)");
