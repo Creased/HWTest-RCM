@@ -283,8 +283,18 @@ static const dx_finding_t *dx_get(const char *key)
  * to suppress LCD writes, we need a distinct concept. */
 static bool g_show_status = false;
 
+/* Defined near the pager; declared here so the probe path can reach them. */
+static void uart_poll_reboot(void);
+static void msleep_poll(u32 ms);
+
 static void status_set(const char *msg)
 {
+    /* Runs once per probe during the boot sweep, which makes it the natural
+     * place to honour a reboot request. Deliberately BEFORE the g_show_status
+     * early-out: the host must be able to reclaim the console even when the
+     * spinner isn't being drawn. */
+    uart_poll_reboot();
+
     if (!g_show_status)
         return;
 
@@ -1257,7 +1267,7 @@ static void probe_fan(void)
         FAN_TEST_DUTY, FAN_SPINUP_MS + FAN_SAMPLE_MS);
 
     fan_set_duty(FAN_TEST_DUTY);
-    msleep(FAN_SPINUP_MS);
+    msleep_poll(FAN_SPINUP_MS);   /* stays reboot-responsive */
 
     int edges = 0;
     u32 rpm = _fan_measure_rpm(FAN_SAMPLE_MS, &edges);
@@ -2111,7 +2121,7 @@ static void probe_als(void)
     /* Wait one integration window (~103 ms at default cycle=38) so the
      * first ADC sample is meaningful. The driver's continuous-conversion
      * mode will keep updating after this. */
-    msleep(110);
+    msleep_poll(110);
     get_als_lux(&ctxt);
     log_color(ctxt.over_limit ? COL_WARN : COL_OK,
         "  Visible      : %d counts%s\n", ctxt.vi_light,
@@ -4767,7 +4777,7 @@ static void render_page(int idx)
         log_color(COL_HEADER, "hwtest - %s  -  page %d/%d\n",
                   g_pages[idx].name, idx + 1, (int)N_PAGES);
     }
-    LOG("n/VOL+ next | p/VOL- prev | r refresh | a all | s save | q/POWER off\n");
+    LOG("n/VOL+ next | p/VOL- prev | r refresh | a all | s save | R reboot | q off\n");
     LOG("=============================================================\n\n");
     _log_no_uart = prev;
 
@@ -4781,6 +4791,10 @@ static void render_page(int idx)
     g_pages[idx].fn();
 }
 
+/* One byte of push-back, so uart_poll_reboot() can look at an incoming
+ * character without stealing it from the pager. */
+static int g_uart_pushback = -1;
+
 static int uart_getc(void)
 {
 #ifdef JC_PROBE
@@ -4789,11 +4803,77 @@ static int uart_getc(void)
      * still works, just without keyboard shortcuts over serial. */
     return -1;
 #else
+    if (g_uart_pushback >= 0) {
+        int c = g_uart_pushback;
+        g_uart_pushback = -1;
+        return c;
+    }
     u8 c;
     if (uart_recv(UART_B, &c, 1) != 1)
         return -1;
     return c;
 #endif
+}
+
+/* Reboot the console. Split out of the pager so it can be reached from
+ * anywhere, including mid-probe.
+ *
+ * This does a full PMIC power cycle (MAX77620 SFT_RST with the soft-reset
+ * wake event armed), not a bare PMC MAIN_RST. The difference matters on a
+ * modchipped console: MAIN_RST is only a warm reset into RCM, and a Mariko
+ * just sits there - its RCM is patched, and the modchip glitches at power-on
+ * so it never re-triggers. Measured on real hardware: after MAIN_RST the
+ * console went silent and needed a manual power cycle. SFT_RST drops every
+ * rail and comes back through POR, which the modchip does catch, so the boot
+ * payload (the sideloader) is re-injected and the host keeps control.
+ *
+ * Same sequence as BDK's power_set_state(POWER_OFF_REBOOT), minus the
+ * hw_deinit() it starts with - that stalls partway through on this payload. */
+static void do_reboot(void)
+{
+    log_color(COL_HEADER, "Rebooting (PMIC power cycle)...\n");
+    msleep(50);                     /* let the UART line drain first */
+
+    u8 reg = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_ONOFFCNFG2);
+    reg |= MAX77620_ONOFFCNFG2_SFT_RST_WK;   /* wake back up after the cycle */
+    i2c_send_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_ONOFFCNFG2, reg);
+    i2c_send_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_ONOFFCNFG1,
+                  MAX77620_ONOFFCNFG1_SFT_RST);
+    while (1)
+        ;
+}
+
+/* Emergency escape hatch: check whether the host asked us to reboot, and do
+ * it immediately if so.
+ *
+ * The pager only reads UART once the whole probe sweep has finished, which
+ * leaves a long window (and any hung probe) with no way back. A host driving
+ * this over a sideloader needs to be able to reclaim the console at ANY
+ * point to push a new build, so this is called from the per-probe status
+ * tick and from every long wait.
+ *
+ * Anything that isn't 'R' is pushed back so the pager still sees it. */
+static void uart_poll_reboot(void)
+{
+    int c = uart_getc();
+    if (c < 0)
+        return;
+    if (c == 'R')
+        do_reboot();
+    else if (g_uart_pushback < 0)
+        g_uart_pushback = c;
+}
+
+/* msleep() that stays responsive to a reboot request. Use instead of a bare
+ * msleep() for anything the operator would have to sit through. */
+static void msleep_poll(u32 ms)
+{
+    while (ms) {
+        u32 slice = ms > 20 ? 20 : ms;
+        msleep(slice);
+        ms -= slice;
+        uart_poll_reboot();
+    }
 }
 
 void ipl_main(void)
@@ -5008,6 +5088,8 @@ void ipl_main(void)
         bool refresh = (c == 'r');
         bool refresh_all = (c == 'a' || c == 'A');
         bool save    = (c == 's' || c == 'S');
+        /* 'R' (capital only - lowercase 'r' is refresh, 'b' is prev-page). */
+        bool reboot  = (c == 'R');
         bool quit    = (c == 'q' || c == 'Q') || (btn & BTN_POWER);
 
         if (advance || back) {
@@ -5093,6 +5175,24 @@ void ipl_main(void)
             render_page(page);
         } else if (save) {
             save_report();
+        } else if (reboot) {
+            /* 'R' = warm reboot back into RCM.
+             *
+             * This is the return path for an iterative test loop: on a
+             * console whose boot payload is a UART sideloader (modchip or
+             * RCM jig re-injects it every boot), rebooting hands control
+             * straight back to that loader, so the host can push the next
+             * build without anyone touching the hardware.
+             *
+             * We deliberately do NOT use power_set_state(REBOOT_RCM): it
+             * runs hw_deinit, which stalls partway through on this payload
+             * (display_end is fine, the BPMP/MMU teardown is not). The bare
+             * PMC watchdog reset below always works. Its one limitation -
+             * it lands in RCM rather than reloading Hekate - is exactly
+             * what we want here.
+             *
+             * Same write BDK's power_set_state uses for a PMC reset. */
+            do_reboot();
         } else if (quit) {
             while (btn_read() & BTN_POWER)
                 ;
