@@ -3093,32 +3093,42 @@ static void probe_regulators(void)
         u8   mask;
         u32  step_uv;
         u32  base_uv;
-        u32  expect_uv;   /* exact expected; 0 = variable/DVFS, info-only */
+        u32  expect_uv;   /* exact expected on Erista; 0 = variable, info-only */
+        u32  expect_uv_mrk; /* Mariko override; 0 = same as expect_uv */
     };
     /* Rail labels cross-referenced against Hekate's bdk/power/max7762x.h
-     * "Switch Power domains" table; expect_uv values are the uv_default
-     * column of _pmic_regulators in max7762x.c. */
+     * "Switch Power domains" table. Expected voltages started from the
+     * uv_default column of _pmic_regulators (max7762x.c) but are corrected
+     * against measurements where the two disagree -- hardware wins:
+     *   SD1 (DRAM) : 1.125 V Erista (LPDDR4) vs 1.100 V Mariko (LPDDR4X).
+     *   SD2 (LDOsrc): 1.350 V Erista vs 1.325 V Mariko. BDK lists 1.325 V as
+     *                 uv_default for both, but Erista actually runs the
+     *                 table's max value; expecting 1.325 V there flagged
+     *                 every healthy Erista.
+     * Both pairs measured on real unpatched consoles. */
     static const struct rail rails[] = {
-        /* id  name              volt_reg  mask  step    base    expect_uv */
-        {0,  "SD0  (SoC CPU)",   0x16, 0x7F, 12500, 600000,       0 }, /* DVFS */
-        {1,  "SD1  (DRAM)",      0x17, 0x7F, 12500, 600000, 1125000 },
-        {2,  "SD2  (LDO src)",   0x18, 0xFF, 12500, 600000, 1325000 },
-        {3,  "SD3  (1V8 gen)",   0x19, 0xFF, 12500, 600000, 1800000 },
-        {4,  "LDO0 (Display)",   0x23, 0x3F, 25000, 800000, 1200000 },
-        {5,  "LDO1 (XUSB+PCIE)", 0x25, 0x3F, 25000, 800000, 1050000 },
-        {6,  "LDO2 (SDMMC1)",    0x27, 0x3F, 50000, 800000,       0 }, /* UHS<->legacy */
-        {7,  "LDO3 (GC ASIC)",   0x29, 0x3F, 50000, 800000, 3100000 },
-        {8,  "LDO4 (RTC)",       0x2B, 0x3F, 12500, 800000,       0 }, /* 0.85<->1.0 */
-        {9,  "LDO5 (GC Card)",   0x2D, 0x3F, 50000, 800000, 1800000 },
-        {10, "LDO6 (Touch+ALS)", 0x2F, 0x3F, 50000, 800000, 2900000 },
-        {11, "LDO7 (XUSB)",      0x31, 0x3F, 50000, 800000, 1050000 },
-        {12, "LDO8 (XUSB/DP)",   0x33, 0x3F, 50000, 800000,       0 }, /* multi-use */
+        /* id  name              volt_reg mask  step    base   erista   mariko */
+        {0,  "SD0  (SoC CPU)",   0x16, 0x7F, 12500, 600000,       0,       0 }, /* DVFS */
+        {1,  "SD1  (DRAM)",      0x17, 0x7F, 12500, 600000, 1125000, 1100000 },
+        {2,  "SD2  (LDO src)",   0x18, 0xFF, 12500, 600000, 1350000, 1325000 },
+        {3,  "SD3  (1V8 gen)",   0x19, 0xFF, 12500, 600000, 1800000,       0 },
+        {4,  "LDO0 (Display)",   0x23, 0x3F, 25000, 800000, 1200000,       0 },
+        {5,  "LDO1 (XUSB+PCIE)", 0x25, 0x3F, 25000, 800000, 1050000,       0 },
+        {6,  "LDO2 (SDMMC1)",    0x27, 0x3F, 50000, 800000,       0,       0 }, /* UHS<->legacy */
+        {7,  "LDO3 (GC ASIC)",   0x29, 0x3F, 50000, 800000, 3100000,       0 },
+        {8,  "LDO4 (RTC)",       0x2B, 0x3F, 12500, 800000,       0,       0 }, /* 0.8<->1.0 */
+        {9,  "LDO5 (GC Card)",   0x2D, 0x3F, 50000, 800000, 1800000,       0 },
+        {10, "LDO6 (Touch+ALS)", 0x2F, 0x3F, 50000, 800000, 2900000,       0 },
+        {11, "LDO7 (XUSB)",      0x31, 0x3F, 50000, 800000, 1050000,       0 },
+        {12, "LDO8 (XUSB/DP)",   0x33, 0x3F, 50000, 800000,       0,       0 }, /* multi-use */
     };
+    bool is_mariko = (((APB_MISC(APB_MISC_GP_HIDREV) >> 4) & 0xF) == 2);
     for (size_t i = 0; i < sizeof(rails)/sizeof(rails[0]); i++) {
         int ok = max77620_regulator_get_status(rails[i].id);
         u8  reg_val = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, rails[i].volt_reg);
         u32 uv = ((u32)(reg_val & rails[i].mask)) * rails[i].step_uv + rails[i].base_uv;
-        u32 expect = rails[i].expect_uv;
+        u32 expect = (is_mariko && rails[i].expect_uv_mrk)
+                        ? rails[i].expect_uv_mrk : rails[i].expect_uv;
         if (!ok) {
             /* Rail off: configured voltage is meaningless, report neutral. */
             log_color(COL_DEFAULT,
