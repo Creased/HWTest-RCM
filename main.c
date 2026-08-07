@@ -1860,6 +1860,25 @@ static void probe_dram(void)
      * single-pass probe. */
 }
 
+/* Decoded panel ID -> marketing name. Shared with the PRODINFO probe, which
+ * decodes the same 0xVVTT form out of CAL0's lcd_vendor field so the two can
+ * be compared. NULL means "not one we know". */
+static const char *panel_model_name(u16 dec)
+{
+    switch (dec) {
+    case PANEL_JDI_XXX062M:     return "JDI 062M (generic)";
+    case PANEL_JDI_LAM062M109A: return "JDI LAM062M109A";
+    case PANEL_JDI_LPM062M326A: return "JDI LPM062M326A";
+    case PANEL_INL_P062CCA_AZ1: return "InnoLux P062CCA";
+    case PANEL_AUO_A062TAN01:   return "AUO A062TAN";
+    case PANEL_INL_2J055IA_27A: return "InnoLux 2J055IA";
+    case PANEL_AUO_A055TAN01:   return "AUO A055TAN";
+    case PANEL_SHP_LQ055T1SW10: return "Sharp LQ055T1SW10";
+    case PANEL_SAM_AMS699VC01:  return "Samsung AMS699VC01";
+    default: return NULL;
+    }
+}
+
 static void probe_display(void)
 {
     HEADER("[DSI panel ID]");
@@ -1874,22 +1893,9 @@ static void probe_display(void)
     dx_set("dsi_id", sentinel ? DX_FAIL : DX_PASS,
         sentinel ? "DSI ID read failed (cable?)" : "");
 
-    const char *name = "Unknown";
-    bool known = true;
-    switch (dec) {
-    case PANEL_JDI_XXX062M:     name = "JDI 062M (generic)"; break;
-    case PANEL_JDI_LAM062M109A: name = "JDI LAM062M109A";    break;
-    case PANEL_JDI_LPM062M326A: name = "JDI LPM062M326A";    break;
-    case PANEL_INL_P062CCA_AZ1: name = "InnoLux P062CCA";    break;
-    case PANEL_AUO_A062TAN01:   name = "AUO A062TAN";        break;
-    case PANEL_INL_2J055IA_27A: name = "InnoLux 2J055IA";    break;
-    case PANEL_AUO_A055TAN01:   name = "AUO A055TAN";        break;
-    case PANEL_SHP_LQ055T1SW10: name = "Sharp LQ055T1SW10";  break;
-    case PANEL_SAM_AMS699VC01:  name = "Samsung AMS699VC01"; break;
-    default: known = false; break;
-    }
-    log_color(known ? COL_OK : (sentinel ? COL_ERR : COL_WARN),
-        "  Model        : %s\n", name);
+    const char *name = panel_model_name(dec);
+    log_color(name ? COL_OK : (sentinel ? COL_ERR : COL_WARN),
+        "  Model        : %s\n", name ? name : "Unknown");
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2502,6 +2508,19 @@ static int load_bis_keys_from_sd(const char **err)
     return 0;
 }
 
+/* CAL0 text fields are fixed-length and null-padded. Copy up to max bytes,
+ * stopping at the first byte that isn't printable ASCII; dst needs max+1. */
+static void cal0_str(char *dst, const char *src, u32 max)
+{
+    u32 i;
+    for (i = 0; i < max; i++) {
+        u8 c = (u8)src[i];
+        if (c < 0x20 || c >= 0x7F) break;
+        dst[i] = (char)c;
+    }
+    dst[i] = 0;
+}
+
 static void probe_serial(void)
 {
     HEADER("[Switch serial number (PRODINFO)]");
@@ -2545,6 +2564,23 @@ static void probe_serial(void)
     static u8 buf[512] __attribute__((aligned(8)));
     int hdr_res = nx_emmc_bis_read(0, 1, hdr);
     int srl_res = nx_emmc_bis_read(1, 1, buf);
+
+    /* Pull the rest of CAL0 while BIS is still up. The body hash covers
+     * body_size bytes starting at 0x40, and most of the factory calibration
+     * we decode further down sits well past the two sectors above. body_size
+     * comes off the (still unverified) header, so bound it before it turns
+     * into a malloc size. */
+    u32 body_size = *(u32 *)&hdr[0x08];
+    u8 *cal0 = NULL;
+    if (!hdr_res && body_size >= sizeof(nx_emmc_cal0_t) - 0x40 &&
+        body_size <= SZ_64K) {
+        u32 total = ((0x40 + body_size) + 511) & ~511u;
+        cal0 = malloc(total);
+        if (cal0 && nx_emmc_bis_read(0, total / 512, cal0)) {
+            free(cal0);
+            cal0 = NULL;
+        }
+    }
     nx_emmc_bis_end();
 
     bool cal0_ok = !hdr_res && !srl_res &&
@@ -2583,6 +2619,7 @@ static void probe_serial(void)
 
     if (hdr_res || srl_res) {
         log_color(COL_ERR, "  BIS read failed (%d / %d)\n", hdr_res, srl_res);
+        free(cal0);
         return;
     }
 
@@ -2602,17 +2639,13 @@ static void probe_serial(void)
                 ? "skipped (gibberish, prod.keys not for this device)"
                 : "skipped (encrypted, run Lockpick to populate"
                   " sd:/switch/prod.keys)");
+        free(cal0);
         return;
     }
 
-    /* Extract serial. The field is null-padded ASCII; we copy at most
-     * 24 bytes and stop at the first non-printable / null. */
-    char serial[25] = {0};
-    for (int i = 0; i < 24; i++) {
-        u8 c = buf[0x50 + i];
-        if (c < 0x20 || c >= 0x7F) break;
-        serial[i] = (char)c;
-    }
+    /* Extract serial: CAL0 0x250, i.e. sector 1 + 0x50. */
+    char serial[25];
+    cal0_str(serial, (const char *)&buf[0x50], 24);
     if (serial[0] == 0) {
         log_color(COL_WARN, "  Serial       : (empty / wiped)\n");
     } else {
@@ -2672,6 +2705,134 @@ static void probe_serial(void)
         w_ff          ? "WLAN MAC all-FF"   :
         cc_num == 0   ? "no WLAN country codes" :
         cc_num > 128  ? "WLAN cc num %d corrupt" : "", cc_num);
+
+    /* --- Rest of CAL0 ---------------------------------------------------
+     * Everything past the radio MACs lives beyond the two sectors above, so
+     * walk the full copy as the real struct instead of hand-counted offsets.
+     * Two things make this worth carrying on a repair bench:
+     *
+     *  - body_sha256 is a factory hash over the whole body. It catches a
+     *    PRODINFO that decrypts cleanly (right keys, right magic) but has
+     *    been corrupted or hand-edited since -- the state that makes HOS
+     *    refuse to boot without saying why.
+     *  - the rest is an inventory of what the factory fitted. Held against
+     *    what the hardware reports now, a swapped panel or a different
+     *    battery shows up straight away, and it explains odd behaviour:
+     *    HOS keeps driving the replacement with the original's calibration.
+     */
+    if (!cal0) {
+        log_color(COL_WARN,
+            "  CAL0 body    : not read (body_size 0x%X out of range)\n",
+            body_size);
+        return;
+    }
+    const nx_emmc_cal0_t *c = (const nx_emmc_cal0_t *)cal0;
+    char str[0x20];
+
+    u8 hash[0x20];
+    se_sha_hash_256_oneshot(hash, &c->cfg_id1, c->body_size);
+    bool hash_ok = !memcmp(hash, c->body_sha256, sizeof(hash));
+    log_color(hash_ok ? COL_OK : COL_ERR,
+        "  CAL0 body    : SHA-256 %s\n",
+        hash_ok ? "OK" : "MISMATCH - body corrupt");
+    LOG("  CAL0 header  : v%d, %d B body, %d update(s)\n",
+        c->version, c->body_size, c->update_cnt);
+    dx_set("cal0_hash", hash_ok ? DX_PASS : DX_FAIL,
+        hash_ok ? "" : "CAL0 body SHA-256 mismatch");
+
+    cal0_str(str, c->cfg_id1, sizeof(c->cfg_id1));
+    LOG("  Config ID    : %s\n", str[0] ? str : "(empty)");
+
+    /* nn::settings::system::ProductModel. Worth cross-checking against the
+     * chip we actually booted on: PRODINFO travels with the eMMC, so a board
+     * that reports Iowa while the SoC reads T210 means the eMMC came off a
+     * different console -- which is exactly what a donor-board repair looks
+     * like from software, and it explains a unit that boots but is refused
+     * online. */
+    static const char *prod_models[] = {
+        "invalid", "Nx (Erista)", "Copper (Erista dev)", "Iowa (Mariko)",
+        "Hoag (Lite)", "Calcio (Mariko dev)", "Aula (OLED)"
+    };
+    u32 pm = c->product_model;
+    LOG("  Product model: %d - %s\n", pm,
+        pm < ARRAY_SIZE(prod_models) ? prod_models[pm] : "unknown");
+
+    bool soc_mariko = (((APB_MISC(APB_MISC_GP_HIDREV) >> 4) & 0xF) == 2);
+    /* 1/2 are Erista silicon, 3..6 are Mariko silicon. Anything outside that
+     * we simply do not judge. */
+    bool pm_mariko = (pm >= 3 && pm <= 6);
+    bool pm_erista = (pm == 1 || pm == 2);
+    if (pm_mariko || pm_erista) {
+        bool agree = (pm_mariko == soc_mariko);
+        log_color(agree ? COL_OK : COL_WARN,
+            "  Model vs SoC : %s\n",
+            agree ? "agree"
+                  : "DISAGREE - PRODINFO is from another console family");
+        dx_set("cal0_model", agree ? DX_PASS : DX_WARN,
+            agree ? "" : "CAL0 says model %d, SoC is %s", pm,
+            soc_mariko ? "Mariko" : "Erista");
+    }
+
+    /* nyx's decode: CAL0 packs the vendor in byte 0 and the panel type in
+     * byte 2, which recombine into the same 0xVVTT the DSI read returns.
+     * An all-zero field is not a panel ID, it means the factory never wrote
+     * one -- common on Mariko. Comparing against it would report every such
+     * console as having a replaced screen, so don't. */
+    u32 lcd_vendor = c->lcd_vendor & 0xFFFFFF;
+    u16 cal_panel = (u16)(((lcd_vendor & 0xFF) << 8) | (lcd_vendor >> 16));
+    if (!lcd_vendor) {
+        LOG("  LCD vendor   : not recorded in CAL0\n");
+    } else {
+        const char *cal_name = panel_model_name(cal_panel);
+        LOG("  LCD vendor   : %06X -> 0x%04X %s\n", lcd_vendor, cal_panel,
+            cal_name ? cal_name : "(unknown)");
+
+        /* Only compare when the DSI ID actually read back; a failed read
+         * returns the 0xCCCCCC sentinel and would look like a mismatch. A
+         * real mismatch is a warning, not a fault -- a replaced panel is
+         * ordinary repair work, it just means the factory calibration no
+         * longer matches what is fitted. */
+        if ((display_get_verbose_panel_id() & 0xFFFFFF) != 0xCCCCCC) {
+            u16 dsi_panel = display_get_decoded_panel_id();
+            bool same = (dsi_panel == cal_panel);
+            log_color(same ? COL_OK : COL_WARN,
+                "  Panel fitted : 0x%04X %s\n", dsi_panel,
+                same ? "(matches CAL0)" : "(differs from CAL0 - replaced?)");
+            dx_set("cal0_panel", same ? DX_PASS : DX_WARN,
+                same ? "" : "fitted panel 0x%04X, CAL0 says 0x%04X",
+                dsi_panel, cal_panel);
+        }
+    }
+
+    /* Entries in the country-code table hold a regulatory-domain tag, not an
+     * ISO country code -- retail units carry a single "R1". Printed next to
+     * the cc count above because a blank entry under a non-zero count means
+     * the table itself is damaged, not just empty. */
+    cal0_str(str, c->wlan_cc[0], sizeof(c->wlan_cc[0]));
+    LOG("  WLAN cc tbl  : \"%s\" (last idx %d)\n", str, c->wlan_cc_last);
+
+    cal0_str(str, c->battery_lot, sizeof(c->battery_lot));
+    LOG("  Battery lot  : %s (rev %d)\n", str[0] ? str : "(empty)",
+        c->battery_ver);
+    LOG("  USB-C PD rev : %d\n", c->usbc_pwr_src_circuit_ver);
+    LOG("  Touch IC     : vendor %d\n", c->touch_ic_vendor_id);
+    LOG("  6-axis IMU   : type %d, mount %d\n",
+        c->console_6axis_sensor_type, c->console_6axis_sensor_mount_type);
+    LOG("  Stick L/R    : type 0x%02X / 0x%02X\n",
+        c->analog_stick_type_l, c->analog_stick_type_r);
+    LOG("  Region code  : %d\n", c->region_code);
+
+    /* Speaker EQ/DRC tuning. An all-zero block means it was never written,
+     * which HOS reads as "no calibration" -- quiet, flat-sounding audio on a
+     * unit whose speakers are otherwise fine. */
+    bool spk_blank = true;
+    for (u32 i = 0; i < sizeof(c->spk_cal); i++) {
+        if (((const u8 *)&c->spk_cal)[i]) { spk_blank = false; break; }
+    }
+    log_color(spk_blank ? COL_WARN : COL_OK, "  Speaker cal  : %s\n",
+        spk_blank ? "blank (never calibrated)" : "present");
+
+    free(cal0);
 }
 
 static void probe_emmc_health(void)
@@ -4621,7 +4782,8 @@ static const char *_k_battery[] = { "batt_health", "batt_ntc",
 static const char *_k_thermal[] = { "soc_die_temp", "pcb_temp",
                                     "fan_stalled", NULL };
 static const char *_k_storage[] = { "emmc_health", "emmc_bus", "sd_bus",
-                                    "wlan_cal",
+                                    "wlan_cal", "cal0_hash", "cal0_panel",
+                                    "cal0_model",
                                     "gpt", "kfuse", "prodinfo",
                                     "xc_emmc_mode", "emmc_errors",
                                     "sd_errors", NULL };
