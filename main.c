@@ -516,12 +516,16 @@ static u8 _max77812_probe_addr(u8 addr)
 static void probe_max77812(void)
 {
     u32 chip_major = (APB_MISC(APB_MISC_GP_HIDREV) >> 4) & 0xF;
+    HEADER("[MAX77812 CPU/GPU/DRAM buck (Mariko), I2C5 @ 0x33/0x31]");
     if (chip_major != 2) {
-        /* Erista doesn't have MAX77812; skip silently to keep the
-         * page list clean rather than emitting a "N/A" stub. */
+        /* Erista has no MAX77812 - its CPU/GPU bucks are the dual MAX77621
+         * shown on the PMIC page. Returning early *before* the header left
+         * this pager page completely blank, which reads like a crashed
+         * probe; say N/A explicitly instead. */
+        log_color(COL_DEFAULT,
+            "  N/A          : Erista uses dual MAX77621 (see PMIC page)\n");
         return;
     }
-    HEADER("[MAX77812 CPU/GPU/DRAM buck (Mariko), I2C5 @ 0x33/0x31]");
 
     u8 addr = MAX77812_PHASE211_CPU_I2C_ADDR;
     u8 ver  = _max77812_probe_addr(addr);
