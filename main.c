@@ -2618,6 +2618,60 @@ static void probe_serial(void)
     } else {
         log_color(COL_OK, "  Serial       : %s\n", serial);
     }
+
+    /* Radio factory calibration, from the same two CAL0 sectors we already
+     * decrypted (offsets per switchbrew's Calibration page):
+     *
+     *   0x080  WlanCountryCodeNum       (sector 0 + 0x80)
+     *   0x210  WlanMacAddress           (sector 1 + 0x10)
+     *   0x220  BdAddress                (sector 1 + 0x20)
+     *
+     * Why this is on the repair path: HOS refuses to bring Wi-Fi up when the
+     * WLAN calibration is missing or wiped, and the symptom - "can't connect
+     * to Wi-Fi" - looks identical to a dead radio. An all-00 / all-FF MAC or
+     * a zero country-code count means the DATA is gone, so no amount of
+     * chip-level work will fix it; a valid MAC here points the finger back at
+     * the hardware (or at HOS config). Same for the BD address and Bluetooth.
+     *
+     * All-FF is what an erased flash region reads as; all-00 is what a
+     * zero-filled / re-created PRODINFO looks like. */
+    const u8 *wmac = &buf[0x10];
+    const u8 *bmac = &buf[0x20];
+    u32 cc_num = (u32)hdr[0x80] | ((u32)hdr[0x81] << 8) |
+                 ((u32)hdr[0x82] << 16) | ((u32)hdr[0x83] << 24);
+
+    bool w_zero = true, w_ff = true, b_zero = true, b_ff = true;
+    for (int i = 0; i < 6; i++) {
+        if (wmac[i] != 0x00) w_zero = false;
+        if (wmac[i] != 0xFF) w_ff   = false;
+        if (bmac[i] != 0x00) b_zero = false;
+        if (bmac[i] != 0xFF) b_ff   = false;
+    }
+    bool w_bad = w_zero || w_ff;
+    bool b_bad = b_zero || b_ff;
+
+    log_color(w_bad ? COL_ERR : COL_OK,
+        "  WLAN MAC     : %02X:%02X:%02X:%02X:%02X:%02X%s\n",
+        wmac[0], wmac[1], wmac[2], wmac[3], wmac[4], wmac[5],
+        w_zero ? "  (all zero - calib wiped!)" :
+        w_ff   ? "  (all FF - calib erased!)" : "");
+    log_color(b_bad ? COL_ERR : COL_OK,
+        "  BD MAC       : %02X:%02X:%02X:%02X:%02X:%02X%s\n",
+        bmac[0], bmac[1], bmac[2], bmac[3], bmac[4], bmac[5],
+        b_zero ? "  (all zero)" : b_ff ? "  (all FF)" : "");
+    /* A stock console lists a couple of hundred country codes; 0 means the
+     * region table never got written, which alone stops Wi-Fi from coming up. */
+    log_color(cc_num == 0 || cc_num > 128 ? COL_ERR : COL_OK,
+        "  WLAN cc num  : %d%s\n", cc_num,
+        cc_num == 0     ? "  (no country codes - Wi-Fi cannot init)" :
+        cc_num > 128    ? "  (out of range - corrupt)" : "");
+
+    dx_set("wlan_cal",
+        (w_bad || cc_num == 0 || cc_num > 128) ? DX_FAIL : DX_PASS,
+        w_zero        ? "WLAN MAC all-zero" :
+        w_ff          ? "WLAN MAC all-FF"   :
+        cc_num == 0   ? "no WLAN country codes" :
+        cc_num > 128  ? "WLAN cc num %d corrupt" : "", cc_num);
 }
 
 static void probe_emmc_health(void)
@@ -4567,6 +4621,7 @@ static const char *_k_battery[] = { "batt_health", "batt_ntc",
 static const char *_k_thermal[] = { "soc_die_temp", "pcb_temp",
                                     "fan_stalled", NULL };
 static const char *_k_storage[] = { "emmc_health", "emmc_bus", "sd_bus",
+                                    "wlan_cal",
                                     "gpt", "kfuse", "prodinfo",
                                     "xc_emmc_mode", "emmc_errors",
                                     "sd_errors", NULL };
