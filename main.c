@@ -2600,6 +2600,7 @@ static void probe_bt_radio(void)
      * PASSES with every pad in GPIO mode, so it can never substitute for the
      * port-I readback above. Restore MCR by hand; uart_empty_fifo() would
      * zero it and never put it back. */
+    bool uart_ok = false;
     {
         static const u8 pat[] = { 0xA5, 0x5A, 0x00, 0xFF };
         u8 back[8];
@@ -2617,6 +2618,7 @@ static void probe_bt_radio(void)
             }
         }
         bool lb = (got == sizeof(pat)) && !memcmp(back, pat, sizeof(pat));
+        uart_ok = lb;
         u->UART_MCR = 0;
         (void)u->UART_SPR;
         bt_flush();
@@ -2716,12 +2718,25 @@ static void probe_bt_radio(void)
 #endif
 
     if (!ok) {
-        LOG("  Result        : inconclusive - no HCI on any configuration\n");
-        LOG("  (read PH3 SPI_INT, transport-rdy and LSR lines above: they\n");
-        LOG("   separate power/strap from framing without more guessing)\n");
-        /* Deliberately no dx_set. Until this path succeeds on a console with
-         * known-good Bluetooth, silence carries no information, and a
-         * verdict built on it would be noise on every healthy unit. */
+        /* Silence is a real finding now, but only once the loopback has
+         * shown our own path works. This sequence is confirmed on three
+         * consoles spanning both SoC generations - two Mariko and one
+         * Erista - which all answer with a valid Command Complete and
+         * identify as Broadcom. A unit that stays quiet through every arm,
+         * MCR variant and baud rate while its controller loops back cleanly
+         * is not a probe that failed; it is a radio that is not running.
+         * When the loopback itself fails the fault is on our side of the
+         * pads, so nothing is recorded against the radio. */
+        if (uart_ok) {
+            log_color(COL_ERR,
+                "  Result        : radio does NOT respond - not running\n");
+            LOG("  (PRODINFO calibration is judged separately; if that is\n");
+            LOG("   intact, this is the module, its supply or its solder)\n");
+            dx_set("bt_hci", DX_FAIL, "no HCI response, radio not running");
+        } else {
+            LOG("  Result        : inconclusive - UART-D loopback failed\n");
+            LOG("  (controller-side fault, says nothing about the radio)\n");
+        }
         return;
     }
 
