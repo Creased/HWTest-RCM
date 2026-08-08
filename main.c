@@ -160,7 +160,7 @@ static void _log_emit(u32 color)
 
 /* The assert below catches a format-string LITERAL that is already too wide.
  * It cannot see runtime substitutions, so a short format with a long %s can
- * still exceed 80 columns -- _gfx_puts_folded() above is what actually keeps
+ * still exceed 80 columns; _gfx_puts_folded() above is what actually keeps
  * those on-screen, by folding onto a continuation line. Prefer keeping the
  * rendered line under 80 anyway; folding is the backstop, not the plan.
  *
@@ -227,7 +227,7 @@ static u32 g_status_spin_idx = 0;
 /*                                                                          */
 /* Severity ladder is FAIL > WARN > PASS; the verdict picks the worst.      */
 /* The detail string carries the runtime reason (e.g. "4-bit", "0xD8") so   */
-/* the verdict doesn't have to know how to format each value -- the probe   */
+/* the verdict doesn't have to know how to format each value; the probe   */
 /* that captured the value does, when it knows the value.                   */
 
 typedef enum { DX_PASS, DX_WARN, DX_FAIL } dx_sev_t;
@@ -444,7 +444,7 @@ static void probe_fuses(void)
         FUSE(FUSE_PRIVATE_KEY4) == 0xFFFFFFFF;
     if (locked) {
         /* SBK/DK reading all-0xFFFFFFFF is the bootrom locking them out
-         * post-pkg1 -- the normal, expected state, not a fault or warning. */
+         * post-pkg1: the normal, expected state, not a fault or warning. */
         log_color(COL_DEFAULT, "  SBK / DK     : locked out (bootrom)\n");
     } else {
         LOG("  SBK          : %08X%08X%08X%08X\n",
@@ -1865,7 +1865,7 @@ static void probe_dram(void)
      * does not return a trustworthy live value, so a threshold test on it
      * produced false signals. Catching bad DRAM (marginal cells that stall
      * HOS boot) requires a trained controller plus an actual R/W stress
-     * march -- a real memtester -- which is out of scope for this passive
+     * march (a real memtester), which is out of scope for this passive
      * single-pass probe. */
 }
 
@@ -1921,8 +1921,9 @@ static const char *panel_model_name(u16 dec)
 /* This version runs full cold power cycles, freezes port H across the      */
 /* whole strap window, uses masked GPIO writes so a port-H update can never */
 /* read-modify-write PH5 by accident, and measures rather than assumes at   */
-/* every step. Silence is still reported as inconclusive, never as a FAIL:  */
-/* a FAIL here would send someone to reball a working module.               */
+/* every step. Silence is a FAIL, but only once the UART-D loopback has     */
+/* proved our own path works - otherwise it stays inconclusive, because a   */
+/* FAIL we have not earned would send someone to reball a working module.   */
 
 /* ---- knobs -------------------------------------------------------------
  * One-line variants for a bench session. Each is independent.             */
@@ -2367,7 +2368,7 @@ static bool bt_attempt(const bt_arm_t *arm, u8 *ev, u32 ev_max, u32 *ev_n)
     GP_MWR(GPH_MOUT, GPIO_PIN_4, 1);
     (void)GPIO(GPH_OUT);
 
-    /* 5. Absolute port-H silence. The straps are sampled a few milliseconds
+    /* 5. Absolute port-H silence. PH5 is sampled a few milliseconds
      *    AFTER POR deassertion (p90 s13.4), and POR itself can hold the part
      *    up to 110 ms after its rails cross threshold - rails that only
      *    start at this edge, since VDDC comes from the internal CBUCK. So
@@ -3306,7 +3307,7 @@ static int hex_nibble(char c) {
 /* Try to populate SE slots 0/1 with bis_key_00 from sd:/switch/prod.keys.
  * Returns 0 on success, non-zero on any failure (file missing, key not
  * present, parse error). The slot writes go directly through the SE
- * engine -- the AES key registers are write-only, so we can't read them
+ * engine: the AES key registers are write-only, so we can't read them
  * back to verify, but a successful CAL0 magic decode in probe_serial
  * confirms the load worked. */
 static int load_bis_keys_from_sd(const char **err)
@@ -3490,7 +3491,7 @@ static void probe_serial(void)
                    hdr[0] == 'C' && hdr[1] == 'A' &&
                    hdr[2] == 'L' && hdr[3] == '0';
     /* Two-state finding: pass when keys decoded; warn (not fail) when
-     * either keys are absent or wrong-console -- keyfile config is
+     * either keys are absent or wrong-console: keyfile config is
      * not a hardware fault. */
     dx_set("prodinfo", (keys_loaded && cal0_ok) ? DX_PASS : DX_WARN,
         (keys_loaded && cal0_ok) ? "" :
@@ -3616,7 +3617,7 @@ static void probe_serial(void)
      *
      *  - body_sha256 is a factory hash over the whole body. It catches a
      *    PRODINFO that decrypts cleanly (right keys, right magic) but has
-     *    been corrupted or hand-edited since -- the state that makes HOS
+     *    been corrupted or hand-edited since: the state that makes HOS
      *    refuse to boot without saying why.
      *  - the rest is an inventory of what the factory fitted. Held against
      *    what the hardware reports now, a swapped panel or a different
@@ -3649,7 +3650,7 @@ static void probe_serial(void)
     /* nn::settings::system::ProductModel. Worth cross-checking against the
      * chip we actually booted on: PRODINFO travels with the eMMC, so a board
      * that reports Iowa while the SoC reads T210 means the eMMC came off a
-     * different console -- which is exactly what a donor-board repair looks
+     * different console, which is exactly what a donor-board repair looks
      * like from software, and it explains a unit that boots but is refused
      * online. */
     static const char *prod_models[] = {
@@ -3679,7 +3680,7 @@ static void probe_serial(void)
     /* nyx's decode: CAL0 packs the vendor in byte 0 and the panel type in
      * byte 2, which recombine into the same 0xVVTT the DSI read returns.
      * An all-zero field is not a panel ID, it means the factory never wrote
-     * one -- common on Mariko. Comparing against it would report every such
+     * one, which is common on Mariko. Comparing against it would report every
      * console as having a replaced screen, so don't. */
     u32 lcd_vendor = c->lcd_vendor & 0xFFFFFF;
     u16 cal_panel = (u16)(((lcd_vendor & 0xFF) << 8) | (lcd_vendor >> 16));
@@ -3692,7 +3693,7 @@ static void probe_serial(void)
 
         /* Only compare when the DSI ID actually read back; a failed read
          * returns the 0xCCCCCC sentinel and would look like a mismatch. A
-         * real mismatch is a warning, not a fault -- a replaced panel is
+         * real mismatch is a warning, not a fault: a replaced panel is
          * ordinary repair work, it just means the factory calibration no
          * longer matches what is fitted. */
         if ((display_get_verbose_panel_id() & 0xFFFFFF) != 0xCCCCCC) {
@@ -3708,7 +3709,7 @@ static void probe_serial(void)
     }
 
     /* Entries in the country-code table hold a regulatory-domain tag, not an
-     * ISO country code -- retail units carry a single "R1". Printed next to
+     * ISO country code: retail units carry a single "R1". Printed next to
      * the cc count above because a blank entry under a non-zero count means
      * the table itself is damaged, not just empty. */
     cal0_str(str, c->wlan_cc[0], sizeof(c->wlan_cc[0]));
@@ -3726,7 +3727,7 @@ static void probe_serial(void)
     LOG("  Region code  : %d\n", c->region_code);
 
     /* Speaker EQ/DRC tuning. An all-zero block means it was never written,
-     * which HOS reads as "no calibration" -- quiet, flat-sounding audio on a
+     * which HOS reads as "no calibration": quiet, flat-sounding audio on a
      * unit whose speakers are otherwise fine. */
     bool spk_blank = true;
     for (u32 i = 0; i < sizeof(c->spk_cal); i++) {
@@ -3945,7 +3946,7 @@ static void probe_pmc_scratch(void)
 
     /* Hekate "next-boot intent". Despite living in the MAX77620's RTC
      * scratch slots (2 slots, 6 bits each), this has nothing to do with
-     * time -- it's just the only battery-backed scratch storage on the
+     * time; it's just the only battery-backed scratch storage on the
      * board, so Hekate piggybacks on it to communicate with itself
      * across SoC resets ("next reboot, force the menu" / "next reboot,
      * do UMS"). The reason field decodes to:
@@ -4031,7 +4032,7 @@ static void probe_reset(void)
     dx_set("pmic_intlbt", intlbt ? DX_WARN : DX_PASS,
         intlbt ? "thermal/low-batt latch 0x%02X" : "", intlbt);
     /* IRQSD bits latch on every SD-rail buck transition, including the
-     * normal cold-boot ramp from off to in-regulation -- the per-bit
+     * normal cold-boot ramp from off to in-regulation: the per-bit
      * decode below is informational. Only escalate the verdict when
      * NVERC already shows a severe latch (i.e. the box rebooted because
      * of something), in which case IRQSD pinpoints which rail tripped.
@@ -4080,7 +4081,7 @@ static void probe_reset(void)
      *
      *    (a) Hekate's BDK already 1-indexes time->month internally
      *        (1=January, 12=December), so do NOT add 1 again on display
-     *        -- doing so was the off-by-one that printed January as 02.
+     *        (doing so was the off-by-one that printed January as 02).
      *
      *    (b) The MAX77620 calendar registers are not the same time the
      *        user sees in HOS. HOS keeps its own epoch offset (in system
@@ -4090,7 +4091,7 @@ static void probe_reset(void)
      *        resets to 2000-01-01 00:00:00 while HOS quietly keeps the
      *        offset and still shows the right wall time. So a year
      *        reading at the cold-boot default is informational, not a
-     *        fault -- we flag it as such instead of pretending the read
+     *        fault; we flag it as such instead of pretending the read
      *        is broken.
      *
      *    Hekate's own GUI uses an epoch offset stored in
@@ -4118,7 +4119,7 @@ static void probe_reset(void)
         if (fr == FR_OK) {
             /* nyx.ini is small (under 1 KiB in practice). Read into a
              * stack buffer and scan line-by-line for the two keys we
-             * care about. We don't need a full INI parser -- just
+             * care about. We don't need a full INI parser, only
              * find `timeoffset=` and `timedst=` outside any other
              * section, accepting the same hex/decimal encodings
              * Hekate writes. */
@@ -4165,7 +4166,7 @@ static void probe_reset(void)
     }
 
     /* Hekate writes timeoffset=1 as a sentinel meaning "user opted out
-     * of the offset" -- treat it as absent. Anything else is honoured. */
+     * of the offset": treat it as absent. Anything else is honoured. */
     if (nyx_offset_ok && nyx_offset != 0 && nyx_offset != 1) {
         max77620_rtc_set_epoch_offset(nyx_offset);
         max77620_rtc_set_auto_dst(nyx_dst);
@@ -4202,7 +4203,7 @@ static void probe_regulators(void)
      *
      * `expect_uv` is the exact value BDK's max77620_config_default() programs
      * (the uv_default column of _pmic_regulators in max7762x.c). A fixed rail
-     * that is ON must read this value EXACTLY -- no tolerance band. A band
+     * that is ON must read this value EXACTLY, with no tolerance band. A band
      * would hide a mis-programmed regulator, so we compare for equality.
      *
      * A handful of rails genuinely move and cannot be checked against a
@@ -4227,7 +4228,7 @@ static void probe_regulators(void)
     /* Rail labels cross-referenced against Hekate's bdk/power/max7762x.h
      * "Switch Power domains" table. Expected voltages started from the
      * uv_default column of _pmic_regulators (max7762x.c) but are corrected
-     * against measurements where the two disagree -- hardware wins:
+     * against measurements where the two disagree; hardware wins:
      *   SD1 (DRAM) : 1.125 V Erista (LPDDR4) vs 1.100 V Mariko (LPDDR4X).
      *   SD2 (LDOsrc): 1.350 V Erista vs 1.325 V Mariko. BDK lists 1.325 V as
      *                 uv_default for both, but Erista actually runs the
