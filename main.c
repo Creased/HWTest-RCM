@@ -893,9 +893,18 @@ static void probe_charger(void)
     dx_set("charger_pg",
         (vb != 0 && pg == 0) ? DX_FAIL : DX_PASS,
         (vb != 0 && pg == 0) ? "VBUS present but PG=0" : "");
+    /* Bit 7 is the I2C watchdog, and it is excluded on purpose. The BQ's
+     * watchdog exists to return the charger to defaults when the host stops
+     * talking to it; in RCM nothing ever writes to the BQ, so it expires by
+     * design after ~40 s and latches on any healthy console once a sweep
+     * runs longer than that. Flagging it would fail every good unit. The
+     * real fault bits - BOOST, CHRG, BAT, NTC - are still checked. */
+    u8 fault_real = fault2 & 0x78;
     dx_set("charger_fault",
-        (fault2 & 0xF8) ? DX_FAIL : DX_PASS,
-        (fault2 & 0xF8) ? "FAULT 0x%02X latched" : "", fault2);
+        fault_real ? DX_FAIL : DX_PASS,
+        fault_real ? "FAULT 0x%02X latched" : "", fault_real);
+    if (fault2 & 0x80)
+        LOG("  (watchdog bit set - expected in RCM, not a fault)\n");
 
     /* Decode all FAULT_REG bits. Bit map (per Hekate's bq24193.h, which
      * matches the BQ24193 datasheet REG09 layout):
