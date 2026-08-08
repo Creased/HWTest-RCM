@@ -5535,8 +5535,21 @@ static int save_report(void)
         log_color(COL_ERR, "[save] f_open failed (%d): %s\n", fr, s_report_path);
         return 4;
     }
-    UINT bw = 0;
-    f_write(&s_fp, g_report_body, strlen(g_report_body), &bw);
+    /* Lead the file with the verdict. It is computed from every other probe
+     * so it can only be produced last, and on the LCD the pager solves that
+     * by opening on page 0 - but a saved report is read top to bottom, and
+     * a technician wants the summary before the 900 lines of detail behind
+     * it. The verdict is the final section of the buffer, so writing that
+     * tail first and the head after costs nothing and re-runs nothing. */
+    UINT bw = 0, bw2 = 0;
+    const char *tail = strstr(g_report_body, "\n--- Diagnostics ---\n");
+    if (tail) {
+        f_write(&s_fp, tail + 1, strlen(tail + 1), &bw);
+        f_write(&s_fp, g_report_body, (UINT)(tail - g_report_body), &bw2);
+        bw += bw2;
+    } else {
+        f_write(&s_fp, g_report_body, strlen(g_report_body), &bw);
+    }
     f_close(&s_fp);
     log_color(COL_OK, "[save] %s (%d bytes)\n", s_report_path, bw);
     return 0;
