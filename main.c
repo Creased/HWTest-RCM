@@ -4246,9 +4246,9 @@ static void probe_regulators(void)
         {6,  "LDO2 (SDMMC1)",    0x27, 0x3F, 50000, 800000,       0,       0 }, /* UHS<->legacy */
         {7,  "LDO3 (GC ASIC)",   0x29, 0x3F, 50000, 800000, 3100000,       0 },
         {8,  "LDO4 (RTC)",       0x2B, 0x3F, 12500, 800000,       0,       0 }, /* 0.8<->1.0 */
-        {9,  "LDO5 (GC Card)",   0x2D, 0x3F, 50000, 800000, 1800000,       0 },
-        {10, "LDO6 (Touch+ALS)", 0x2F, 0x3F, 50000, 800000, 2900000,       0 },
-        {11, "LDO7 (XUSB)",      0x31, 0x3F, 50000, 800000, 1050000,       0 },
+        {9,  "LDO5 (GC Card)",   0x2D, 0x3F, 50000, 800000,       0,       0 }, /* OTP/HOS state-dependent */
+        {10, "LDO6 (Touch+ALS)", 0x2F, 0x3F, 50000, 800000,       0,       0 }, /* OTP/HOS state-dependent */
+        {11, "LDO7 (XUSB)",      0x31, 0x3F, 50000, 800000,       0,       0 }, /* OTP/HOS state-dependent */
         {12, "LDO8 (XUSB/DP)",   0x33, 0x3F, 50000, 800000,       0,       0 }, /* multi-use */
     };
     bool is_mariko = (((APB_MISC(APB_MISC_GP_HIDREV) >> 4) & 0xF) == 2);
@@ -4264,10 +4264,25 @@ static void probe_regulators(void)
                 "  %s : off  %d.%03d V\n",
                 rails[i].name, uv / 1000000, (uv / 1000) % 1000);
         } else if (expect == 0) {
-            /* Variable/DVFS rail: report the live value, no verdict. */
+            /* No fixed target. Two kinds of rail land here:
+             *  - SD0 and LDO2/4/8 are DVFS/multi-use and scale at runtime.
+             *  - LDO5/6/7 (game-card, touch/ALS, XUSB) are peripheral rails
+             *    with no single RCM voltage to check against. Their value is
+             *    EITHER the cold OTP default OR whatever HOS last programmed:
+             *    a PMIC soft reset (our reboot path) preserves the HOS value,
+             *    only a cold power-cycle restores the OTP default. Measured on
+             *    the same Mariko, LDO6 read 2.9 V warm-from-HOS but 2.8 V cold;
+             *    the Erista reads 2.8 V too. No hardcoded expectation is right
+             *    in both states (this is what made a fixed 1.8/2.9/1.05 V check
+             *    false-flag healthy units), and none of these rails matters for
+             *    booting - so report the live value without a verdict. */
+            bool otp_rail = (rails[i].id == REGULATOR_LDO5 ||
+                             rails[i].id == REGULATOR_LDO6 ||
+                             rails[i].id == REGULATOR_LDO7);
             log_color(COL_OK,
-                "  %s : ON   %d.%03d V  (variable / DVFS)\n",
-                rails[i].name, uv / 1000000, (uv / 1000) % 1000);
+                "  %s : ON   %d.%03d V  (%s)\n",
+                rails[i].name, uv / 1000000, (uv / 1000) % 1000,
+                otp_rail ? "OTP default; HOS may differ" : "variable / DVFS");
         } else {
             /* Fixed rail: must match the expected value EXACTLY. */
             bool match = (uv == expect);
