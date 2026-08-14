@@ -44,6 +44,9 @@ JC_BIN        := $(JC_DIR)/$(TARGET)_jc.bin
 # Object list shared by both variants.
 COMMON_OBJS = \
     start.o exception_handlers.o main.o stubs.o emmcsn.o \
+    log.o dx.o report.o verdict.o \
+    probe_soc.o probe_power.o probe_memclk.o probe_inputs.o probe_bt.o \
+    probe_display.o probe_storage.o probe_lowlevel.o \
     gfx.o \
     heap.o sprintf.o util.o btn.o dirlist.o \
     bpmp.o ccplex.o clock.o di.o i2c.o irq.o timer.o \
@@ -64,8 +67,8 @@ JC_OBJS      := $(addprefix $(JC_DIR)/,$(COMMON_OBJS) $(JC_EXTRA_OBJS))
 
 # Source search path. The bdk subtree isn't a flat directory, so we list each
 # leaf so VPATH can find the .c files by name. The bootloader/ leaves are
-# pulled in for files we'd otherwise have had to duplicate in-tree (start.S,
-# diskio.c, ffconf.h, gfx.h) -- now sourced from the submodule directly.
+# pulled in so start.S, diskio.c, ffconf.h and gfx.h are sourced from the
+# submodule directly rather than duplicated in-tree.
 VPATH = . $(GFXDIR) $(BDKDIR) \
         $(BDKDIR)/display $(BDKDIR)/input $(BDKDIR)/libs/fatfs \
         $(BDKDIR)/mem $(BDKDIR)/power $(BDKDIR)/rtc $(BDKDIR)/sec \
@@ -74,7 +77,7 @@ VPATH = . $(GFXDIR) $(BDKDIR) \
         $(HEKATE)/bootloader/libs/fatfs
 
 # The BDK's gfx_utils.h does `#include GFX_INC` and bdk/libs/fatfs/fatfs_cfg.h
-# does `#include FFCFG_INC`. Both resolve via -I, which now points at the
+# does `#include FFCFG_INC`. Both resolve via -I, which points at the
 # submodule's bootloader/gfx and bootloader/libs/fatfs.
 GFX_INC   := '"gfx.h"'
 FFCFG_INC := '"ffconf.h"'
@@ -94,11 +97,42 @@ JC_DEFINES      := $(BASE_DEFINES) -DJC_PROBE=1
 WARNINGS := -Wall -Wsign-compare -Wno-array-bounds -Wno-stringop-overread -Wno-stringop-overflow
 
 ARCH    := -march=armv4t -mtune=arm7tdmi -mthumb -mthumb-interwork $(WARNINGS)
+# Extra -D flags from the command line, e.g. a build that keeps the Wi-Fi
+# PCIe probe out of the sweep until it is armed from the pager:
+#   make EXTRA_DEFINES=-DWIFI_CFG_AUTORUN=0
+EXTRA_DEFINES ?=
+
+# Rebuild when the flags change.
+#
+# Make compares timestamps, and EXTRA_DEFINES has none - so `make
+# EXTRA_DEFINES=-DFOO=1` straight after an ordinary build would silently reuse
+# objects compiled without -DFOO, producing a payload that does not contain the
+# change. A stamp file holding the current flags gives make the timestamp it
+# needs.
+#
+# The stamp rule below is the first rule in this file, so pin the default goal
+# before it or `make` with no arguments builds a stamp instead of the payload.
+.DEFAULT_GOAL := all
+
+DEF_STAMP_D := $(DEFAULT_DIR)/.extra_defines
+DEF_STAMP_J := $(JC_DIR)/.extra_defines
+$(shell mkdir -p $(DEFAULT_DIR) $(JC_DIR) 2>/dev/null; \
+    for f in $(DEF_STAMP_D) $(DEF_STAMP_J); do \
+        printf '%s\n' '$(EXTRA_DEFINES)' | cmp -s - $$f || \
+            printf '%s\n' '$(EXTRA_DEFINES)' > $$f; \
+    done)
+# The rule below regenerates the stamps when `make clean all` deletes them
+# mid-invocation (the parse-time $(shell) above has already run by then).
+$(DEF_STAMP_D) $(DEF_STAMP_J):
+	@mkdir -p $(dir $@)
+	@printf '%s\n' '$(EXTRA_DEFINES)' > $@
+
 CFLAGS_BASE := $(ARCH) -O2 -g -nostdlib -ffunction-sections -fdata-sections \
                -fomit-frame-pointer -fno-inline -std=gnu11 \
                -I. -I$(BDKDIR) -I$(GFXDIR) \
                -I$(HEKATE)/bootloader/gfx \
-               -I$(HEKATE)/bootloader/libs/fatfs
+               -I$(HEKATE)/bootloader/libs/fatfs \
+               $(EXTRA_DEFINES)
 LDFLAGS := $(ARCH) -nostartfiles -lgcc -Wl,--nmagic,--gc-sections \
            -Xlinker --defsym=IPL_LOAD_ADDR=$(IPL_LOAD_ADDR) -T link.ld
 
@@ -119,14 +153,14 @@ $(DEFAULT_DIR) $(JC_DIR):
 # Per-variant compile rules. The %-pattern keeps the obj name parallel
 # across variants (e.g. main.o lives in both build/ and build-jc/) but
 # each gets its own CFLAGS via the variant-specific define set.
-$(DEFAULT_DIR)/%.o: %.c | $(DEFAULT_DIR)
+$(DEFAULT_DIR)/%.o: %.c $(DEF_STAMP_D) | $(DEFAULT_DIR)
 	$(CC) $(CFLAGS_BASE) $(DEFAULT_DEFINES) -c -o $@ $<
-$(DEFAULT_DIR)/%.o: %.S | $(DEFAULT_DIR)
+$(DEFAULT_DIR)/%.o: %.S $(DEF_STAMP_D) | $(DEFAULT_DIR)
 	$(CC) $(CFLAGS_BASE) $(DEFAULT_DEFINES) -c -o $@ $<
 
-$(JC_DIR)/%.o: %.c | $(JC_DIR)
+$(JC_DIR)/%.o: %.c $(DEF_STAMP_J) | $(JC_DIR)
 	$(CC) $(CFLAGS_BASE) $(JC_DEFINES) -c -o $@ $<
-$(JC_DIR)/%.o: %.S | $(JC_DIR)
+$(JC_DIR)/%.o: %.S $(DEF_STAMP_J) | $(JC_DIR)
 	$(CC) $(CFLAGS_BASE) $(JC_DEFINES) -c -o $@ $<
 
 # Link + objcopy per variant.

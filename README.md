@@ -57,6 +57,7 @@ SD not ready` line on UART; the LCD pager remains usable.
 | `a` / `A` | Refresh ALL probes (re-emit full UART dump) |
 | `G<name>\n` | Refresh just the named group (host viewer uses this) |
 | `s` / `S` | Re-write the SD report file |
+| `R` | Reboot (PMIC power cycle, so a modchip re-injects) |
 | `q` / POWER | Power off the console |
 
 ## What's reported
@@ -107,17 +108,12 @@ the detail when something needs chasing:
 Most of hwtest reads. This probe writes, and it is worth knowing what it does.
 
 The Switch's Broadcom CYW4356 carries WLAN on **PCIe** and Bluetooth on a
-plain 4-wire UART (Tegra UART-D, `0x70006300`). PCIe is out of reach from a
-payload: BDK (hekate's Bare Development Kit, the vendored hardware library)
-has none of the pieces needed to bring a PCIe link up: no AFI (Address
-Framing Interface, the controller's register window), no PLLE (the PCIe
-phase-locked loop) and no UPHY (Universal PHY) lane initialisation.
-
-The UART is reachable, though, and both radios share one package and one
-supply. So if Bluetooth answers HCI (Host Controller Interface, the standard
-Bluetooth host-to-controller command protocol), the module is powered, clocked
-and executing code, so a Wi-Fi fault is downstream of the chip: the PCIe
-link, the WLAN core, or the antenna.
+plain 4-wire UART (Tegra UART-D, `0x70006300`). The UART half is the cheap
+measurement, and it is the one that runs first: both radios share one package
+and one supply, so if Bluetooth answers HCI (Host Controller Interface, the
+standard Bluetooth host-to-controller command protocol), the module is
+powered, clocked and executing code, and a Wi-Fi fault has to be downstream
+of the chip.
 
 To get there the probe performs a real cold power cycle: it parks every radio
 control line in a known state, drives `BT_REG_ON` (PH4) and `WL_REG_ON` (PH1)
@@ -149,14 +145,21 @@ that stays silent is only reported as a failure when that loopback passed** --
 otherwise the fault is on our side of the pads and nothing is recorded against
 the radio.
 
+The probe does not settle for one attempt before it records silence. It runs
+three power-cycle arms and four flow-control (MCR) variants, every one of them
+at 115200 -- the CYW4356's default HCI rate, and the only rate the probe
+configures. There is no baud sweep. What that covers is a host-side transport
+or flow-control mismatch; the host baud is not covered, so a silent unit is
+reported as silent at 115200 rather than at every rate.
+
 Verified against four consoles spanning both SoC generations. Three healthy
 units, two Mariko and one Erista, each answer with a valid Command Complete
 (`04 0E 04 01 03 0C 00`) and identify as Broadcom (`0x000F`). One faulty
-Erista, reporting error 2110-1118 on Wi-Fi, never releases its internal
-pull-up on `BT_HOST_WAKE` and never asserts the transport-ready handshake,
-across three power-cycle arms, four flow-control variants and eight baud
-rates. Its PRODINFO calibration is intact, which puts the fault in the module,
-its supply, or its solder.
+Erista, reporting error 2110-1118 on Wi-Fi, stays quiet through every arm and
+every MCR variant: it never releases its internal pull-up on `BT_HOST_WAKE`
+and never asserts the transport-ready handshake. Its PRODINFO calibration is
+intact, which points at the module, its supply, or its solder -- unless that
+module came up at a rate other than 115200, which this probe does not test.
 
 ## Host viewer (`host_tools/hwtest_viewer.py`)
 
@@ -181,7 +184,20 @@ Joy-Con right rail as a UART tap, see this gbatemp guide:
 ## Layout
 
 ```
-main.c               - probe sequence + sinks + pager + UART command loop
+hwtest.h             - shared header: logging + finding APIs, probe prototypes
+main.c               - boot flow, page table, pager + UART command loop
+log.c                - three-sink logging (LCD + UART_B + report capture)
+dx.c                 - diagnostic-finding registry consumed by the verdict
+report.c             - SD report writer (backup/<emmc_serial>/hwtest.txt)
+verdict.c            - cross-checks + per-subsystem verdict aggregation
+probe_soc.c          - SoC identity, fuses, KFUSE
+probe_power.c        - PMIC, regulators, battery, charger, USB-PD, thermal, fan
+probe_storage.c      - SD, eMMC, partitions, health, GPT, BOOT0/pkg1, PRODINFO
+probe_bt.c           - Bluetooth radio (CYW4356 HCI over UART-D)
+probe_display.c      - DSI panel ID + backlight
+probe_inputs.c       - touch, ambient light, Joy-Con rails, buttons
+probe_memclk.c       - DRAM identity + clock registers
+probe_lowlevel.c     - GPIO census, UART debug port, reset reason, PMC scratch
 emmcsn.c             - Hekate-style backup/<emmc_serial>/<sub>/<file> path
 diskio.c, ffconf.h   - FatFS glue + config (vendored from the Hekate bootloader)
 exception_handlers.S - boot relocator (vendored from the Hekate bootloader)
