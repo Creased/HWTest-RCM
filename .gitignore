@@ -14,3 +14,8 @@ host_tools/__pycache__/
 
 # Dear ImGui auto-saved window layout for the host viewer.
 hwtest_viewer.ini
+
+# UART captures from the hardware test loop (hw_run.py and friends).
+hw_*.txt
+wireless_hw.txt
+*.txt.sweep

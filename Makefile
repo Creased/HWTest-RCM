@@ -46,7 +46,7 @@ COMMON_OBJS = \
     start.o exception_handlers.o main.o stubs.o emmcsn.o \
     log.o dx.o report.o verdict.o \
     probe_soc.o probe_power.o probe_memclk.o probe_inputs.o probe_bt.o \
-    probe_display.o probe_storage.o probe_lowlevel.o \
+    probe_wifi.o probe_display.o probe_storage.o probe_lowlevel.o \
     gfx.o \
     heap.o sprintf.o util.o btn.o dirlist.o \
     bpmp.o ccplex.o clock.o di.o i2c.o irq.o timer.o \
@@ -162,6 +162,64 @@ $(JC_DIR)/%.o: %.c $(DEF_STAMP_J) | $(JC_DIR)
 	$(CC) $(CFLAGS_BASE) $(JC_DEFINES) -c -o $@ $<
 $(JC_DIR)/%.o: %.S $(DEF_STAMP_J) | $(JC_DIR)
 	$(CC) $(CFLAGS_BASE) $(JC_DEFINES) -c -o $@ $<
+
+# ---- CPU0 stub (AArch64) --------------------------------------------------
+#
+# The PCIe register apertures are not reachable from the BPMP - they hang off
+# MSELECT, whose only master is the CPU complex (TRM ch.16/19, and the T210
+# block diagram: MSelect is fed by CCPLEX/CPUCIF, and its 32-bit "AXI>ARM7
+# (APC)" port is a bridge INTO the ARM7 world, not out of it). So the handful
+# of accesses that must come from a CPU-complex master are built separately
+# for AArch64 and embedded in the payload as a byte array, which the BPMP
+# copies to DRAM before releasing CPU0 at it.
+#
+# Separate toolchain: devkitA64. Absent, the stub is skipped and the probe
+# reports that the CPU path was not built rather than failing the build, so
+# the BPMP-side diagnostics keep working on a machine without it.
+DEVKITA64 ?= $(dir $(DEVKITARM))devkitA64
+A64_CC    := $(DEVKITA64)/bin/aarch64-none-elf-gcc
+A64_OC    := $(DEVKITA64)/bin/aarch64-none-elf-objcopy
+HAVE_A64  := $(wildcard $(A64_CC))
+
+A64_CFLAGS := -march=armv8-a -mgeneral-regs-only -ffreestanding -nostdlib \
+              -fno-builtin -fno-stack-protector -Os -Wall -Wextra \
+              -fno-asynchronous-unwind-tables -fno-unwind-tables
+
+$(DEFAULT_DIR)/cpu_stub.elf: cpu_stub/stub.S cpu_stub/stub.c cpu_stub/stub.ld \
+                             cpu_mbox.h $(DEF_STAMP_D) | $(DEFAULT_DIR)
+	$(A64_CC) $(A64_CFLAGS) $(EXTRA_DEFINES) -T cpu_stub/stub.ld -o $@ \
+	    cpu_stub/stub.S cpu_stub/stub.c -lgcc
+
+$(DEFAULT_DIR)/cpu_stub.bin: $(DEFAULT_DIR)/cpu_stub.elf
+	$(A64_OC) -O binary $< $@
+	@printf '   built %s (%s bytes)\n' $@ $$(stat -c%s $@)
+
+# Emit the blob as a C array. Written by hand rather than with xxd so the
+# build does not depend on it being installed.
+# Plain types, no bdk header: this file is generated into build/ and does not
+# get the -I flags the in-tree sources do. unsigned char / unsigned int match
+# bdk's u8 / u32 exactly on this target.
+$(DEFAULT_DIR)/cpu_stub_bin.c: $(DEFAULT_DIR)/cpu_stub.bin
+	@printf '/* generated from cpu_stub.bin - do not edit */\n' > $@
+	@od -An -v -tx1 $< | awk 'BEGIN{printf "const unsigned char cpu_stub_bin[] = {\n"} \
+	    {for(i=1;i<=NF;i++) printf "0x%s,", $$i; printf "\n"} \
+	    END{printf "};\nconst unsigned int cpu_stub_bin_size = sizeof(cpu_stub_bin);\n"}' >> $@
+
+$(DEFAULT_DIR)/cpu_stub_bin.o: $(DEFAULT_DIR)/cpu_stub_bin.c | $(DEFAULT_DIR)
+	$(CC) $(CFLAGS_BASE) $(DEFAULT_DEFINES) -c -o $@ $<
+
+$(JC_DIR)/cpu_stub_bin.o: $(DEFAULT_DIR)/cpu_stub_bin.c | $(JC_DIR)
+	$(CC) $(CFLAGS_BASE) $(JC_DEFINES) -c -o $@ $<
+
+# Both variants carry the CPU stub. The wifi probe's verdict path is part of
+# the shipped binaries, and the Joy-Con build reports through its LCD console
+# like every other probe - the users must not need to rebuild anything.
+ifneq ($(HAVE_A64),)
+DEFAULT_OBJS    += $(DEFAULT_DIR)/cpu_stub_bin.o
+DEFAULT_DEFINES += -DHAVE_CPU_STUB=1
+JC_OBJS         += $(JC_DIR)/cpu_stub_bin.o
+JC_DEFINES      += -DHAVE_CPU_STUB=1
+endif
 
 # Link + objcopy per variant.
 $(DEFAULT_DIR)/$(TARGET).elf: $(DEFAULT_OBJS) link.ld

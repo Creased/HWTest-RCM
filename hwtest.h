@@ -17,6 +17,8 @@
 #include <stdarg.h>
 #include <string.h>
 
+#include "cpu_mbox.h"
+
 extern void pivot_stack(u32 stack);
 extern char *emmcsn_path_impl(char *path, char *sub_dir, char *filename,
                               sdmmc_storage_t *storage);
@@ -135,6 +137,8 @@ int save_report(void);
 /* ---- shared state ---- */
 
 extern bool g_show_status;
+extern bool g_wifi_armed;
+extern bool g_wifi_brought_up;
 extern bool g_sd_ok;
 extern bool g_emmc_ok;
 extern char *g_report_body;
@@ -166,6 +170,8 @@ void probe_autorcm(void);
 void probe_sd_content(void);
 void probe_storage_errors(void);
 void probe_bt_radio(void);
+void probe_wifi_pcie(void);
+void probe_wifi_link(void);
 void probe_display(void);
 void probe_backlight(void);
 void probe_touch(void);

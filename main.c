@@ -147,8 +147,11 @@ static const struct page_entry g_pages[] = {
      * probes above performed. */
     {probe_storage_errors, "Storage"},
 
-    /* Wireless. */
+    /* Wireless: the two halves of the CYW4356. BT first - it is the
+     * cheaper measurement and its result frames the PCIe one. */
     {probe_bt_radio,   "Wireless"},
+    {probe_wifi_pcie,  "Wireless"},
+    {probe_wifi_link,  "Wireless"},
 
     /* Display + backlight. */
     {probe_display,    "Display"},
@@ -179,6 +182,22 @@ void run_all_probes(void)
      * reads what the data probes deposited; the pager still shows it
      * first via index 0. */
     dx_reset();
+
+#if WIFI_CFG_EARLY_REGON
+    /* Power the WLAN section at the very START of the sweep, so by the time
+     * the Wi-Fi probe enumerates - many probes and several seconds later -
+     * the CYW4356 has been powered continuously. That mirrors HOS, where the
+     * RE shows WL_REG_ON is a boot-on/always-on regulator held high from
+     * early boot (the pcie sysmodule never touches the WifiReset pad), NOT
+     * cycled ~150 ms before enumeration as this probe does. Pair with
+     * WIFI_CFG_COLD_CYCLE=0 so the Wi-Fi probe leaves it high. PH1 is driven
+     * as a plain GPIO output; the BT probe restores it high too. */
+    PINMUX_AUX(PMX_PH1_WL_REG_ON) = PINMUX_INPUT_ENABLE | PINMUX_PULL_DOWN;
+    GP_MWR(GPH_MOUT, GPIO_PIN_1, 1);
+    GP_MWR(GPH_MCNF, GPIO_PIN_1, 1);
+    GP_MWR(GPH_MOE,  GPIO_PIN_1, 1);
+    (void)GPIO(GPH_OUT);
+#endif
 
     for (u32 i = 1; i < N_PAGES; i++) {
         status_set(g_pages[i].name);
@@ -232,7 +251,7 @@ static void render_page(int idx)
         log_color(COL_HEADER, "hwtest - %s  -  page %d/%d\n",
                   g_pages[idx].name, idx + 1, (int)N_PAGES);
     }
-    LOG("n next | p prev | r refresh | a all | s save | R reboot | q off\n");
+    LOG("n next | p prev | r refresh | a all | w wifi | s save | R reboot | q off\n");
     LOG("=============================================================\n\n");
     _log_no_uart = prev;
 
@@ -574,6 +593,20 @@ void ipl_main(void)
             render_page(page);
         } else if (refresh) {
             render_page(page);
+        } else if (c == 'W' || c == 'w') {
+            /* Re-run the PCIe Wi-Fi probe on demand. It runs in the boot
+             * sweep as well (WIFI_CFG_AUTORUN), so this is for repeating it
+             * without a reboot - after moving the console, or to watch a
+             * marginal link train twice. The bring-up itself is the risky
+             * part: a mis-sequenced one stalls CPU0 on the bus, which the
+             * BPMP supervises and recovers from by powergating the
+             * cluster. */
+            bool prev = _log_uart_only;
+            _log_uart_only = true;
+            log_color(COL_HEADER, "\n--- Wireless ---\n");
+            g_wifi_armed = true;
+            probe_wifi_pcie();
+            _log_uart_only = prev;
         } else if (c == 'G') {
             /* Group refresh: 'G' followed by an ASCII group name and a
              * '\n'. Re-runs every probe whose g_pages[].name matches the
