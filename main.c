@@ -1200,34 +1200,124 @@ static void probe_pmic_gpios(void)
  * "fan dead / seized / unplugged, or tach line broken" verdict. A few
  * thousand RPM is healthy. */
 
-/* Commanded duty for the active test. 236 is max; ~64% starts any working
- * fan from standstill without running it at full blast. */
-#define FAN_TEST_DUTY   150
-/* Time allowed to reach steady state from standstill before sampling. */
-#define FAN_SPINUP_MS   800
+/* Commanded duty for the active test, and the kick that gets there.
+ *
+ * Duty 100 is fine for a fan that is ALREADY TURNING - but it does not
+ * reliably break stiction from a dead stop, and that cost a long
+ * misdiagnosis. Evidence: a run of ~40 captures on one console read 0 rpm
+ * from cold, then once the fan finally caught it read on every consecutive
+ * run and climbed steadily (4770 -> 4830 -> 4980 -> ... -> 5520 rpm) as
+ * back-to-back runs kept it spinning, then dropped back to 0 after the
+ * console sat idle and the fan coasted to a stop. That is stiction, not a
+ * broken tachometer.
+ *
+ * So: kick at full duty to get it moving, then drop to the measurement duty
+ * and let it settle before sampling. This is the ordinary way to start a
+ * brushless fan and it makes the reading independent of how recently the
+ * console last ran. */
+#define FAN_KICK_DUTY   236   /* max, to break stiction from standstill */
+#define FAN_KICK_MS     600
+/* Extra current draw that counts as "the motor is actually turning". The
+ * Switch fan pulls well over this at duty 100; the gauge's sample-to-sample
+ * jitter is a few mA, so this clears the noise with room to spare. */
+#define FAN_CURRENT_MIN_MA  25
+#define FAN_TEST_DUTY   100
+/* Time allowed to reach steady state at the test duty before sampling. */
+#define FAN_SPINUP_MS   2000
 /* Tach sampling window. At the test duty this is a few hundred edges,
  * far more resolution than the alive/dead question needs. */
-#define FAN_SAMPLE_MS   400
+/* 1 s, not 400 ms. hekate polls this signal for 2 s and notes 5 s is needed
+ * for an accurate count, so 400 ms was short enough that a genuinely
+ * spinning fan could round to zero and be reported as seized. 1 s keeps the
+ * probe quick while giving the counter something to work with. */
+#define FAN_SAMPLE_MS   1000
 
 /* Count tach transitions on PORT_S pin 7 for `ms`, and convert to RPM.
  * Each revolution yields 2 tach pulses = 4 edges, so
  * rpm = (edges / 4) * (60000 / ms). */
-static u32 _fan_measure_rpm(u32 ms, int *out_edges)
+/* Put the tachometer pad in a state where it can actually be read.
+ *
+ * bdk's fan_set_duty() does this, but only inside a `if (!fan_init)` one-shot
+ * that also early-returns when the requested duty equals the current one - so
+ * whether the pad is configured by the time we sample depends on the call
+ * history, not on anything this probe controls. Reported "0 RPM" on a console
+ * whose fan was audibly spinning. Configure it here, every time, exactly as
+ * bdk does: CAM1_PWDN to SFIO 1, input receiver on, tristated, and pulled up
+ * on Erista (T210B01 drives it, so no pull), then the GPIO to input.
+ *
+ * This is the same trap as UART-B RX elsewhere in this file: a pad whose
+ * input receiver was never enabled reads a constant, and a constant reads as
+ * "no edges", which reads as "dead fan". */
+static void _fan_tach_pad_init(void)
 {
-    int edges = 0, last = -1;
+    u32 pull = (((APB_MISC(APB_MISC_GP_HIDREV) >> 4) & 0xF) == 1)
+                 ? PINMUX_PULL_UP : 0;
+    PINMUX_AUX(PINMUX_AUX_CAM1_PWDN) =
+        PINMUX_TRISTATE | PINMUX_INPUT_ENABLE | pull | 1;
+    gpio_direction_input(GPIO_PORT_S, GPIO_PIN_7);
+    (void)GPIO(0x004);   /* commit */
+}
+
+/* Count tach pulses the way hekate does: rising edges with a debounce, over
+ * a window long enough to matter. Its own comment - "Poll irqs for 2 seconds
+ * (5 seconds for accurate count)" - is the tell that this signal is far
+ * slower than a naive sample window assumes. Counting every transition over
+ * 400 ms, as this probe used to, then dividing by 4, throws away most of the
+ * resolution and rounds a real reading down to zero.
+ *
+ * The Switch fan is 4-pole: two tach pulses per revolution, hence /2. */
+static u32 _fan_measure_rpm(u32 ms, int *out_edges, u32 *out_trans, u32 *out_lo)
+{
+    u32 count = 0, trans = 0, lo = 0;
+    int last = gpio_read(GPIO_PORT_S, GPIO_PIN_7);
+    /* Arm from the line's ACTUAL starting level, not unconditionally.
+     * Starting armed means a line sitting permanently high scores its very
+     * first sample as a pulse and reports "1 pulse", which then reads as
+     * "the tach is toggling, just slowly" - the exact opposite of the truth,
+     * and it cost a long detour before the transition count below settled
+     * it. A line that never moves must count zero. */
+    bool armed = !last;
     u32 deadline = get_tmr_us() + ms * 1000;
 
     while ((s32)(deadline - get_tmr_us()) > 0) {
         int v = gpio_read(GPIO_PORT_S, GPIO_PIN_7);
-        if (last != -1 && v != last)
-            edges++;
+        if (v) {
+            if (armed) { count++; armed = false; }
+        } else {
+            lo++;
+            armed = true;
+        }
+        if (v != last)
+            trans++;
         last = v;
     }
 
-    if (out_edges)
-        *out_edges = edges;
+    if (out_edges) *out_edges = (int)count;
+    /* Transitions and low-sample count separate "the pad never saw the line
+     * move" from anything to do with this function's arithmetic. */
+    if (out_trans) *out_trans = trans;
+    if (out_lo)    *out_lo    = lo;
 
-    return (u32)edges / 4 * (60000 / ms);
+    /* pulses -> rev/min: count over `ms`, two pulses per revolution. */
+    return (count / 2) * (60000 / ms);
+}
+
+/* Battery current in mA, averaged. Negative = discharging. The fuel gauge
+ * reports in microamps and jitters by a few mA sample to sample, so take
+ * several and mean them - the fan's own draw is tens of mA and has to be
+ * separable from that noise. */
+static int _fan_current_ma(void)
+{
+    int sum = 0, n = 0;
+    for (int i = 0; i < 8; i++) {
+        int v;
+        if (max17050_get_property(MAX17050_Current, &v) == 0) {
+            sum += v / 1000;
+            n++;
+        }
+        msleep(25);
+    }
+    return n ? sum / n : 0;
 }
 
 static void probe_fan(void)
@@ -1258,28 +1348,104 @@ static void probe_fan(void)
         "  PWM duty     : %d/236 (%d%%)%s\n",
         duty, duty_pct,
         !ch_en  ? "  [PWM channel disabled]"
-        : abs_off ? "  [absolute 0%% override]"
+        /* Plain "%", not "%%": this string is a printf ARGUMENT, not part of
+         * the format, so the escape was never consumed and the console
+         * printed "absolute 0%% override" verbatim. */
+        : abs_off ? "  [absolute 0% override]"
                   : "");
 
     /* If the fan was already commanded before we ran (some launch paths do
      * this), report what it's doing right now without disturbing it. */
     if (duty > 0) {
         int idle_edges = 0;
-        u32 idle_rpm = _fan_measure_rpm(FAN_SAMPLE_MS, &idle_edges);
+        u32 idle_rpm = _fan_measure_rpm(FAN_SAMPLE_MS, &idle_edges,
+                                        NULL, NULL);
         log_color(idle_rpm ? COL_OK : COL_ERR,
             "  As found     : ~%d RPM at duty %d\n", idle_rpm, duty);
     }
 
     /* --- Active test: command a known duty and see if the tach answers. --- */
     log_color(COL_INFO,
-        "  Spin-up test : driving duty %d for %d ms...\n",
+        "  Spin-up test : kick %d for %d ms, then %d for %d ms...\n",
+        FAN_KICK_DUTY, FAN_KICK_MS,
         FAN_TEST_DUTY, FAN_SPINUP_MS + FAN_SAMPLE_MS);
 
+    /* Baseline current before the fan is driven. A turning fan draws real
+     * current, so comparing before/after tells us whether the motor is
+     * running INDEPENDENTLY of the tachometer. That distinction matters: one
+     * console here has a fan that audibly spins while its tach line stays
+     * flat, and calling that "fan seized" is a false failure. Averaged over a
+     * few samples because the charger makes a single reading noisy. */
+    int i_before = _fan_current_ma();
+
+    /* Kick first (see FAN_KICK_DUTY): full duty to break stiction, then the
+     * measurement duty. Without the kick a stopped fan can simply never start
+     * at duty 100 and the tach correctly reads zero - which looks exactly
+     * like a dead tachometer. */
+    fan_set_duty(FAN_KICK_DUTY);
+    _fan_tach_pad_init();         /* after bdk, so ours is what sticks */
+    msleep_poll(FAN_KICK_MS);
     fan_set_duty(FAN_TEST_DUTY);
     msleep_poll(FAN_SPINUP_MS);   /* stays reboot-responsive */
 
+    /* Measure with bdk's own fan_get_speed(), not a hand-rolled counter.
+     *
+     * This probe used to count every transition over a 400 ms window and
+     * divide by four, and it called an audibly spinning fan seized. The
+     * fan_get_speed() polls the tach for a full 2 s and counts
+     * debounced rising edges - and its own comment notes 5 s is needed for
+     * an accurate count. A 400 ms window against a signal that slow rounds
+     * a real reading to zero.
+     *
+     * Our own counter is kept, but only as a secondary line: two independent
+     * numbers make "the tach is silent" and "our arithmetic is wrong" tell
+     * themselves apart, which is exactly the confusion that produced the
+     * false failure. */
+    u32 bdk_duty = 0, rpm = 0;
+    fan_get_speed(&bdk_duty, &rpm);
+
     int edges = 0;
-    u32 rpm = _fan_measure_rpm(FAN_SAMPLE_MS, &edges);
+    u32 tach_trans = 0, tach_lo = 0;
+    u32 own_rpm = _fan_measure_rpm(FAN_SAMPLE_MS, &edges,
+                                   &tach_trans, &tach_lo);
+    LOG("  Tach detail  : bdk %d rpm | own %d rpm (%d pulses in %d ms)\n",
+        rpm, own_rpm, edges, FAN_SAMPLE_MS);
+
+    /* Current with the fan running, against the baseline taken before it was
+     * driven. A fan that is actually turning draws current; one that is
+     * seized or unplugged does not. This is what separates "the tachometer
+     * cannot be read" from "the fan is not running", which the tach signal
+     * alone cannot do. */
+    int i_after = _fan_current_ma();
+    int i_delta = i_before - i_after;   /* more discharge => positive */
+    bool drawing = i_delta >= FAN_CURRENT_MIN_MA;
+    LOG("  Fan current  : %d -> %d mA (delta %d mA, %s)\n",
+        i_before, i_after, i_delta,
+        drawing ? "motor is loaded" : "no extra draw");
+
+    /* If the count is zero, say whether the pad could even have seen a pulse.
+     * A tristated pad with its input receiver off reads a constant, and a
+     * constant is indistinguishable from a stopped fan unless the pad state
+     * is on the page next to it. */
+    {
+        u32 pmx = PINMUX_AUX(PINMUX_AUX_CAM1_PWDN);
+        LOG("  Tach pad     : CAM1_PWDN=%04X E_INPUT=%d TRI=%d pull=%d lvl=%d\n",
+            pmx & 0xFFFF, (pmx & PINMUX_INPUT_ENABLE) ? 1 : 0,
+            (pmx & PINMUX_TRISTATE) ? 1 : 0, (pmx >> 2) & 3,
+            gpio_read(GPIO_PORT_S, GPIO_PIN_7));
+
+        /* bdk keeps the GPIO register offsets private to gpio.c. Same
+         * formula. CNF says whether the GPIO controller actually owns the
+         * pad - the pinmux above selects SFIO function 1, so without CNF
+         * set this would read a constant no matter what the fan did. */
+        u32 pofs = ((GPIO_PORT_S >> 2) << 8) + ((GPIO_PORT_S % 4) << 2);
+        LOG("  Tach line    : %d transitions, %d low samples in %d ms\n",
+            tach_trans, tach_lo, FAN_SAMPLE_MS);
+        LOG("  Tach gpio    : CNF=%08X OE=%08X (PS7 cnf=%d oe=%d)\n",
+            GPIO(0x00 + pofs), GPIO(0x10 + pofs),
+            (GPIO(0x00 + pofs) & GPIO_PIN_7) ? 1 : 0,
+            (GPIO(0x10 + pofs) & GPIO_PIN_7) ? 1 : 0);
+    }
 
     /* Read the duty back through the same decode, so a PWM block that
      * silently ignored the write is distinguishable from a dead fan. */
@@ -1307,10 +1473,41 @@ static void probe_fan(void)
             "  Tach RPM     : %d - inconclusive, PWM never applied\n", rpm);
         dx_set("fan_stalled", DX_FAIL, "PWM readback %d", duty_readback);
     } else if (rpm == 0) {
-        log_color(COL_ERR,
-            "  Tach RPM     : 0 at duty %d - fan dead/seized/unplugged"
-            " or tach broken\n", FAN_TEST_DUTY);
-        dx_set("fan_stalled", DX_FAIL, "0 rpm at duty %d", FAN_TEST_DUTY);
+        /* Report the raw pulse count, always. "0 RPM" with the count hidden
+         * is what made this probe insist a plainly audible fan was seized:
+         * a handful of pulses divided by two and floored is still zero, and
+         * zero read as "dead". The count separates "no signal at all" from
+         * "signal, but fewer pulses than the arithmetic expects". */
+        log_color(tach_trans ? COL_WARN : COL_ERR,
+            "  Tach RPM     : 0 at duty %d (%d pulses, %d transitions)\n",
+            FAN_TEST_DUTY, edges, tach_trans);
+        if (tach_trans) {
+            LOG("  (the tach IS toggling, so the fan is turning - the pulse\n");
+            LOG("   count is just too low for this window's arithmetic)\n");
+            dx_set("fan_stalled", DX_WARN, "only %d tach pulses", edges);
+        } else if (drawing) {
+            /* The measurement that stops this being a false failure: the
+             * motor is drawing current, so the fan IS running and only its
+             * tachometer is unreadable. That is a real finding worth a
+             * warning - the cooling still works - but it is not the hard
+             * failure a seized fan would be, and this probe used to report
+             * it as one on a console whose fan was audibly spinning. */
+            log_color(COL_WARN,
+                "  Fan verdict  : SPINNING (draws %d mA) but tach unreadable\n",
+                i_delta);
+            LOG("  (cooling works; only the tach signal is missing, so RPM\n");
+            LOG("   cannot be measured on this unit - a broken tach wire or\n");
+            LOG("   a replacement fan without one)\n");
+            dx_set("fan_stalled", DX_WARN,
+                   "spins (%d mA) but tach silent", i_delta);
+        } else {
+            /* No pulses AND no extra current: nothing is turning. */
+            LOG("  (tach line never moved: it sat at %d for the whole\n",
+                gpio_read(GPIO_PORT_S, GPIO_PIN_7));
+            LOG("   window, and the motor drew no extra current - so the fan\n");
+            LOG("   really is not turning: seized, unplugged or unpowered)\n");
+            dx_set("fan_stalled", DX_FAIL, "no tach and no current draw");
+        }
     } else {
         log_color(COL_OK,
             "  Tach RPM     : ~%d at duty %d (%d edges in %d ms)\n",
