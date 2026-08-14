@@ -831,14 +831,15 @@ static void probe_battery(void)
         if (n) sbuf[n - 1] = 0;
         /* POR-only or BI-only is benign; anything else flagged warn. */
         bool benign = !(status & ~(0x0002 | 0x0800));
+        if (status & 0x0002 && benign)
+            strcat(sbuf, " (relearn pending, readings advisory)");
         log_color(benign ? COL_DEFAULT : COL_WARN,
             "  STATUS       : 0x%04X (%s)\n", status, sbuf);
     }
-    /* Verdict signal: POR latch indicates a fresh power-cycle of the
-     * gauge IC (typical: battery swap), readings above are advisory
-     * until a full charge-discharge cycle relearns the cell. */
-    dx_set("fuel_por", (status & 0x0002) ? DX_WARN : DX_PASS,
-        (status & 0x0002) ? "POR latched (relearn pending)" : "");
+    /* The POR latch is the gauge's own power-cycle marker - expected
+     * after any battery swap/disconnect and on bench consoles, so it
+     * does not weigh on the verdict. The STATUS line above already
+     * carries the "relearn pending" note for the report. */
 
     /* FSTAT: RelDt set means current is near zero and the fuel-gauge
      * values you're reading are fully trustworthy. DNR set means the
@@ -1501,7 +1502,10 @@ static void probe_fan(void)
             dx_set("fan_stalled", DX_WARN,
                    "spins (%d mA) but tach silent", i_delta);
         } else {
-            /* No pulses AND no extra current: nothing is turning. */
+            /* No pulses AND no extra current: nothing is turning. This is
+             * a hard failure regardless of cause (seized, unplugged or
+             * unpowered): the console cannot measure the fan speed, which
+             * is exactly the state that must not be reported as fine. */
             LOG("  (tach line never moved: it sat at %d for the whole\n",
                 gpio_read(GPIO_PORT_S, GPIO_PIN_7));
             LOG("   window, and the motor drew no extra current - so the fan\n");
@@ -2131,7 +2135,7 @@ static const char *panel_model_name(u16 dec)
 #define BT_CFG_POR_MS      200 /* port-H freeze + POR wait after the edge     */
 #define BT_CFG_MCR_HCI     UART_MCR_RTS   /* 0x02: force the RTS pin LOW      */
 #define BT_CFG_MCR_SWEEP   1   /* on total failure, sweep MCR                 */
-#define BT_CFG_BAUD_SWEEP  1   /* on total failure, sweep host baud           */
+#define BT_CFG_BAUD_SWEEP  0   /* always use 115200; no sweep on failure      */
 #define BT_CFG_HCI_MS      700 /* per-send response deadline, ms              */
 #define BT_CFG_HCI_TRIES   3   /* HCI_Reset sends per arm                     */
 
@@ -4203,11 +4207,14 @@ static void probe_reset(void)
 
     /* 2. MAX77620 NVERC (non-volatile reset cause) */
     u8 nverc = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_NVERC);
-    /* Severe latches = real fault evidence. Soft latches (SHDN/HDRST/
-     * RSTIN) are user-triggered and only warn. */
+    /* Severe latches = real fault evidence: the PMIC watchdog fired, a
+     * thermal overload tripped, or the battery rail over-loaded. Battery-
+     * depletion events (MBLSD low-battery shutdown, MBU under-voltage)
+     * happen on every deep discharge and on a battery pull while powered -
+     * power-history noise on an otherwise healthy PMIC, so they warn.
+     * User-triggered resets (SHDN/HDRST/RSTIN) warn too. */
     u8 nverc_severe = nverc & (MAX77620_NVERC_WTCHDG | MAX77620_NVERC_TOVLD |
-                               MAX77620_NVERC_MBLSD  | MAX77620_NVERC_MBO   |
-                               MAX77620_NVERC_MBU);
+                               MAX77620_NVERC_MBO);
     dx_set("pmic_nverc",
         nverc_severe ? DX_FAIL : nverc ? DX_WARN : DX_PASS,
         nverc_severe ? "severe latch 0x%02X" :
@@ -4218,9 +4225,9 @@ static void probe_reset(void)
     if (nverc & MAX77620_NVERC_WTCHDG)  log_color(COL_ERR,  "                 - WTCHDG: PMIC watchdog tripped\n");
     if (nverc & MAX77620_NVERC_HDRST)   log_color(COL_WARN, "                 - HDRST : hard reset (long power-button)\n");
     if (nverc & MAX77620_NVERC_TOVLD)   log_color(COL_ERR,  "                 - TOVLD : thermal overload trip\n");
-    if (nverc & MAX77620_NVERC_MBLSD)   log_color(COL_ERR,  "                 - MBLSD : main-batt low-voltage shutdown\n");
-    if (nverc & MAX77620_NVERC_MBO)     log_color(COL_ERR,  "                 - MBO   : main-batt over-voltage\n");
-    if (nverc & MAX77620_NVERC_MBU)     log_color(COL_ERR,  "                 - MBU   : main-batt under-voltage\n");
+    if (nverc & MAX77620_NVERC_MBLSD)   log_color(COL_WARN, "                 - MBLSD : main-batt low-voltage shutdown\n");
+    if (nverc & MAX77620_NVERC_MBO)     log_color(COL_ERR,  "                 - MBO   : main-batt overload\n");
+    if (nverc & MAX77620_NVERC_MBU)     log_color(COL_WARN, "                 - MBU   : main-batt under-voltage\n");
     if (nverc & MAX77620_NVERC_RSTIN)   log_color(COL_WARN, "                 - RSTIN : RST input asserted\n");
 
     /* 3. INTLBT and IRQSD: latched IRQ events */
@@ -4537,7 +4544,10 @@ static void probe_clocks(void)
         {0xE0,  "PLLX ",  false},
         {0x4B8, "PLLD2",  false},
         {0x590, "PLLDP",  false},
-        {0x4C4, "PLLRE",  false},
+        /* PLLRE (the PCIe refclk PLL, 0x4C4) is excluded: it is only
+         * enabled by the wifi probe and reported there; including it
+         * here produces spurious "ENABLED, NO-LOCK" noise on any
+         * run that follows a PCIe bring-up. */
     };
     int n_unlocked = 0;
     for (size_t i = 0; i < sizeof(plls)/sizeof(plls[0]); i++) {
@@ -5786,25 +5796,36 @@ static void _emit_xchecks(void)
 {
     HEADER("[Cross-checks]");
 
-    /* === A. VBUS / ACOK consistency ===
-     * BQ24193 STATUS (0x08) bits 7:6 = VBUS_STAT (0=none, 1=USB-SDP,
-     * 2=adapter, 3=OTG). MAX77620 ONOFFSTAT (0x15) bit 1 = ACOK.
-     * On a healthy unit both either say "charger present" or both say
-     * "absent". Disagreement = broken AC-OK detection trace between
-     * the charger output and the PMIC sense pin. */
+    /* === A. VBUS / ACOK / USB-PD consistency ===
+     * Three independent chips observe the USB-C input:
+     *   - BM92T36 (USB-PD controller) sees the cable via CC and gates VBUS
+     *   - BQ24193 (charger) sees VBUS at its input (VBUS_STAT, bits 7:6
+     *     of STATUS 0x08: 0=none, 1=USB-SDP, 2=adapter, 3=OTG)
+     *   - MAX77620 (PMIC) sees the adapter via its ACOK sense pin
+     * On a healthy unit all three agree. A pair that disagrees localises
+     * a broken trace; all three saying "absent" while a known-good
+     * charger is plugged in points upstream of all of them (the port,
+     * the cable, or the PD controller itself). */
+    bool pd_inserted = false;
+    usb_pd_objects_t pdinfo = {0};
+    bm92t36_get_source_info(&pd_inserted, &pdinfo);
     u8 bq_status = i2c_recv_byte(I2C_1, BQ24193_I2C_ADDR, 0x08);
     u8 vbus      = (bq_status >> 6) & 3;
     u8 chrg      = (bq_status >> 4) & 3;
     bool vbus_present = (vbus != 0);
     u8 onoffstat = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_ONOFFSTAT);
     bool acok    = (onoffstat & MAX77620_ONOFFSTAT_ACOK) != 0;
-    bool acok_match = (vbus_present == acok);
+    bool all_present = pd_inserted && vbus_present && acok;
+    bool all_absent  = !pd_inserted && !vbus_present && !acok;
+    bool acok_match  = all_present || all_absent;
     log_color(acok_match ? COL_OK : COL_ERR,
-        "  VBUS<->ACOK   : BQ=%s, PMIC ACOK=%d  %s\n",
-        vbus_present ? "present" : "absent ", acok,
-        acok_match ? "(consistent)" : "(MISMATCH - check ACOK trace)");
+        "  VBUS<->ACOK   : PD=%s BQ=%s ACOK=%d  %s\n",
+        pd_inserted ? "ins" : "no ", vbus_present ? "present" : "absent ", acok,
+        acok_match ? (all_absent ? "(all say no source)"
+                                 : "(consistent)")
+                   : "(MISMATCH - localise the break)");
     dx_set("xc_vbus_acok", acok_match ? DX_PASS : DX_FAIL,
-        acok_match ? "" : "BQ vs PMIC disagree on VBUS");
+        acok_match ? "" : "VBUS observers disagree");
 
     /* === B. Charge state vs current direction ===
      * BQ24193 CHRG_STAT (bits 5:4 of STATUS): 0=not-charging, 1=pre-,
@@ -5906,7 +5927,7 @@ static const char *_k_pmic[]    = { "pmic_rails", "pmic_nverc",
 static const char *_k_charger[] = { "charger_pg", "charger_fault",
                                     "usb_pd", "xc_vbus_acok", NULL };
 static const char *_k_battery[] = { "batt_health", "batt_ntc",
-                                    "fuel_devname", "fuel_por",
+                                    "fuel_devname",
                                     "xc_charge_dir", NULL };
 static const char *_k_thermal[] = { "soc_die_temp", "pcb_temp",
                                     "fan_stalled", NULL };
