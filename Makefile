@@ -173,13 +173,33 @@ $(JC_DIR)/%.o: %.S $(DEF_STAMP_J) | $(JC_DIR)
 # for AArch64 and embedded in the payload as a byte array, which the BPMP
 # copies to DRAM before releasing CPU0 at it.
 #
-# Separate toolchain: devkitA64. Absent, the stub is skipped and the probe
+# Separate toolchain for the stub. Absent, the stub is skipped and the probe
 # reports that the CPU path was not built rather than failing the build, so
 # the BPMP-side diagnostics keep working on a machine without it.
+#
+# devkitA64 is the default because it sits next to devkitARM in any devkitPro
+# install, but nothing here needs it specifically: the stub is freestanding
+# (-ffreestanding -nostdlib -mgeneral-regs-only, no libc, no syscalls), so any
+# bare-metal aarch64 gcc will do. Override A64_CC/A64_OC to use one - which is
+# what CI does, because devkitPro's package server answers 403 to cloud runners
+# and Debian's gcc-aarch64-linux-gnu is always installable.
 DEVKITA64 ?= $(dir $(DEVKITARM))devkitA64
-A64_CC    := $(DEVKITA64)/bin/aarch64-none-elf-gcc
-A64_OC    := $(DEVKITA64)/bin/aarch64-none-elf-objcopy
-HAVE_A64  := $(wildcard $(A64_CC))
+A64_CC    ?= $(DEVKITA64)/bin/aarch64-none-elf-gcc
+A64_OC    ?= $(DEVKITA64)/bin/aarch64-none-elf-objcopy
+# Accept either an absolute path (devkitA64) or a bare name found on PATH (a
+# distro cross-compiler); $(wildcard) alone only ever matches the former.
+HAVE_A64  := $(or $(wildcard $(A64_CC)),$(shell command -v $(A64_CC) 2>/dev/null))
+
+# Skipping the stub is right for a developer who only has devkitARM, but it is
+# wrong for a release: the binary still builds, still boots, and simply reports
+# the CPU path as unbuilt, so a release pipeline missing devkitA64 ships a
+# quietly degraded payload and nothing fails to say so. REQUIRE_A64=1 turns
+# that silence into a hard error; CI sets it.
+ifeq ($(HAVE_A64),)
+ifneq ($(REQUIRE_A64),)
+$(error No aarch64 compiler at '$(A64_CC)'. The CPU0 stub cannot be built \nand REQUIRE_A64 is set. Install devkitA64, or point A64_CC/A64_OC at any \nbare-metal aarch64 gcc, e.g. A64_CC=aarch64-linux-gnu-gcc)
+endif
+endif
 
 A64_CFLAGS := -march=armv8-a -mgeneral-regs-only -ffreestanding -nostdlib \
               -fno-builtin -fno-stack-protector -Os -Wall -Wextra \

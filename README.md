@@ -30,6 +30,16 @@ export DEVKITARM=/opt/devkitpro/devkitARM   # or wherever yours lives
 make                                        # produces both variants
 ```
 
+Two toolchains are involved. devkitARM builds the payload itself; **devkitA64**
+builds the small AArch64 stub the Wi-Fi probe runs on CPU0, because the BPMP
+cannot reach PCIe. `DEVKITA64` defaults to `devkitA64` alongside `DEVKITARM`,
+so an ordinary devkitPro install needs no extra variable — but if it is
+missing, the build still succeeds and quietly drops the stub, and the Wi-Fi
+probe then reports `CPU0 handoff : not built`. Install it with
+`dkp-pacman -S --needed devkitA64`, and pass `REQUIRE_A64=1` to turn a missing
+devkitA64 into a hard error instead of a silently degraded binary (the release
+workflow does exactly this).
+
 `make` runs twice. The first pass uses `DEBUG_UART_PORT=1` and produces the
 default build at `build/hwtest.bin`. The second pass uses `JC_PROBE=1` and
 produces `build-jc/hwtest_jc.bin`. The two builds are mutually exclusive on

@@ -27,8 +27,38 @@ jobs:
       - name: Mark workspace safe for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+      # The devkitarm image carries only devkitARM, and the Wi-Fi probe's PCIe
+      # half runs on CPU0 from an AArch64 stub - without a second toolchain the
+      # build silently drops it and the release ships with that half disabled.
+      #
+      # devkitA64 is NOT installable here: pkg.devkitpro.org answers 403 to
+      # cloud CI runners, so `dkp-pacman -Sy devkitA64` fails on the database
+      # sync. It is not needed either - the stub is freestanding (no libc, no
+      # syscalls), so Debian's bare-metal-capable aarch64 gcc builds it, and
+      # this image is Debian-based.
+      - name: Install an aarch64 compiler for the CPU0 stub
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          aarch64-linux-gnu-gcc --version | head -1
+
+      # REQUIRE_A64=1 makes a missing aarch64 compiler fail the build instead
+      # of quietly producing a payload without the stub.
       - name: Build both variants
-        run: make all
+        run: |
+          make all REQUIRE_A64=1 A64_CC=aarch64-linux-gnu-gcc A64_OC=aarch64-linux-gnu-objcopy
+
+      - name: Verify the CPU0 stub was actually built in
+        run: |
+          test -s build/cpu_stub.bin || { echo "build/cpu_stub.bin missing"; exit 1; }
+          for f in build/hwtest.bin build-jc/hwtest_jc.bin; do
+            if grep -qa 'devkitA64 absent at build time' "$f"; then
+              echo "FAIL: $f was built without the CPU0 stub"; exit 1
+            fi
+            grep -qa 'CPU0 handoff (PCIe needs' "$f" || {
+              echo "FAIL: $f is missing the CPU0 handoff path"; exit 1; }
+          done
+          echo "CPU0 stub present in both variants ($(stat -c%s build/cpu_stub.bin) bytes)"
 
       - name: Show artifact sizes
         run: ls -l build/hwtest.bin build-jc/hwtest_jc.bin
