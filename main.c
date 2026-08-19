@@ -153,6 +153,11 @@ static const struct page_entry g_pages[] = {
     {probe_wifi_pcie,  "Wireless"},
     {probe_wifi_link,  "Wireless"},
 
+    /* Audio codec. */
+    {probe_audio,        "Audio"},
+    {probe_audio_clocks, "Audio"},
+    {probe_audio_beep,   "Audio"},
+
     /* Display + backlight. */
     {probe_display,    "Display"},
     {probe_backlight,  "Display"},

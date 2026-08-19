@@ -163,6 +163,7 @@ static const char *_k_storage[] = { "emmc_health", "emmc_bus", "sd_bus",
                                     "xc_emmc_mode", "emmc_errors",
                                     "sd_errors", NULL };
 static const char *_k_wireless[] = { "bt_hci", "wifi_pcie", NULL };
+static const char *_k_audio[]   = { "audio_codec", "audio_clocks", "audio_beep", NULL };
 static const char *_k_display[] = { "dsi_id", "backlight", NULL };
 static const char *_k_inputs[]  = { "touch_id", "als_id", NULL };
 static const char *_k_memory[]  = { "dram_sym", "plls", NULL };
@@ -175,6 +176,7 @@ static const struct dx_macro _macros[] = {
     { "Thermal       ", _k_thermal },
     { "Storage       ", _k_storage },
     { "Wireless      ", _k_wireless },
+    { "Audio         ", _k_audio   },
     { "Display       ", _k_display },
     { "Inputs        ", _k_inputs  },
     { "Memory        ", _k_memory  },

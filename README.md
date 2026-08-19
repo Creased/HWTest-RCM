@@ -2,13 +2,18 @@
 
 ![hwtest running in the emulator](img/demo.png)
 
-A read-only RCM (Recovery Mode) payload that probes every BPMP-side IC the
-Switch boot ROM hands off to, then reports identity / status / faults to the
-LCD and UART_B (Joy-Con right rail, 115200 8N1). The BPMP is the Boot and
+A near read-only RCM (Recovery Mode) payload that probes every BPMP-side IC
+the Switch boot ROM hands off to, then reports identity / status / faults to
+the LCD and UART_B (Joy-Con right rail, 115200 8N1). The BPMP is the Boot and
 Power Management Processor, the small ARM7 core that runs before the main CPU
 comes up. That is what an RCM payload executes on, and it bounds what can be
 tested. Output is also captured into a heap buffer that gets written to
 `backup/<emmc_serial>/hwtest.txt` on the SD card.
+
+Three probes are the exception to "read-only" and write to the hardware: the
+two radio probes power the CYW4356 up, and the audio probe enables the codec,
+programs the audio clocks and plays a tone out of the speakers and the
+headphone jack. Each is documented in its own section below.
 
 The intended audience is repair techs working on Erista or Mariko consoles
 (handheld, V2, OLED, Lite). The output is colour-coded so a unit with a
@@ -63,7 +68,7 @@ SD not ready` line on UART; the LCD pager remains usable.
 
 ## What's reported
 
-Ten logical pages (some span multiple LCD-sized sub-pages). The Verdict
+Eleven logical pages (some span multiple LCD-sized sub-pages). The Verdict
 page is index 0, so the pager opens on the summary and you only page into
 the detail when something needs chasing:
 
@@ -76,6 +81,7 @@ the detail when something needs chasing:
 | Memory & clocks | LPDDR4 mode regs + CLK_RST raw + decoded rates |
 | Storage | SD + eMMC + partitions + health + GPT + BOOT0/pkg1 + AutoRCM + SD content scan, plus PRODINFO: serial, CAL0 body SHA-256, config ID, product model vs SoC, LCD vendor vs fitted panel, WLAN/BD MACs, battery lot, USB-C PD rev, touch IC, IMU, sticks, region, speaker calibration |
 | Wireless | Bluetooth radio: full CYW4356 power-up, then HCI over UART-D. Reports whether the radio answers and identifies itself. Then the WLAN half: a complete T210 PCIe bring-up, link training and endpoint enumeration (`14E4:43EC`) — enumeration is the verdict, the die-level ChipID is firmware-gated and left to the OS |
+| Audio | ALC5639 codec identity over I2C-1 + an I2C-1 census + APE/AHUB power and clocks + AUD_MCLK, then a melody clocked out of I2S1: first phrase on the left speaker, second on the right, tail on the headphone jack — so a dead or weak output is obvious by ear, one output at a time |
 | Display | DSI panel ID + backlight PWM + GPIO state |
 | Inputs | touch FW + Joy-Con rails + buttons + AC adapter |
 | Raw state | GPIO pin census + UART debug port + reset reason + PMC scratch |
@@ -91,6 +97,10 @@ the detail when something needs chasing:
 | **KFUSE** | Separate fuse block holding the HDCP/display key data |
 | **PMC** | Power Management Controller, the Tegra block holding scratch registers and reset reason |
 | **DSI** | Display Serial Interface, the MIPI link to the LCD panel |
+| **ALC5639** | The Realtek audio codec: DACs, class-D speaker amplifier and capless headphone driver |
+| **I2S** | Inter-IC Sound, the serial audio link carrying samples from the SoC to the codec |
+| **APE / AHUB** | Tegra's Audio Processing Engine and the Audio Hub crossbar inside it |
+| **AUD_MCLK** | The master clock the SoC feeds the codec to run its converters |
 | **PWM** | Pulse-Width Modulation, used here for backlight brightness |
 | **LPDDR4** | The DRAM standard the Switch uses |
 | **CLK_RST** | Tegra's Clock and Reset Controller |
@@ -417,6 +427,50 @@ tell a gated clock from a mis-programmed one. They are printed before the
 access they describe, so a stall leaves the last line on the wire naming
 what stalled.
 
+## Audio probe
+
+Three pages. The first identifies the ALC5639 codec on I2C-1 (`0x1C`) and
+walks the bus; the second brings up the APE/AHUB power and clock domain plus
+`AUD_MCLK`. The second plays a melody: the first phrase on the left speaker,
+the second on the right, then a tail on the headphone jack — split that way so
+one weak or dead output can be picked out by ear without needing a meter.
+
+Samples reach the codec by PIO, not DMA: the CPU writes straight into the
+ADMAIF TX FIFO (`FIFO_CTRL` bit 31), the crossbar routes ADMAIF1 to I2S1, and
+I2S1 clocks them out on DAP1. ADMA is powered and reset but never runs, which
+keeps the DMA buffer and its cache-coherency hazard out of the path entirely.
+
+Most of the bring-up is unremarkable; these five are not, and none of them can
+be spotted by reading registers back, which is what made this slow to find:
+
+| Gotcha | Why it matters |
+|---|---|
+| ADMAIF CIF `FIFO_THRESHOLD` = 3, not 0 | A zero threshold forwards to the crossbar before real data is held, so the port clocks out stale words: DC clicks, never a waveform |
+| DAS routing (`DAS_DAP_CTRL_SEL`, `DAS_DAC_INPUT_DATA_CLK_SEL`) | The Digital Audio Switch is what connects the DAP1 pin group to I2S1. Miss it and everything upstream looks perfect |
+| PMC `PWR_DET` latch for the AUDIO_HV rail | Pads on a rail whose voltage is never latched drive at the wrong level |
+| One 32-bit FIFO word per stereo *frame* | Under the CIF's `UNPACK16`, low half is left and high half is right. Writing one 16-bit sample per push leaves the right DAC on DC and emits two frames per sample — silent right channel, an octave low, half speed |
+| The jack is the codec's own capless HPO | Reached through the HPVOL leg (`HPO_MIXER` = `0xC000`), not a DAC1-direct tap |
+
+The clock recipe — `AUD_MCLK` from PLLP/17 = 24 MHz, BCLK 1.5 MHz from
+PLLA_OUT0, `TIMING` = 31 — gives fs = 23437.5 Hz. That is the *actual* sample
+rate, and the note pitches and durations are computed from it; using a nominal
+48 kHz instead just detunes and slows the melody.
+
+Three keys feed the `Audio` verdict, and they mean different strengths of
+thing. `audio_codec` passes when the part answers with a Realtek identity
+after the probe asserts LDO1_EN on **PZ4** itself; silence is only a WARN,
+never a fail, because nothing here separates a faulty codec from a board that
+was never fitted with one — HOS treats it as optional too.
+`audio_clocks` fails if the AUD power partition
+will not ungate or APE stays in reset, and passes when the island is up.
+
+`audio_beep` is the one to read carefully: it is a **completion marker, not
+an acoustic measurement**. Nothing in the payload can hear the console, so it
+passes as soon as the sequence has been clocked out end to end — a console
+whose speakers are dead, disconnected or swapped still reports PASS. The
+verdict says the SoC side did its job; your ears are the instrument for the
+rest, which is exactly why the melody is split one output at a time.
+
 ## BDK's SDRAM parameter scratch
 
 BDK hands out a few fixed IRAM addresses no section knows about, and
@@ -467,6 +521,8 @@ probe_power.c        - PMIC, regulators, battery, charger, USB-PD, thermal, fan
 probe_storage.c      - SD, eMMC, partitions, health, GPT, BOOT0/pkg1, PRODINFO
 probe_bt.c           - Bluetooth radio (CYW4356 HCI over UART-D)
 probe_wifi.c         - Wi-Fi radio (CYW4356 WLAN over PCIe)
+probe_audio.c        - ALC5639 codec + I2C-1 census + APE/AHUB clocks + AUD_MCLK
+probe_audio_beep.c   - melody through I2S1 to each speaker and the headphone jack
 probe_display.c      - DSI panel ID + backlight
 probe_inputs.c       - touch, ambient light, Joy-Con rails, buttons
 probe_memclk.c       - DRAM identity + clock registers
@@ -490,3 +546,6 @@ Heavy reliance on the work of:
 - [Hekate / BDK](https://github.com/CTCaer/hekate)
 - [Lockpick_RCM](https://github.com/shchmue/Lockpick_RCM)
 - [switchbrew.org](https://switchbrew.org/wiki/)
+- [shinyquagsire23's hekate audio branch](https://github.com/shinyquagsire23/hekate/tree/audio)
+  — the only known bare-metal Switch audio implementation, and what the audio
+  probe's clock recipe and ADMAIF configuration were recovered from
