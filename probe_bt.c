@@ -736,8 +736,22 @@ void probe_bt_radio(void)
         { "B autobaud", true,  false },
         { "C ph5-keep", false, true  },
     };
-    for (u32 a = 0; a < BT_CFG_ARMS && a < ARRAY_SIZE(arms) && !ok; a++)
+    /* Only the first arm draws its full detail on the LCD. Each arm prints
+     * about a dozen rows, so a radio that stays silent runs all three and
+     * pushes this page past the 45 rows the panel holds - and it wraps to
+     * the top rather than scrolling, overwriting its own header exactly when
+     * the output matters most. The retries still log in full to UART and to
+     * the SD report; _log_uart_only suppresses the LCD sink alone. */
+    for (u32 a = 0; a < BT_CFG_ARMS && a < ARRAY_SIZE(arms) && !ok; a++) {
+        bool lcd_off = _log_uart_only;
+        if (a)
+            _log_uart_only = true;
         ok = bt_attempt(&arms[a], ev, sizeof(ev), &ev_n);
+        _log_uart_only = lcd_off;
+        if (a && !ok)
+            log_color(COL_WARN, "  arm %s      : no HCI reply (detail on UART)\n",
+                      arms[a].name);
+    }
 
 #if BT_CFG_MCR_SWEEP
     /* The Tegra MCR RTS-bit polarity is genuinely self-contradictory in this
@@ -747,6 +761,11 @@ void probe_bt_radio(void)
      * power cycle is needed between values. */
     if (!ok) {
         static const u8 mcrs[] = { 0x22, 0x60, 0x40, 0x00 };
+        /* LCD-suppressed for the same reason as the arms above: this only
+         * runs when the radio is already silent, i.e. when the page is
+         * already at risk of wrapping. Full sweep still goes to UART. */
+        bool lcd_off = _log_uart_only;
+        _log_uart_only = true;
         log_color(COL_INFO, "  -- MCR sweep (no re-POR needed) --\n");
         for (u32 i = 0; i < ARRAY_SIZE(mcrs) && !ok; i++) {
             u8 raw[32]; u32 raw_n = 0;
@@ -766,6 +785,10 @@ void probe_bt_radio(void)
             LOG("  MCR=%02X        : ev=%d raw=%d MSR=%02X %s\n",
                 mcrs[i], ev_n, raw_n, u->UART_MSR & 0xFF, ok ? "CC!" : "-");
         }
+        _log_uart_only = lcd_off;
+        log_color(ok ? COL_OK : COL_WARN,
+            "  MCR sweep     : %s\n",
+            ok ? "answered on a swept MCR" : "no reply on any MCR value");
     }
 #endif
 
@@ -780,17 +803,16 @@ void probe_bt_radio(void)
 
     if (!ok) {
         /* Silence is a real finding, but only once the loopback has
-         * shown our own path works. This sequence is confirmed on three
-         * consoles spanning both SoC generations - two Mariko and one
-         * Erista - which all answer with a valid Command Complete and
-         * identify as Broadcom. Every arm here runs at 115200 and the
+         * shown the host path works. The sequence is validated
+         * against known-good units, which answer with a valid Command
+         * Complete and identify as Broadcom. Every arm here runs at 115200 and the
          * rate is never swept, so what a quiet unit demonstrates is
          * silence at 115200: a part that came up at some other baud
          * looks the same from here, and that case is untested rather
          * than excluded. Even so, a unit that stays quiet through every
          * arm and every MCR variant while its own controller loops back
          * cleanly is not a probe that failed. When the loopback itself
-         * fails the fault is on our side of the pads, so nothing is
+         * fails the fault is on the host side of the pads, so nothing is
          * recorded against the radio. */
         if (uart_ok) {
             log_color(COL_ERR,
