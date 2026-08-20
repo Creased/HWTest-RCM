@@ -146,6 +146,7 @@ static const struct page_entry g_pages[] = {
     /* Last in the group: the counters must account for every read the
      * probes above performed. */
     {probe_storage_errors, "Storage"},
+    {probe_gamecard,   "Storage"},
 
     /* Wireless: the two halves of the CYW4356. BT first - it is the
      * cheaper measurement and its result frames the PCIe one. */

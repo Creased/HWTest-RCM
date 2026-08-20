@@ -46,7 +46,7 @@ COMMON_OBJS = \
     start.o exception_handlers.o main.o stubs.o emmcsn.o \
     log.o dx.o report.o verdict.o \
     probe_soc.o probe_power.o probe_memclk.o probe_inputs.o probe_bt.o probe_audio.o probe_audio_beep.o \
-    probe_wifi.o probe_display.o probe_storage.o probe_lowlevel.o \
+    probe_wifi.o probe_display.o probe_storage.o probe_gamecard.o probe_lowlevel.o \
     gfx.o \
     heap.o sprintf.o util.o btn.o dirlist.o \
     bpmp.o ccplex.o clock.o di.o i2c.o irq.o timer.o \

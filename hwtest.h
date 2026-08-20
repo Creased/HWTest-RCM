@@ -170,6 +170,7 @@ void probe_autorcm(void);
 void probe_sd_content(void);
 void probe_storage_errors(void);
 void probe_bt_radio(void);
+void probe_gamecard(void);
 void probe_audio(void);
 void probe_audio_clocks(void);
 void probe_audio_beep(void);

@@ -161,7 +161,7 @@ static const char *_k_storage[] = { "emmc_health", "emmc_bus", "sd_bus",
                                     "cal0_model",
                                     "gpt", "kfuse", "prodinfo",
                                     "xc_emmc_mode", "emmc_errors",
-                                    "sd_errors", NULL };
+                                    "sd_errors", "gc_asic", NULL };
 static const char *_k_wireless[] = { "bt_hci", "wifi_pcie", NULL };
 static const char *_k_audio[]   = { "audio_codec", "audio_clocks", "audio_beep", NULL };
 static const char *_k_display[] = { "dsi_id", "backlight", NULL };
