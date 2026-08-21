@@ -613,20 +613,37 @@ void probe_bt_radio(void)
         "  PINMUX_GLOBAL : %08X (%s)\n", glob,
         (glob & BIT(0)) ? "INPUTS CLAMPED" : "clear");
 
-    /* Rails. Brute force at their existing voltages: no Switch device tree
-     * gives the bluetooth node any regulator, clock or pwrseq property, so
-     * which supply reaches BT_VDDIO through the board's load switch is not
-     * documented. Diagnostic step, not an order Horizon ever uses. */
+    /* Rails. No Switch device tree gives the bluetooth node a regulator,
+     * clock or pwrseq property, so which supply reaches BT_VDDIO through the
+     * board's load switch is not documented and these are brought up by hand.
+     *
+     * Only the two that plausibly feed the radio: LDO1 (XUSB+PCIe 1.05 V) and
+     * LDO7 (XUSB 1.05 V). This list used to also carry LDO3, LDO5, LDO6 and
+     * LDO8 - the gamecard ASIC, the gamecard slot, touch+ALS and DisplayPort -
+     * brought up together because this probe could not tell which mattered.
+     * None of them reach the radio, and switching them on had two costs.
+     * LDO5 is the serious one:
+     * pcv runs the cartridge interface at 1.8 V, the PMIC's OTP default is
+     * 3.1 V, and nothing programs it under RCM - so enabling it as found put
+     * 3.1 V on a 1.8 V interface with a game card possibly seated. The other
+     * cost is measurement: rails left on changed what later pages reported,
+     * so the same console read "LDO5 off" on a cold sweep and "LDO5 ON" on a
+     * refresh.
+     *
+     * They are put back as found for the same reason - this probe is one of
+     * many in the sweep and must not decide the state the rest of them
+     * measure. */
     static const struct { u32 id; u8 cfg; const char *name; } rails[] = {
-        { REGULATOR_LDO1, 0x25, "LDO1" }, { REGULATOR_LDO3, 0x29, "LDO3" },
-        { REGULATOR_LDO5, 0x2D, "LDO5" }, { REGULATOR_LDO6, 0x2F, "LDO6" },
-        { REGULATOR_LDO7, 0x31, "LDO7" }, { REGULATOR_LDO8, 0x33, "LDO8" },
+        { REGULATOR_LDO1, 0x25, "LDO1" }, { REGULATOR_LDO7, 0x31, "LDO7" },
     };
+    u8 rail_saved[ARRAY_SIZE(rails)];
+
     for (u32 i = 0; i < ARRAY_SIZE(rails); i++) {
+        rail_saved[i] = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, rails[i].cfg);
         max7762x_regulator_enable(rails[i].id, true);
         msleep(5);
     }
-    LOG("  Rails forced  : ");
+    LOG("  Rails up      : ");
     for (u32 i = 0; i < ARRAY_SIZE(rails); i++)
         LOG("%s=%d ", rails[i].name,
             i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, rails[i].cfg) >> 6);
@@ -800,6 +817,18 @@ void probe_bt_radio(void)
     GP_MWR(GPH_MOE,  GPIO_PIN_1, 1);
     LOG("  PH1 restored  : %d (WL_REG_ON back high)\n",
         gpio_read(GPIO_PORT_H, GPIO_PIN_1));
+
+    /* Rails back as found. The CFG byte carries the power mode and the
+     * voltage code together, so one write restores both. Done after the HCI
+     * attempts rather than before, since the radio needs them up for the
+     * whole exchange. */
+    for (u32 i = 0; i < ARRAY_SIZE(rails); i++)
+        i2c_send_byte(I2C_5, MAX77620_I2C_ADDR, rails[i].cfg, rail_saved[i]);
+    LOG("  Rails restored: ");
+    for (u32 i = 0; i < ARRAY_SIZE(rails); i++)
+        LOG("%s=%d ", rails[i].name,
+            i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, rails[i].cfg) >> 6);
+    LOG("\n");
 
     if (!ok) {
         /* Silence is a real finding, but only once the loopback has
