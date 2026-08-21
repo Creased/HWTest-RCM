@@ -48,10 +48,14 @@ jobs:
         run: |
           make all REQUIRE_A64=1 A64_CC=aarch64-linux-gnu-gcc A64_OC=aarch64-linux-gnu-objcopy
 
+      # Grep the uncompressed images: the shipped .bin is the self-extracting
+      # stub plus an LZ blob, so no string from the payload survives in it as
+      # plaintext. mkpayload.py refuses to emit a blob that does not decompress
+      # back to the exact input, so checking the input covers what ships.
       - name: Verify the CPU0 stub was actually built in
         run: |
           test -s build/cpu_stub.bin || { echo "build/cpu_stub.bin missing"; exit 1; }
-          for f in build/hwtest.bin build-jc/hwtest_jc.bin; do
+          for f in build/hwtest_unc.bin build-jc/hwtest_jc_unc.bin; do
             if grep -qa 'devkitA64 absent at build time' "$f"; then
               echo "FAIL: $f was built without the CPU0 stub"; exit 1
             fi
@@ -60,8 +64,20 @@ jobs:
           done
           echo "CPU0 stub present in both variants ($(stat -c%s build/cpu_stub.bin) bytes)"
 
-      - name: Show artifact sizes
-        run: ls -l build/hwtest.bin build-jc/hwtest_jc.bin
+      # TegraRcmSmash prepends a 66216-byte prologue and truncates the result to
+      # 192 KiB without saying so, so anything past this ceiling reaches the
+      # console as a partial image that hangs. That shipped unnoticed from v0.6
+      # to v0.10; refuse to publish it again.
+      - name: Check the payloads fit the RCM injection ceiling
+        run: |
+          limit=130392
+          for f in build/hwtest.bin build-jc/hwtest_jc.bin; do
+            size=$(stat -c%s "$f")
+            if [ "$size" -gt "$limit" ]; then
+              echo "FAIL: $f is $size bytes, over the $limit ceiling"; exit 1
+            fi
+            echo "ok: $f is $size bytes ($((limit - size)) to spare)"
+          done
 
       - name: Upload workflow artifact (always)
         uses: actions/upload-artifact@v4

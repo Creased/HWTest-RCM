@@ -100,6 +100,27 @@ ARCH    := -march=armv4t -mtune=arm7tdmi -mthumb -mthumb-interwork $(WARNINGS)
 # Extra -D flags from the command line, e.g. a build that keeps the Wi-Fi
 # PCIe probe out of the sweep until it is armed from the pager:
 #   make EXTRA_DEFINES=-DWIFI_CFG_AUTORUN=0
+# Size matters: TegraRcmGUI shells out to TegraRcmSmash, which builds a fixed
+# 66216-byte exploit prologue and then SILENTLY truncates the whole buffer to
+# 192 KiB - so anything past 130392 bytes of payload is quietly dropped and the
+# console jumps into a partial image with no error anywhere. Inlining is left
+# enabled: at -Os it costs nothing and -fno-inline actually made the image
+# ~4 KB larger.
+#
+# LTO is deliberately NOT here. Under devkitARM's gcc 16.1.0 it produces an
+# image whose .bss objects lose their values sometime after start.S zeroes
+# them: gfx_con.fntsz came back 8 instead of 16 (every glyph rendered at half
+# height), g_report_body came back NULL (the SD report silently never saved),
+# and the crc32 table BDK allocates on first use came back unusable, which
+# made a healthy GPT read as two CRC mismatches. gcc 15.2.0 builds the same
+# tree correctly with LTO, and 16.1.0 builds it correctly without - so this is
+# the toolchain, not the source, and -fno-strict-aliasing does not help.
+# The release CI runs whatever devkitARM the container ships, so pinning a
+# compiler would only move the trap. Costs ~4.7 KB against the ceiling above,
+# which self-extraction leaves room for. Re-test both variants in the emulator
+# before putting it back.
+OPT    ?= -Os
+INLINE ?=
 EXTRA_DEFINES ?=
 
 # Rebuild when the flags change.
@@ -127,8 +148,8 @@ $(DEF_STAMP_D) $(DEF_STAMP_J):
 	@mkdir -p $(dir $@)
 	@printf '%s\n' '$(EXTRA_DEFINES)' > $@
 
-CFLAGS_BASE := $(ARCH) -O2 -g -nostdlib -ffunction-sections -fdata-sections \
-               -fomit-frame-pointer -fno-inline -std=gnu11 \
+CFLAGS_BASE := $(ARCH) $(OPT) -g -nostdlib -ffunction-sections -fdata-sections \
+               -fomit-frame-pointer $(INLINE) -std=gnu11 \
                -I. -I$(BDKDIR) -I$(GFXDIR) \
                -I$(HEKATE)/bootloader/gfx \
                -I$(HEKATE)/bootloader/libs/fatfs \
@@ -245,16 +266,73 @@ endif
 $(DEFAULT_DIR)/$(TARGET).elf: $(DEFAULT_OBJS) link.ld
 	$(CC) $(LDFLAGS) -o $@ $(DEFAULT_OBJS) -lgcc
 
-$(DEFAULT_BIN): $(DEFAULT_DIR)/$(TARGET).elf
+# ---- self-extracting wrapper --------------------------------------------
+#
+# What ships is a small stub with the LZ-compressed image trailing it, not the
+# linked image itself. TegraRcmSmash - which TegraRcmGUI drives - prepends a
+# fixed 66216-byte exploit prologue and then truncates the whole buffer to
+# 192 KiB without reporting anything, so a payload past 130392 bytes is
+# silently cut off and the console jumps into a partial image. Compressing
+# gets the shipped file back under that ceiling, and speeds up chainloading.
+#
+# The codec is the BCL LZ77 that BDK already carries as LZ_Uncompress(), so
+# the on-device half is hekate's own decompressor and only the packer is ours.
+LDR_LOAD_ADDR := 0x40007000
+LDRDIR        := loader
+
+$(DEFAULT_DIR)/$(TARGET)_unc.bin: $(DEFAULT_DIR)/$(TARGET).elf
 	$(OBJCOPY) -O binary $< $@
-	@printf '   built %s (%s bytes)\n' $@ $$(stat -c%s $@)
+
+$(DEFAULT_DIR)/payload_lz.h: $(DEFAULT_DIR)/$(TARGET)_unc.bin
+	@python3 tools/mkpayload.py $< $(DEFAULT_DIR)/payload.lz $@
+
+LDR_CFLAGS := $(ARCH) -Os -g -nostdlib -ffunction-sections -fdata-sections               -fomit-frame-pointer -std=gnu11 -I$(BDKDIR) -I$(DEFAULT_DIR)               -I$(LDRDIR) -DBL_MAGIC=$(IPL_MAGIC)
+LDR_LDFLAGS := $(ARCH) -nostartfiles -Wl,--nmagic,--gc-sections                -Xlinker --defsym=LDR_LOAD_ADDR=$(LDR_LOAD_ADDR) -T $(LDRDIR)/link.ld
+
+$(DEFAULT_DIR)/ldr_loader.o: $(LDRDIR)/loader.c $(DEFAULT_DIR)/payload_lz.h
+	$(CC) $(LDR_CFLAGS) -c -o $@ $<
+$(DEFAULT_DIR)/ldr_start.o: $(HEKATE)/loader/start.S
+	$(CC) $(LDR_CFLAGS) -c -o $@ $<
+$(DEFAULT_DIR)/ldr_lz.o: $(BDKDIR)/libs/compr/lz.c
+	$(CC) $(LDR_CFLAGS) -c -o $@ $<
+
+LDR_OBJS := $(DEFAULT_DIR)/ldr_start.o $(DEFAULT_DIR)/ldr_loader.o $(DEFAULT_DIR)/ldr_lz.o
+
+$(DEFAULT_DIR)/loader.elf: $(LDR_OBJS) $(LDRDIR)/link.ld
+	$(CC) $(LDR_LDFLAGS) -o $@ $(LDR_OBJS) -lgcc
+
+$(DEFAULT_BIN): $(DEFAULT_DIR)/loader.elf
+	$(OBJCOPY) -O binary $< $@
+	@printf '   built %s (%s bytes, %s uncompressed)\n' $@ $$(stat -c%s $@) $$(stat -c%s $(DEFAULT_DIR)/$(TARGET)_unc.bin)
+	@if [ $$(stat -c%s $@) -gt 130392 ]; then printf '   WARNING: over the 130392-byte RCM injector limit\n'; fi
 
 $(JC_DIR)/$(TARGET)_jc.elf: $(JC_OBJS) link.ld
 	$(CC) $(LDFLAGS) -o $@ $(JC_OBJS) -lgcc
 
-$(JC_BIN): $(JC_DIR)/$(TARGET)_jc.elf
+# The Joy-Con variant gets the same wrapper - it is the larger of the two and
+# would otherwise be the one that silently truncates.
+$(JC_DIR)/$(TARGET)_jc_unc.bin: $(JC_DIR)/$(TARGET)_jc.elf
 	$(OBJCOPY) -O binary $< $@
-	@printf '   built %s (%s bytes)\n' $@ $$(stat -c%s $@)
+
+$(JC_DIR)/payload_lz.h: $(JC_DIR)/$(TARGET)_jc_unc.bin
+	@python3 tools/mkpayload.py $< $(JC_DIR)/payload.lz $@
+
+$(JC_DIR)/ldr_loader.o: $(LDRDIR)/loader.c $(JC_DIR)/payload_lz.h
+	$(CC) $(ARCH) -Os -g -nostdlib -ffunction-sections -fdata-sections -fomit-frame-pointer -std=gnu11 -I$(BDKDIR) -I$(JC_DIR) -I$(LDRDIR) -DBL_MAGIC=$(IPL_MAGIC) -c -o $@ $<
+$(JC_DIR)/ldr_start.o: $(HEKATE)/loader/start.S
+	$(CC) $(LDR_CFLAGS) -c -o $@ $<
+$(JC_DIR)/ldr_lz.o: $(BDKDIR)/libs/compr/lz.c
+	$(CC) $(LDR_CFLAGS) -c -o $@ $<
+
+JC_LDR_OBJS := $(JC_DIR)/ldr_start.o $(JC_DIR)/ldr_loader.o $(JC_DIR)/ldr_lz.o
+
+$(JC_DIR)/loader.elf: $(JC_LDR_OBJS) $(LDRDIR)/link.ld
+	$(CC) $(LDR_LDFLAGS) -o $@ $(JC_LDR_OBJS) -lgcc
+
+$(JC_BIN): $(JC_DIR)/loader.elf
+	$(OBJCOPY) -O binary $< $@
+	@printf '   built %s (%s bytes, %s uncompressed)\n' $@ $$(stat -c%s $@) $$(stat -c%s $(JC_DIR)/$(TARGET)_jc_unc.bin)
+	@if [ $$(stat -c%s $@) -gt 130392 ]; then printf '   WARNING: over the 130392-byte RCM injector limit\n'; fi
 
 clean:
 	rm -rf $(DEFAULT_DIR) $(JC_DIR)
