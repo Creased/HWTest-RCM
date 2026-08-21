@@ -362,6 +362,74 @@ static void cal0_str(char *dst, const char *src, u32 max)
     dst[i] = 0;
 }
 
+/* Release a parsed GPT without trusting its shape.
+ *
+ * BDK's emmc_gpt_free() is LIST_FOREACH_SAFE plus free(), and that macro walks
+ * until it meets the head again with no iteration cap. The list it walks was
+ * built by emmc_gpt_parse(), which ignores whether the sector read that fed it
+ * actually worked - so on an eMMC that identifies but cannot read, the entries
+ * come out of whatever was in the buffer. A list that never leads back to the
+ * head then spins forever, and that is where two separate dumps from a failing
+ * console stopped dead: no fault, no output, just gone.
+ *
+ * free() itself is safe here - it validates the heap magic and cannot loop -
+ * so bounding the walk is enough. 128 is the most entries emmc_gpt_parse will
+ * ever append (it rejects a header claiming more), so anything past that means
+ * the links are not a list any more and the remainder is deliberately leaked:
+ * a few hundred bytes lost on a console that is already failing beats a hang
+ * that costs every page after this one. */
+/* Is this really one of our heap pointers? free() cannot answer that safely:
+ * BDK's _heap_free() rejects addresses BELOW the heap but has no upper bound,
+ * and it reads node->used at the candidate address as part of the same test.
+ * Hand it a wild high pointer and that read is what runs first - and a read
+ * into unmapped or reserved space hangs the BPMP outright, with no fault and
+ * no way back. Bound both ends before anything dereferences it. */
+/* The GPT's own CRCs are what this probe uses to call an eMMC healthy, so the
+ * checksum must not depend on anything that can itself be in a bad state by
+ * the time we get here. BDK's crc32_calc() builds its lookup table lazily into
+ * a heap allocation kept in a static; if that allocation does not come back,
+ * the table is never valid and every call returns the same value regardless of
+ * input - which reads as "both CRCs mismatch" on a perfectly good console.
+ * Same polynomial, computed bitwise: no table, no allocation, no shared state.
+ * 1.5 KB of GPT is ~12k iterations, which costs nothing on a probe page. */
+static u32 gpt_crc32(const u8 *buf, u32 len)
+{
+    u32 crc = 0xFFFFFFFF;
+
+    for (u32 i = 0; i < len; i++) {
+        crc ^= buf[i];
+        for (u32 bit = 0; bit < 8; bit++)
+            crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
+    }
+
+    return ~crc;
+}
+
+static bool gpt_ptr_sane(const void *p)
+{
+    u32 a = (u32)p;
+
+    return a >= (u32)IPL_HEAP_START + sizeof(emmc_part_t) &&
+           a <  (u32)IPL_HEAP_START + IPL_HEAP_SZ;
+}
+
+static void gpt_free_bounded(link_t *gpt)
+{
+    link_t *it = gpt->next;
+
+    for (u32 n = 0; n < 128; n++) {
+        /* Checked before the deref, not after: reading it->next is itself an
+         * access at whatever address the corrupt list handed us. */
+        if (!it || it == gpt || !gpt_ptr_sane(it))
+            break;
+
+        link_t *next = it->next;
+        free(CONTAINER_OF(it, emmc_part_t, link));
+        it = next;
+    }
+    list_init(gpt);
+}
+
 void probe_serial(void)
 {
     HEADER("[Switch serial number (PRODINFO)]");
@@ -391,7 +459,32 @@ void probe_serial(void)
             keys_loaded ? "loaded from sd:/switch/prod.keys"
                         : (key_err ? key_err : "not loaded"));
         log_color(COL_ERR, "  PRODINFO partition not in GPT\n");
-        emmc_gpt_free(&gpt);
+        gpt_free_bounded(&gpt);
+        return;
+    }
+
+    /* Sanity-check the range before handing it to anything.
+     *
+     * BDK's GPT parser throws away the result of the read that feeds it -
+     * emmc_gpt_parse() ignores what sdmmc_storage_read() returned - so on an
+     * eMMC that fails to read it builds partition entries out of whatever the
+     * buffer happened to contain. A console with a failing eMMC produced a
+     * PRODINFO entry at LBA 0xFFFFFFFF..0xFFFFFFFF (printed as -1..-1), and
+     * feeding that to the BIS layer ended the run right there - every page
+     * after this one was lost, including the ones that would have shown what
+     * was actually wrong with the eMMC.
+     *
+     * A partition that starts at or before the protective MBR, ends before it
+     * starts, or runs past the end of the card is not something to probe. */
+    u32 sec_cnt = emmc_storage.sec_cnt;
+    if (part->lba_start == 0 || part->lba_end < part->lba_start ||
+        (sec_cnt && part->lba_end >= sec_cnt)) {
+        log_color(COL_ERR,
+            "  PRODINFO GPT : LBA %08X..%08X is not a usable range\n",
+            part->lba_start, part->lba_end);
+        LOG("  (GPT unreadable or corrupt - suspect the eMMC, not the keys)\n");
+        dx_set("prodinfo", DX_WARN, "GPT entry unusable");
+        gpt_free_bounded(&gpt);
         return;
     }
 
@@ -456,7 +549,7 @@ void probe_serial(void)
     LOG("  Partition    : LBA %d..%d (%d KiB)\n",
         part->lba_start, part->lba_end,
         ((part->lba_end - part->lba_start + 1) * 512) / 1024);
-    emmc_gpt_free(&gpt);
+    gpt_free_bounded(&gpt);
 
     if (hdr_res || srl_res) {
         log_color(COL_ERR, "  BIS read failed (%d / %d)\n", hdr_res, srl_res);
@@ -1071,8 +1164,8 @@ void probe_gpt(void)
     /* GPT integrity: header has its own CRC32 stored at +0x10 (with the
      * crc field zeroed during calc), and the entry-array CRC32 at +0x58.
      * A bad CRC = the eMMC was either corrupted or has a non-stock
-     * layout. crc32_calc() is the standard JEDEC poly which is also
-     * what the GPT spec requires. Header size lives at +0x0C. */
+     * layout. gpt_crc32() is the standard JEDEC poly the GPT spec
+     * requires. Header size lives at +0x0C. */
     {
         u32 hdr_size = *(u32 *)(buf + 0x0C);
         u32 hdr_crc  = *(u32 *)(buf + 0x10);
@@ -1084,7 +1177,7 @@ void probe_gpt(void)
             static u8 hdr_copy[0x100];
             memcpy(hdr_copy, buf, hdr_size);
             *(u32 *)(hdr_copy + 0x10) = 0;
-            u32 calc_hdr = crc32_calc(0, hdr_copy, hdr_size);
+            u32 calc_hdr = gpt_crc32(hdr_copy, hdr_size);
             log_color(calc_hdr == hdr_crc ? COL_OK : COL_ERR,
                 "  hdr CRC32    : 0x%08X (stored 0x%08X) %s\n",
                 calc_hdr, hdr_crc,
@@ -1099,7 +1192,7 @@ void probe_gpt(void)
             u32 buf_left  = (5 * 512) - ent_off;
             bool ent_ok = true;  /* assume pass if we can't compute */
             if (ent_total <= buf_left) {
-                u32 calc_ent = crc32_calc(0, buf + ent_off, ent_total);
+                u32 calc_ent = gpt_crc32(buf + ent_off, ent_total);
                 log_color(calc_ent == ent_crc ? COL_OK : COL_ERR,
                     "  ent CRC32    : 0x%08X (stored 0x%08X) %s\n",
                     calc_ent, ent_crc,
