@@ -140,6 +140,44 @@ void probe_gamecard(void)
      * already claimed the controller. With those fixed it is the right call.
      *
      * Tuning is the test: it only completes if the ASIC drives data back. */
+    /* On T210B01 the SDMMC2 pads are ordinary muxed pads, and nothing in RCM
+     * has configured them: BDK's bring-up only ORs the Schmitt bit into them
+     * (_sdmmc_config_sdmmc2_schmitt), which cannot clear TRISTATE or PARKED
+     * nor set INPUT_ENABLE, while the Erista leg of the same switch un-parks
+     * its pad brick outright. hekate never drives SDMMC2, so that leg has no
+     * user to notice. Assign the pads the way BDK configures SDMMC1 - a plain
+     * write clears the function, tristate and park bits as a side effect.
+     *
+     * Measured on a Mariko in RCM: CLK reads 0xA064 before this runs, which
+     * is PARKED (bit 5) set, so the bus could never have come up. */
+    if ((((APB_MISC(APB_MISC_GP_HIDREV) >> 4) & 0xF) == 2)) {
+        /* Values are HOS's own initial pad table for this board, decoded:
+         * DAT0-7 pull-up, CLK/CMD no pull, all three input-enabled and out
+         * of tristate; the DDR-only strobes stay parked. BDK stops short of
+         * defining the last three, so their offsets are named here. */
+        #define PINMUX_AUX_SDMMC2_CLKB 0x2B8
+        #define PINMUX_AUX_SDMMC2_DQS  0x2C0
+        #define PINMUX_AUX_SDMMC2_DQSB 0x2C4
+        const u32 dat  = PINMUX_INPUT_ENABLE | PINMUX_PULL_UP;
+        const u32 ctl  = PINMUX_INPUT_ENABLE | PINMUX_PULL_NONE;
+        const u32 park = PINMUX_TRISTATE | PINMUX_PULL_DOWN;
+        PINMUX_AUX(PINMUX_AUX_SDMMC2_CLK)  = ctl;
+        PINMUX_AUX(PINMUX_AUX_SDMMC2_CMD)  = ctl;
+        PINMUX_AUX(PINMUX_AUX_SDMMC2_DAT0) = dat;
+        PINMUX_AUX(PINMUX_AUX_SDMMC2_DAT1) = dat;
+        PINMUX_AUX(PINMUX_AUX_SDMMC2_DAT2) = dat;
+        PINMUX_AUX(PINMUX_AUX_SDMMC2_DAT3) = dat;
+        PINMUX_AUX(PINMUX_AUX_SDMMC2_DAT4) = dat;
+        PINMUX_AUX(PINMUX_AUX_SDMMC2_DAT5) = dat;
+        PINMUX_AUX(PINMUX_AUX_SDMMC2_DAT6) = dat;
+        PINMUX_AUX(PINMUX_AUX_SDMMC2_DAT7) = dat;
+        PINMUX_AUX(PINMUX_AUX_SDMMC2_CLKB) = park;
+        PINMUX_AUX(PINMUX_AUX_SDMMC2_DQS)  = park;
+        PINMUX_AUX(PINMUX_AUX_SDMMC2_DQSB) = park;
+        (void)PINMUX_AUX(PINMUX_AUX_SDMMC2_CLK); /* commit */
+        LOG("  SDMMC2 pads  : assigned (T210B01)\n");
+    }
+
     if (sdmmc_storage_init_gc(&gc_storage, &gc_sdmmc)) {
         log_color(COL_WARN, "  ASIC         : bus would not come up\n");
         dx_set("gc_asic", DX_WARN, "SDMMC2 bus did not come up");
