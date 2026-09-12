@@ -591,6 +591,7 @@ void probe_bt_radio(void)
     u8  ev[72];
     u32 ev_n = 0;
     bool ok = false;
+    bool uart_ok = false;
 
     log_color(COL_INFO, "[Bluetooth radio (" WLAN_CHIP_NAME " HCI over UART-D)]\n");
 
@@ -634,7 +635,8 @@ void probe_bt_radio(void)
      * many in the sweep and must not decide the state the rest of them
      * measure. */
     static const struct { u32 id; u8 cfg; const char *name; } rails[] = {
-        { REGULATOR_LDO1, 0x25, "LDO1" }, { REGULATOR_LDO7, 0x31, "LDO7" },
+        { REGULATOR_LDO1, MAX77620_REG_LDO1_CFG, "LDO1" },
+        { REGULATOR_LDO7, MAX77620_REG_LDO7_CFG, "LDO7" },
     };
     u8 rail_saved[ARRAY_SIZE(rails)];
 
@@ -701,7 +703,7 @@ void probe_bt_radio(void)
         CLOCK(CLK_RST_CONTROLLER_CLK_SOURCE_UARTD));
     if (!(CLOCK(CLK_RST_CONTROLLER_CLK_OUT_ENB_U) & BIT(CLK_U_UARTD))) {
         log_color(COL_ERR, "  UART-D        : NOT CLOCKED - aborting\n");
-        return;
+        goto restore_state;
     }
     /* IRDA_CSR carries per-line inversion (uart_invert), which is used in
      * anger on the Joy-Con ports. An inverted line is symptomless from the
@@ -714,7 +716,6 @@ void probe_bt_radio(void)
      * PASSES with every pad in GPIO mode, so it can never substitute for the
      * port-I readback above. Restore MCR by hand; uart_empty_fifo() would
      * zero it and never put it back. */
-    bool uart_ok = false;
     {
         static const u8 pat[] = { 0xA5, 0x5A, 0x00, 0xFF };
         u8 back[8];
@@ -809,6 +810,7 @@ void probe_bt_radio(void)
     }
 #endif
 
+restore_state:
     /* Put WL_REG_ON back where the vendor GPIO hog leaves it. This probe is
      * one of many in the sweep and the WLAN core has to come back. */
     PINMUX_AUX(PMX_PH1_WL_REG_ON) = PINMUX_INPUT_ENABLE | PINMUX_PULL_DOWN;

@@ -74,9 +74,7 @@ void probe_backlight(void)
         "  PWM enabled  : %s\n", pwm_en ? "yes" : "no");
     if (pwm_en) {
         u32 pct = (pwm_duty * 100) / 255;
-        u32 col = pwm_duty == 0 ? COL_WARN
-                : pwm_duty < 16 ? COL_WARN
-                : COL_OK;
+        u32 col = pwm_duty == 0 ? COL_WARN : COL_OK;
         log_color(col, "  PWM duty     : %d / 255 (%d%%)\n", pwm_duty, pct);
     }
 

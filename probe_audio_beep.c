@@ -676,7 +676,21 @@ static void _codec_hp_on(void)
  * (the headphone amp needs far more than the efficient class-D speakers), and
  * `lead_ms` is a silent run-in so the output's mute-release ramp finishes
  * before the first note instead of clipping it. */
-static void _play_notes(const note_t *notes, u32 count, bool do_l, bool do_r,
+static bool _fifo_write_word(u32 word)
+{
+    /* One frame at 23.4 kHz drains in about 43 us. Five milliseconds is
+     * deliberately generous and, unlike the old 200000-iteration guard,
+     * remains meaningful if the BPMP clock changes. */
+    u32 deadline = get_tmr_us() + 5000u;
+    while (APE(ADMAIF_TX_ACIF_FIFO_FULL) & BIT(0)) {
+        if ((s32)(deadline - get_tmr_us()) <= 0)
+            return false;
+    }
+    APE(ADMAIF_CH0_TX_FIFO_WRITE) = word;
+    return true;
+}
+
+static bool _play_notes(const note_t *notes, u32 count, bool do_l, bool do_r,
                         s16 amp, u32 lead_ms)
 {
     /* One 32-bit word per FRAME: with the ADMAIF CIF's UNPACK16 set, the low
@@ -684,10 +698,8 @@ static void _play_notes(const note_t *notes, u32 count, bool do_l, bool do_r,
      * per frame would leave the high half as sign extension, so the right DAC
      * would see DC and the pitch would come out an octave low. */
     for (u32 i = 0; i < TONE_RATE_HZ * lead_ms / 1000u; i++) {
-        u32 spin = 0;
-        while (APE(ADMAIF_TX_ACIF_FIFO_FULL) & BIT(0))
-            if (++spin > 200000u) break;
-        APE(ADMAIF_CH0_TX_FIFO_WRITE) = 0u;
+        if (!_fifo_write_word(0u))
+            return false;
     }
 
     for (u32 nidx = 0; nidx < count; nidx++) {
@@ -698,18 +710,17 @@ static void _play_notes(const note_t *notes, u32 count, bool do_l, bool do_r,
             s16 v = half ? (((i / half) & 1) ? amp : (s16)-amp) : (s16)0;
             u32 word = ((u32)(u16)(do_r ? v : (s16)0) << 16)
                      | (u32)(u16)(do_l ? v : (s16)0);
-            u32 spin = 0;
-            while (APE(ADMAIF_TX_ACIF_FIFO_FULL) & BIT(0))
-                if (++spin > 200000u) break;
-            APE(ADMAIF_CH0_TX_FIFO_WRITE) = word;
+            if (!_fifo_write_word(word))
+                return false;
         }
     }
+    return true;
 }
 
 /* The melody test: left phrase out the left speaker, right phrase out the
  * right, then a phrase out the headphone jack, so a dead or quiet output on
  * any one of them is obvious by ear. */
-static void _pio_melody(void)
+static bool _pio_melody(void)
 {
 
     /* Make sure DAC1 reaches the headphone output too: route it straight
@@ -732,11 +743,13 @@ static void _pio_melody(void)
     _codec_w(0x02, 0xC8C8);            /* headphone muted                    */
     _codec_w(0x01, 0x0000);            /* speaker L+R unmuted                */
     LOG("  Melody       : left speaker...\n");
-    _play_notes(kMelodyL, sizeof(kMelodyL) / sizeof(kMelodyL[0]),
-                true, false, 0x0200, 300u);
+    if (!_play_notes(kMelodyL, sizeof(kMelodyL) / sizeof(kMelodyL[0]),
+                     true, false, 0x0200, 300u))
+        goto fifo_timeout;
     LOG("  Melody       : right speaker...\n");
-    _play_notes(kMelodyR, sizeof(kMelodyR) / sizeof(kMelodyR[0]),
-                false, true, 0x0200, 150u);
+    if (!_play_notes(kMelodyR, sizeof(kMelodyR) / sizeof(kMelodyR[0]),
+                     false, true, 0x0200, 150u))
+        goto fifo_timeout;
 
     /* Headphone jack: both channels, speakers muted. The HP amp is far less
      * efficient than the class-D, so it needs a much larger amplitude to
@@ -744,12 +757,20 @@ static void _pio_melody(void)
     _codec_w(0x01, 0xC8C8);            /* speaker muted                      */
     _codec_hp_on();                    /* full HP amp bring-up, fresh        */
     LOG("  Melody       : headphone jack...\n");
-    _play_notes(kMelodyJack, sizeof(kMelodyJack) / sizeof(kMelodyJack[0]),
-                true, true, 0x0A00, 300u);
+    if (!_play_notes(kMelodyJack, sizeof(kMelodyJack) / sizeof(kMelodyJack[0]),
+                     true, true, 0x0A00, 300u))
+        goto fifo_timeout;
 
     APE(ADMAIF_CH0_TX_ENABLE) = 0;
     APE(ADMAIF_CH0_TX_FIFO_CTRL) &= ~ADMAIF_TX_FIFO_CTRL_PIO;
     _codec_mute_all();
+    return true;
+
+fifo_timeout:
+    APE(ADMAIF_CH0_TX_ENABLE) = 0;
+    APE(ADMAIF_CH0_TX_FIFO_CTRL) &= ~ADMAIF_TX_FIFO_CTRL_PIO;
+    _codec_mute_all();
+    return false;
 }
 
 void probe_audio_beep(void)
@@ -793,8 +814,14 @@ void probe_audio_beep(void)
             frame, I2S1_BCLK_HZ / frame);
     }
 
-    _pio_melody();
+    bool fifo_ok = _pio_melody();
     _codec_mute_all();
+    if (!fifo_ok) {
+        log_color(COL_ERR,
+            "  Result       : ADMAIF FIFO stayed full for >5 ms\n");
+        dx_set("audio_beep", DX_FAIL, "ADMAIF TX FIFO stalled");
+        return;
+    }
     LOG("  Result       : melody played - left, right, then jack\n");
     dx_set("audio_beep", DX_PASS, "");
 }

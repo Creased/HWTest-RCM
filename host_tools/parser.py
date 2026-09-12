@@ -22,12 +22,26 @@ Pager pages later print as:
     =============================================================
     <page body>
 
+The normal hardware payload uses the page/section format above.  The
+dedicated RAM payload and a few launcher/runtime messages use compact tagged
+or flat lines instead, for example::
+
+    [boot] launcher enter
+    [save] backup/0123456789ABCDEF/hwtest.txt (27123 bytes)
+    [ram] mode=advanced patterns=7 mask=7F
+    [ram] write address pattern 40% errors=0
+    DRAM result : PASS
+
+Those are normalised into synthetic ``Runtime`` and ``RAM test`` pages so the
+GUI can display every stable UART protocol the firmware emits, while the raw
+transcript remains byte-for-byte available in ``Report.raw_lines``.
+
 This module turns a stream of bytes/lines into a `Report` object:
 
     Report
       .pages: dict[name, Page]
       .raw_lines: list[str]
-      .latest_page: name of the most recent --- page ---
+      .latest_page: name of the most recently updated page
 
     Page
       .name: str
@@ -69,6 +83,24 @@ _RE_SECTION = re.compile(r"^\[([^\]]+)\]\s*$")
 # least one space before the colon so we don't mis-classify free text.
 _RE_ROW = re.compile(r"^  ([^:]{1,30}?)\s*:\s*(.*)$")
 
+# Non-page UART protocols.  These are deliberately strict enough not to steal
+# arbitrary probe text from the normal page parser.
+_RE_RUNTIME_TAG = re.compile(r"^\[(boot|save)\]\s*(.*)$", re.IGNORECASE)
+_RE_RAM_TAG = re.compile(r"^\[ram\]\s*(.*)$", re.IGNORECASE)
+_RE_RAM_MODE = re.compile(
+    r"^mode=(\w+)\s+patterns=(\d+)\s+mask=([0-9A-Fa-f]+)$")
+_RE_RAM_PROGRESS = re.compile(
+    r"^(write|verify)\s+(.+?)\s+(\d+)%\s+errors=(\d+)$", re.IGNORECASE)
+_RE_RAM_PASS = re.compile(
+    r"^pass=(.+?)\s+result=(\w+)\s+new_errors=(\d+)\s+seconds=(\d+)$",
+    re.IGNORECASE)
+_RE_RAM_ROW = re.compile(r"^\s*([^:]{1,32}?)\s*:\s*(.*)$")
+_RE_RAM_BAD = re.compile(
+    r"^bad @\s+([0-9A-Fa-f]{16})\s+exp\s+([0-9A-Fa-f]{8})\s+"
+    r"got\s+([0-9A-Fa-f]{8})\s+\((.+)\)$")
+_RE_RAM_MORE_BAD = re.compile(r"^\+\s*(\d+)\s+additional failing words$",
+                              re.IGNORECASE)
+
 # Markers that signal severity. We match against lowercased text. The colour
 # information that hwtest prints over the LCD is NOT in the UART stream
 # (UART only carries plain ASCII), so we re-derive it heuristically from
@@ -86,7 +118,7 @@ _WARN_KEYWORDS = (
     # (e.g. PA5 "fn=1 no-pull drv ie=0 ..."), the C code never colours
     # them yellow, and matching them here turned every GPIO census row
     # with no-pull or n/a orange in the host viewer.
-    "warn", "advisory", "aging", "suspect", "unknown",
+    "warn", "advisory", "aging", "suspect", "unknown", "aborted",
     "not present", "not read", "skipped",
     "downgrade", "floating", "unverified", "cannot",
     # PRODINFO / BIS-keys probe failure modes. "invalid" covers
@@ -244,6 +276,187 @@ class Parser:
         # with empty value plus an orphan note line, badly corrupting the
         # GUI's section table.
         self._line_buf = ""
+        self._ram_active = False
+
+    @staticmethod
+    def _get_section(page: Page, name: str) -> Section:
+        return page.section(name)
+
+    @staticmethod
+    def _upsert_row(section: Section, key: str, value: str,
+                    severity: Optional[str] = None) -> None:
+        """Replace a live/status row by key, or append it if new."""
+        sev = severity if severity is not None else classify(value)
+        for row in section.rows:
+            if row.key == key:
+                row.value = value
+                row.severity = sev
+                return
+        section.rows.append(Row(key=key, value=value, severity=sev))
+
+    def _feed_runtime_tag(self, kind: str, body: str) -> None:
+        page = self.report.page("Runtime")
+        section = self._get_section(
+            page, "Boot" if kind.lower() == "boot" else "Save")
+        key = "State" if kind.lower() == "boot" else "Report"
+        # Runtime breadcrumbs are state snapshots.  Raw UART retains the full
+        # history; the structured page keeps the latest actionable state.
+        if kind.lower() == "save":
+            sev = "ok" if re.search(r"\(\d+ bytes\)$", body) else "err"
+        else:
+            sev = "info"
+        self._upsert_row(section, key, body or "(empty)", sev)
+        self.report.latest_page = "Runtime"
+
+    def _reset_ram_page_for_run(self) -> Page:
+        page = self.report.page("RAM test")
+        page.sections.clear()
+        # Keep page.raw as history, just like Report.raw_lines.
+        self.report.latest_page = "RAM test"
+        self._cur_page = page
+        self._cur_section = None
+        self._ram_active = True
+        return page
+
+    def _feed_ram_tag(self, body: str) -> None:
+        m = _RE_RAM_MODE.match(body)
+        if m:
+            page = self._reset_ram_page_for_run()
+            section = self._get_section(page, "Run")
+            mode, patterns, mask = m.groups()
+            self._upsert_row(section, "Mode", mode)
+            self._upsert_row(section, "Patterns", patterns)
+            self._upsert_row(section, "Pattern mask", f"0x{mask.upper()}")
+            return
+
+        page = self.report.page("RAM test")
+        self.report.latest_page = "RAM test"
+        self._cur_page = page
+        self._ram_active = True
+
+        m = _RE_RAM_PROGRESS.match(body)
+        if m:
+            verb, pattern, pct, errors = m.groups()
+            section = self._get_section(page, "Live progress")
+            self._upsert_row(section, "Phase", verb.lower())
+            self._upsert_row(section, "Pattern", pattern)
+            self._upsert_row(section, "Progress", f"{pct}%")
+            self._upsert_row(section, "Errors", errors,
+                             "err" if int(errors) else "ok")
+            return
+
+        m = _RE_RAM_PASS.match(body)
+        if m:
+            pattern, result, new_errors, seconds = m.groups()
+            section = self._get_section(page, "Passes")
+            value = f"{result.upper()}, +{new_errors} errors, {seconds} s"
+            section.rows.append(Row(pattern, value, classify(value)))
+            return
+
+        section = self._get_section(page, "Run")
+        self._upsert_row(section, "Event", body or "(empty)")
+
+    @staticmethod
+    def _ram_row_severity(key: str, value: str) -> str:
+        k = key.lower()
+        v = value.strip()
+        if k == "errors seen":
+            try:
+                n = int(v, 10)
+            except ValueError:
+                return classify(value)
+            return "err" if n else "ok"
+        if k in {"error flags", "training mask", "mtc flags"}:
+            try:
+                # Firmware prints these with %08X, even when they contain only
+                # decimal-looking digits (e.g. 00000002).
+                n = int(v, 16)
+            except ValueError:
+                return classify(value)
+            return "err" if n else "ok"
+        return classify(value)
+
+    def _feed_ram_line(self, line: str) -> bool:
+        """Parse an untagged line emitted by ramtest's ``out()`` sink."""
+        page = self.report.page("RAM test")
+        self.report.latest_page = "RAM test"
+        self._cur_page = page
+
+        stripped = line.strip()
+        if not stripped:
+            return True
+
+        bad = _RE_RAM_BAD.match(stripped)
+        if bad:
+            addr, expected, actual, pattern = bad.groups()
+            section = self._get_section(page, "Errors")
+            section.rows.append(Row(
+                key=f"0x{addr.upper()}",
+                value=(f"expected 0x{expected.upper()}, got 0x{actual.upper()} "
+                       f"({pattern})"),
+                severity="err"))
+            return True
+
+        more = _RE_RAM_MORE_BAD.match(stripped)
+        if more:
+            section = self._get_section(page, "Errors")
+            self._upsert_row(section, "Additional failing words",
+                             more.group(1), "err")
+            return True
+
+        if stripped.startswith("- "):
+            section = self._get_section(page, "Training / setup")
+            section.rows.append(Row("Failure detail", stripped[2:], "err"))
+            return True
+
+        if stripped.startswith("Unsupported Tegra HIDREV"):
+            section = self._get_section(page, "Training / setup")
+            self._upsert_row(section, "Platform", stripped, "err")
+            return True
+
+        if stripped.startswith("Power-cycle before"):
+            section = self._get_section(page, "Training / setup")
+            self._upsert_row(section, "Recovery", stripped, "warn")
+            return True
+
+        if stripped == "Training...":
+            section = self._get_section(page, "Training / setup")
+            self._upsert_row(section, "Status", "Training...")
+            return True
+
+        if stripped == "Powering off...":
+            section = self._get_section(page, "Run")
+            self._upsert_row(section, "State", "Powering off...")
+            return True
+
+        row = _RE_RAM_ROW.match(line)
+        if row:
+            key = row.group(1).strip()
+            value = row.group(2).strip()
+            if key.lower() == "dram result":
+                section = self._get_section(page, "Result")
+                section.rows.clear()
+                section.notes.clear()
+                self._upsert_row(section, key, value,
+                                 self._ram_row_severity(key, value))
+            elif key.lower() in {
+                    "platform", "dram size", "dram id", "target", "training",
+                    "smmu setup", "smmu window", "walking data bits",
+                    "1600 mhz training", "error flags", "training mask"}:
+                section = self._get_section(page, "Training / setup")
+                self._upsert_row(section, key, value,
+                                 self._ram_row_severity(key, value))
+            else:
+                section = self._get_section(page, "Result")
+                self._upsert_row(section, key, value,
+                                 self._ram_row_severity(key, value))
+            return True
+
+        # Unknown RAM text still gets a structured Event row as well as its
+        # exact copy in Raw log, so protocol extensions fail visibly, not dark.
+        section = self._get_section(page, "Run")
+        section.rows.append(Row("Event", stripped, classify(stripped)))
+        return True
 
     def feed_chunk(self, data: str) -> None:
         # Normalise line endings then split, but ALWAYS keep the last frag
@@ -255,6 +468,11 @@ class Parser:
         self._line_buf = parts.pop()      # incomplete trailing line, if any
         for raw in parts:
             self.feed(raw)
+
+    @property
+    def ram_active(self) -> bool:
+        """True once this stream is identified as the dedicated RAM payload."""
+        return self._ram_active
 
     @property
     def pending_line(self) -> str:
@@ -274,8 +492,41 @@ class Parser:
         line = line.rstrip()
         self.report.raw_lines.append(line)
 
+        # Runtime breadcrumbs are useful even before the first diagnostic
+        # page boundary.  The legacy parser intentionally discarded that area.
+        runtime = _RE_RUNTIME_TAG.match(line)
+        if runtime:
+            self._feed_runtime_tag(runtime.group(1), runtime.group(2))
+            return
+
+        ram = _RE_RAM_TAG.match(line)
+        if ram:
+            self._feed_ram_tag(ram.group(1))
+            return
+
+        # The RAM tester is a separate executable.  Once it announces a run
+        # with [ram], the remaining untagged out() lines belong to RAM protocol.
+        if self._ram_active:
+            self._feed_ram_line(line)
+            return
+
+        # Two RAM messages can occur before the normal [ram] mode marker:
+        # unsupported silicon exits before the menu, and the RAM menu can be
+        # powered off before a mode is selected.  Keep both visible.
+        if line.strip().startswith("Unsupported Tegra HIDREV"):
+            self._ram_active = True
+            self._feed_ram_line(line)
+            return
+        if line.strip() == "Powering off...":
+            page = self.report.page("Runtime")
+            section = self._get_section(page, "System")
+            self._upsert_row(section, "State", "Powering off...", "info")
+            self.report.latest_page = "Runtime"
+            return
+
         m = _RE_PAGE.match(line)
         if m:
+            self._ram_active = False
             name = m.group(1)
             # `--- name ---` boundary. The C side emits this for every
             # LCD page render, when a multi-LCD-page domain (Storage

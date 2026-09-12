@@ -241,6 +241,27 @@ static int hex_nibble(char c) {
     return -1;
 }
 
+/* Secret-bearing buffers must not be left in the heap after the PRODINFO
+ * helper is done with them. Use volatile stores so an optimizing compiler
+ * cannot remove the wipe merely because free() follows. */
+static void wipe_free(void *ptr, u32 len)
+{
+    if (!ptr)
+        return;
+    volatile u8 *p = (volatile u8 *)ptr;
+    while (len--)
+        *p++ = 0;
+    free(ptr);
+}
+
+static void clear_loaded_bis_keyslots(bool keys_loaded)
+{
+    if (!keys_loaded)
+        return;
+    se_aes_key_clear(0);
+    se_aes_key_clear(1);
+}
+
 /* Try to populate SE slots 0/1 with bis_key_00 from sd:/switch/prod.keys.
  * Returns 0 on success, non-zero on any failure (file missing, key not
  * present, parse error). The slot writes go directly through the SE
@@ -289,7 +310,7 @@ static int load_bis_keys_from_sd(const char **err)
     fr = f_read(&fp, body, cap, &br);
     f_close(&fp);
     if (fr != FR_OK) {
-        free(body);
+        wipe_free(body, cap + 1);
         *err = "f_read failed";
         return 3;
     }
@@ -316,7 +337,7 @@ static int load_bis_keys_from_sd(const char **err)
         p = (*eol) ? eol + 1 : eol;
     }
     if (!line) {
-        free(body);
+        wipe_free(body, cap + 1);
         *err = "bis_key_00 not in keyfile";
         return 4;
     }
@@ -324,7 +345,7 @@ static int load_bis_keys_from_sd(const char **err)
     /* Skip past `bis_key_00`, optional whitespace, `=`, optional ws. */
     char *q = line + 10;
     while (*q == ' ' || *q == '\t') q++;
-    if (*q != '=') { free(body); *err = "malformed line (no =)"; return 5; }
+    if (*q != '=') { wipe_free(body, cap + 1); *err = "malformed line (no =)"; return 5; }
     q++;
     while (*q == ' ' || *q == '\t') q++;
 
@@ -334,18 +355,21 @@ static int load_bis_keys_from_sd(const char **err)
         int hi = hex_nibble(q[i*2]);
         int lo = hex_nibble(q[i*2 + 1]);
         if (hi < 0 || lo < 0) {
-            free(body);
+            wipe_free(body, cap + 1);
             *err = "bad hex in bis_key_00";
             return 6;
         }
         key[i] = (u8)((hi << 4) | lo);
     }
-    free(body);
+    wipe_free(body, cap + 1);
 
     /* Load into SE: slot 0 = crypt half (low 16), slot 1 = tweak half
      * (high 16). Matches what nx_emmc_bis_init picks for PRODINFO. */
     se_aes_key_set(0, key,      16);
     se_aes_key_set(1, key + 16, 16);
+    volatile u8 *key_wipe = (volatile u8 *)key;
+    for (u32 i = 0; i < sizeof(key); i++)
+        key_wipe[i] = 0;
     return 0;
 }
 
@@ -405,12 +429,23 @@ static u32 gpt_crc32(const u8 *buf, u32 len)
     return ~crc;
 }
 
-static bool gpt_ptr_sane(const void *p)
+static bool gpt_ptr_sane(const link_t *link)
 {
-    u32 a = (u32)p;
+    u32 link_addr = (u32)link;
+    u32 heap_lo = (u32)IPL_HEAP_START;
+    u32 heap_hi = heap_lo + IPL_HEAP_SZ;
+    u32 part_addr;
 
-    return a >= (u32)IPL_HEAP_START + sizeof(emmc_part_t) &&
-           a <  (u32)IPL_HEAP_START + IPL_HEAP_SZ;
+    /* Validate the link itself before reading link->next, then validate the
+     * containing allocation before passing it to free(), whose metadata lives
+     * immediately before the allocation. */
+    if ((link_addr & 3u) || link_addr < heap_lo ||
+        link_addr > heap_hi - sizeof(*link))
+        return false;
+
+    part_addr = (u32)CONTAINER_OF(link, emmc_part_t, link);
+    return part_addr >= heap_lo + sizeof(hnode_t) &&
+           part_addr <= heap_hi - sizeof(emmc_part_t);
 }
 
 static void gpt_free_bounded(link_t *gpt)
@@ -460,6 +495,7 @@ void probe_serial(void)
                         : (key_err ? key_err : "not loaded"));
         log_color(COL_ERR, "  PRODINFO partition not in GPT\n");
         gpt_free_bounded(&gpt);
+        clear_loaded_bis_keyslots(keys_loaded);
         return;
     }
 
@@ -485,6 +521,7 @@ void probe_serial(void)
         LOG("  (GPT unreadable or corrupt - suspect the eMMC, not the keys)\n");
         dx_set("prodinfo", DX_WARN, "GPT entry unusable");
         gpt_free_bounded(&gpt);
+        clear_loaded_bis_keyslots(keys_loaded);
         return;
     }
 
@@ -516,6 +553,9 @@ void probe_serial(void)
         }
     }
     nx_emmc_bis_end();
+    /* The BIS layer does not clear its AES keyslots. Once all encrypted reads
+     * are complete, remove the console-unique key material immediately. */
+    clear_loaded_bis_keyslots(keys_loaded);
 
     bool cal0_ok = !hdr_res && !srl_res &&
                    hdr[0] == 'C' && hdr[1] == 'A' &&
@@ -785,12 +825,24 @@ void probe_emmc_health(void)
     static const char *eol_str[] = {"unknown", "normal", "warning", "urgent"};
     log_color(eol == 1 ? COL_OK : eol == 2 ? COL_WARN : eol == 3 ? COL_ERR : COL_DEFAULT,
         "  PRE_EOL_INFO : 0x%02X (%s)\n", eol, eol < 4 ? eol_str[eol] : "?");
-    log_color(a >= 0x09 ? COL_ERR : a >= 0x07 ? COL_WARN : COL_OK,
-        "  Life used A  : 0x%02X (%d-%d%%)\n", a,
-        a == 0 ? 0 : (a - 1) * 10, a == 0 ? 10 : a == 0x0B ? 100 : a * 10);
-    log_color(b >= 0x09 ? COL_ERR : b >= 0x07 ? COL_WARN : COL_OK,
-        "  Life used B  : 0x%02X (%d-%d%%)\n", b,
-        b == 0 ? 0 : (b - 1) * 10, b == 0 ? 10 : b == 0x0B ? 100 : b * 10);
+    /* LIFE_TIME_EST is a wear estimate, not a JEDEC failure at 80% used.
+     * 0x0B alone means the estimated lifetime has been exceeded. Highlight
+     * 0x09/0x0A as late-life WARN and reserve FAIL for exceeded lifetime or
+     * PRE_EOL urgent. Values above 0x0B are reserved/unknown. */
+    bool a_valid = a <= 0x0B;
+    bool b_valid = b <= 0x0B;
+    u32 acol = !a_valid ? COL_WARN : a == 0x0B ? COL_ERR : a >= 0x09 ? COL_WARN : COL_OK;
+    u32 bcol = !b_valid ? COL_WARN : b == 0x0B ? COL_ERR : b >= 0x09 ? COL_WARN : COL_OK;
+    if (a_valid)
+        log_color(acol, "  Life used A  : 0x%02X (%d-%d%%)\n", a,
+            a == 0 ? 0 : (a - 1) * 10, a == 0 ? 10 : a >= 0x0A ? 100 : a * 10);
+    else
+        log_color(acol, "  Life used A  : 0x%02X (reserved / unknown)\n", a);
+    if (b_valid)
+        log_color(bcol, "  Life used B  : 0x%02X (%d-%d%%)\n", b,
+            b == 0 ? 0 : (b - 1) * 10, b == 0 ? 10 : b >= 0x0A ? 100 : b * 10);
+    else
+        log_color(bcol, "  Life used B  : 0x%02X (reserved / unknown)\n", b);
     LOG("  EXT_CSD rev  : %d\n", emmc_storage.ext_csd.rev);
     LOG("  Card type    : 0x%02X\n", emmc_storage.ext_csd.card_type);
     LOG("  Cache size   : %d KiB\n", emmc_storage.ext_csd.cache_size / 1024);
@@ -841,12 +893,17 @@ void probe_emmc_health(void)
         (rst_func & 0x03) == 0x02 ? "permanently disabled" :
                                     "temporarily disabled");
 
-    /* Verdict signal: PRE_EOL_INFO + worst of life-used A/B. */
+    /* JEDEC severity: PRE_EOL=3 is urgent reserved-block exhaustion and
+     * LIFE_TIME_EST=0x0B means estimated life exceeded. 80-100% lifetime used
+     * (0x09/0x0A) is late-life service WARN, not device failure. */
+    bool life_exceeded = (a_valid && a == 0x0B) || (b_valid && b == 0x0B);
+    bool life_late = (a_valid && a >= 0x09) || (b_valid && b >= 0x09);
+    bool life_unknown = !a_valid || !b_valid;
     dx_set("emmc_health",
-        (eol == 3 || a >= 0x09 || b >= 0x09) ? DX_FAIL :
-        (eol == 2 || a >= 0x07 || b >= 0x07) ? DX_WARN : DX_PASS,
-        (eol == 3 || a >= 0x09 || b >= 0x09) ? "worn (eol %d, A=%d B=%d)" :
-        (eol == 2 || a >= 0x07 || b >= 0x07) ? "aging (eol %d, A=%d B=%d)" : "",
+        (eol == 3 || life_exceeded) ? DX_FAIL :
+        (eol == 2 || life_late || life_unknown) ? DX_WARN : DX_PASS,
+        (eol == 3 || life_exceeded) ? "urgent/exceeded (eol %d, A=%d B=%d)" :
+        (eol == 2 || life_late || life_unknown) ? "aging/unknown (eol %d, A=%d B=%d)" : "",
         eol, a, b);
 }
 

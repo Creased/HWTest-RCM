@@ -92,7 +92,7 @@ static void _emit_xchecks(void)
                              (!lim_ok) || (in_lim_ma <= 500);
         bool suspicious = charging && curr_neg && !input_limited;
         bool ok = !suspicious;
-        log_color(ok ? COL_OK : COL_ERR,
+        log_color(ok ? COL_OK : COL_WARN,
             "  CHRG<->Curr   : BQ chrg=%d, gauge=%d mA  %s\n",
             chrg, current_ma,
             /* Keep these short: the fixed prefix already eats 44 of the 80
@@ -102,7 +102,10 @@ static void _emit_xchecks(void)
             : (charging && curr_pos) ? "(charging, current +)"
             : chrg == 0              ? "(idle/discharging)"
                                      : "(consistent)");
-        dx_set("xc_charge_dir", ok ? DX_PASS : DX_FAIL,
+        /* The +/-30 mA deadband and source-headroom test are empirical
+         * localization heuristics. A mismatch is useful evidence, but not
+         * enough by itself to declare charger/gauge hardware failed. */
+        dx_set("xc_charge_dir", ok ? DX_PASS : DX_WARN,
             ok ? "" : "BQ charging but gauge sees %d mA", current_ma);
     }
 
@@ -114,21 +117,18 @@ static void _emit_xchecks(void)
     if (g_emmc_ok && emmc_storage.sdmmc) {
         u32 bw = sdmmc_get_bus_width(emmc_storage.sdmmc);
         bool is_8bit = (bw == SDMMC_BUS_WIDTH_8);
-        /* Use the cached card_type field (EXT_CSD byte 196) to check
-         * whether the chip negotiated HS400. EXT_CSD card_type bit 6
-         * is HS400_DDR_1V8; if set the chip claims HS400 capability,
-         * and Hekate's sdmmc_init code sets bit 6 of HS_TIMING when
-         * actually running HS400. We trust the card_type here as the
-         * bus's negotiated state. */
-        bool hs400_capable = (emmc_storage.ext_csd.card_type & 0x40) != 0;
-        bool ok = !hs400_capable || is_8bit;
+        /* CARD_TYPE says what the eMMC supports, not what this session is
+         * currently using. Hekate tracks the negotiated mode explicitly in
+         * emmc_get_mode(); only an actual HS400 session requires 8-bit. */
+        u32 mode = emmc_get_mode();
+        bool hs400 = (mode == EMMC_MMC_HS400);
+        bool ok = !hs400 || is_8bit;
         log_color(ok ? COL_OK : COL_ERR,
-            "  eMMC HS400    : card_type=0x%02X, bus=%d-bit  %s\n",
-            emmc_storage.ext_csd.card_type,
+            "  eMMC HS400    : mode=%d, bus=%d-bit  %s\n", mode,
             is_8bit ? 8 : (bw == SDMMC_BUS_WIDTH_4 ? 4 : 1),
-            ok ? "(consistent)" : "(HS400 capable but bus narrow!)");
+            ok ? "(consistent)" : "(HS400 active but bus narrow!)");
         dx_set("xc_emmc_mode", ok ? DX_PASS : DX_WARN,
-            ok ? "" : "HS400 capable but bus %d-bit",
+            ok ? "" : "HS400 active but bus %d-bit",
             is_8bit ? 8 : (bw == SDMMC_BUS_WIDTH_4 ? 4 : 1));
     }
 }
@@ -143,9 +143,16 @@ static void _emit_xchecks(void)
 struct dx_macro {
     const char *name;          /* pre-padded to 15 cols for column-align */
     const char *const *keys;   /* NULL-terminated */
+    u32 group_mask;            /* launcher domain(s) that make this meaningful */
+    bool require_all_groups;   /* true when keys span independent domains */
 };
 
 static const char *_k_boot[]    = { "soc_pmic_otp", "fuses_pkg1", NULL };
+/* KFUSE CRC is set by probe_kfuse(), which is an Identity-group page, so it
+ * cannot sit under the Storage-gated macro: a custom run that selects
+ * Identity without Storage would drop a CRC failure before the verdict saw
+ * it, and a Storage run would claim to have covered a check it never ran. */
+static const char *_k_identity[] = { "kfuse", NULL };
 static const char *_k_pmic[]    = { "pmic_rails", "pmic_nverc",
                                     "pmic_irqsd", "pmic_intlbt",
                                     "max77812", NULL };
@@ -159,27 +166,36 @@ static const char *_k_thermal[] = { "soc_die_temp", "pcb_temp",
 static const char *_k_storage[] = { "emmc_health", "emmc_bus", "sd_bus",
                                     "wlan_cal", "cal0_hash", "cal0_panel",
                                     "cal0_model",
-                                    "gpt", "kfuse", "prodinfo",
+                                    "gpt", "prodinfo",
                                     "xc_emmc_mode", "emmc_errors",
                                     "sd_errors", "gc_asic", NULL };
 static const char *_k_wireless[] = { "bt_hci", "wifi_pcie", NULL };
 static const char *_k_audio[]   = { "audio_codec", "audio_clocks", "audio_beep", NULL };
 static const char *_k_display[] = { "dsi_id", "backlight", NULL };
-static const char *_k_inputs[]  = { "touch_id", "als_id", NULL };
+static const char *_k_inputs[]  = { "touch_id", "touch_ito", "als_id", NULL };
 static const char *_k_memory[]  = { "dram_sym", "plls", NULL };
 
 static const struct dx_macro _macros[] = {
-    { "Boot integrity", _k_boot    },
-    { "PMIC          ", _k_pmic    },
-    { "Charger       ", _k_charger },
-    { "Battery       ", _k_battery },
-    { "Thermal       ", _k_thermal },
-    { "Storage       ", _k_storage },
-    { "Wireless      ", _k_wireless },
-    { "Audio         ", _k_audio   },
-    { "Display       ", _k_display },
-    { "Inputs        ", _k_inputs  },
-    { "Memory        ", _k_memory  },
+    /* Boot integrity spans two independent probes: PMIC OTP lives in Power,
+     * while burnt-fuse/pkg1 compatibility lives in Storage. Do not call the
+     * aggregate complete unless both domains ran. */
+    { "Boot integrity", _k_boot,     PROBE_G_POWER | PROBE_G_STORAGE, true  },
+    { "Identity      ", _k_identity, PROBE_G_IDENTITY,                  false },
+    /* The rails and MAX77812 come from Power, but the NVERC/IRQSD/INTLBT
+     * latches are read by probe_reset() over in Raw state. Gate on either:
+     * dx_get() returns NULL for a key whose probe did not run, so a
+     * Power-only run still prints the rails and a Raw-only run still
+     * prints the latches. */
+    { "PMIC          ", _k_pmic,     PROBE_G_POWER | PROBE_G_RAW,       false },
+    { "Charger       ", _k_charger,  PROBE_G_POWER,                     false },
+    { "Battery       ", _k_battery,  PROBE_G_POWER,                     false },
+    { "Thermal       ", _k_thermal,  PROBE_G_POWER,                     false },
+    { "Storage       ", _k_storage,  PROBE_G_STORAGE,                   false },
+    { "Wireless      ", _k_wireless, PROBE_G_WIRELESS,                  false },
+    { "Audio         ", _k_audio,    PROBE_G_AUDIO | PROBE_G_SOUND,     false },
+    { "Display       ", _k_display,  PROBE_G_DISPLAY,                   false },
+    { "Inputs        ", _k_inputs,   PROBE_G_INPUTS,                    false },
+    { "Memory        ", _k_memory,   PROBE_G_MEMORY,                    false },
 };
 
 void probe_verdict(void)
@@ -187,13 +203,24 @@ void probe_verdict(void)
     /* Cross-checks first - they dx_set() the xc_* keys that the verdict
      * aggregator below picks up. Both sections live on the same Verdict
      * pane (single page header `--- Verdict ---` from run_all_probes). */
-    _emit_xchecks();
+    if ((g_run_mask & (PROBE_G_POWER | PROBE_G_STORAGE)) ==
+        (PROBE_G_POWER | PROBE_G_STORAGE)) {
+        _emit_xchecks();
+    } else {
+        HEADER("[Cross-checks]");
+        log_color(COL_WARN,
+            "  custom run: cross-checks skipped unless Power + Storage are selected\n");
+    }
 
     HEADER("[Verdict]");
     int pass = 0, warn = 0, fail = 0;
 
     for (size_t m = 0; m < sizeof(_macros)/sizeof(_macros[0]); m++) {
         const struct dx_macro *mc = &_macros[m];
+        u32 selected_groups = mc->group_mask & g_run_mask;
+        if (mc->require_all_groups ? selected_groups != mc->group_mask
+                                   : selected_groups == 0)
+            continue;
         int p = 0, w = 0, f = 0;
         const char *why = NULL;
         for (const char *const *k = mc->keys; *k; k++) {
@@ -211,8 +238,8 @@ void probe_verdict(void)
                 break;
             }
         }
-        u32 col = f ? COL_ERR : w ? COL_WARN : COL_OK;
-        const char *state = f ? "FAIL" : w ? "warn" : "pass";
+        u32 col = f ? COL_ERR : w ? COL_WARN : p ? COL_OK : COL_WARN;
+        const char *state = f ? "FAIL" : w ? "warn" : p ? "pass" : "not tested";
         if (why)
             log_color(col, "  %s : %s (%s)\n", mc->name, state, why);
         else

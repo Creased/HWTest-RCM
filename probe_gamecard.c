@@ -25,14 +25,21 @@
 /* time. FS's gamecard path touches exactly four devices - the two GPIOs and */
 /* the two rails used here - and writes no pinmux and no clock registers.    */
 
-/* Rails. pcv names both LDO3 and LDO5 "GcCard": 3.1 V for the core and 1.8 V
- * for the interface. ORDER MATTERS - FS enables LDO3 first, then LDO5, then
+/* Rails. pcv names both LDO3 and LDO5 "GcCard": LDO3 is the board-side
+ * 3.1 V gamecard source and LDO5 is the 1.8 V interface supply. Do not call
+ * LDO3 the Lotus3 silicon core rail: the bridge has lower internal domains.
+ * ORDER MATTERS - FS enables LDO3 first, then LDO5, then
  * settles 1.5 ms (SetGcPower). LDO5 also boots at the PMIC's 3.1 V OTP
  * default against a 1.8 V interface, so it is set down and read back before
  * being enabled rather than trusted. */
-#define GC_ASIC_UV        3100000
+#define GC_LDO3_SUPPLY_UV 3100000
 #define GC_IO_UV          1800000
 #define GC_POWER_SETTLE_MS  2      /* FS sleeps 1.5 ms after LDO5 */
+
+/* T210B01-only SDMMC2 DDR companion pads omitted by the imported BDK header. */
+#define HWTEST_PINMUX_AUX_SDMMC2_CLKB 0x2B8
+#define HWTEST_PINMUX_AUX_SDMMC2_DQS  0x2C0
+#define HWTEST_PINMUX_AUX_SDMMC2_DQSB 0x2C4
 
 /* Card detect: slot pin 2 (CD#) is strapped to ground in the cartridge shell,
  * so the line reads low when one is seated - confirmed on hardware both ways,
@@ -92,7 +99,7 @@ void probe_gamecard(void)
     bool ldo3_was_on = max77620_regulator_get_status(REGULATOR_LDO3);
     bool ldo5_was_on = max77620_regulator_get_status(REGULATOR_LDO5);
 
-    max7762x_regulator_set_voltage(REGULATOR_LDO3, GC_ASIC_UV);
+    max7762x_regulator_set_voltage(REGULATOR_LDO3, GC_LDO3_SUPPLY_UV);
     max7762x_regulator_enable(REGULATOR_LDO3, true);
 
     max7762x_regulator_set_voltage(REGULATOR_LDO5, GC_IO_UV);
@@ -150,14 +157,11 @@ void probe_gamecard(void)
      *
      * Measured on a Mariko in RCM: CLK reads 0xA064 before this runs, which
      * is PARKED (bit 5) set, so the bus could never have come up. */
-    if ((((APB_MISC(APB_MISC_GP_HIDREV) >> 4) & 0xF) == 2)) {
+    if (hw_get_chip_id() == GP_HIDREV_MAJOR_T210B01) {
         /* Values are HOS's own initial pad table for this board, decoded:
          * DAT0-7 pull-up, CLK/CMD no pull, all three input-enabled and out
          * of tristate; the DDR-only strobes stay parked. BDK stops short of
          * defining the last three, so their offsets are named here. */
-        #define PINMUX_AUX_SDMMC2_CLKB 0x2B8
-        #define PINMUX_AUX_SDMMC2_DQS  0x2C0
-        #define PINMUX_AUX_SDMMC2_DQSB 0x2C4
         const u32 dat  = PINMUX_INPUT_ENABLE | PINMUX_PULL_UP;
         const u32 ctl  = PINMUX_INPUT_ENABLE | PINMUX_PULL_NONE;
         const u32 park = PINMUX_TRISTATE | PINMUX_PULL_DOWN;
@@ -171,9 +175,9 @@ void probe_gamecard(void)
         PINMUX_AUX(PINMUX_AUX_SDMMC2_DAT5) = dat;
         PINMUX_AUX(PINMUX_AUX_SDMMC2_DAT6) = dat;
         PINMUX_AUX(PINMUX_AUX_SDMMC2_DAT7) = dat;
-        PINMUX_AUX(PINMUX_AUX_SDMMC2_CLKB) = park;
-        PINMUX_AUX(PINMUX_AUX_SDMMC2_DQS)  = park;
-        PINMUX_AUX(PINMUX_AUX_SDMMC2_DQSB) = park;
+        PINMUX_AUX(HWTEST_PINMUX_AUX_SDMMC2_CLKB) = park;
+        PINMUX_AUX(HWTEST_PINMUX_AUX_SDMMC2_DQS)  = park;
+        PINMUX_AUX(HWTEST_PINMUX_AUX_SDMMC2_DQSB) = park;
         (void)PINMUX_AUX(PINMUX_AUX_SDMMC2_CLK); /* commit */
         LOG("  SDMMC2 pads  : assigned (T210B01)\n");
     }

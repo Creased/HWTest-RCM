@@ -38,21 +38,22 @@ void probe_pmic(void)
         LOG("  CPU CHIPID1  : 0x%02X (max77621 v%d)\n", cpu_id, cpu_id & 0xF);
         LOG("  GPU CHIPID1  : 0x%02X (max77621 v%d)\n", gpu_id, gpu_id & 0xF);
         /* Output voltage from VOUT register (0x00) and VOUT_DVS register
-         * (0x01). Format: bit7 = enable, bits6:0 = voltage = 606250 + N * 6250 uV.
-         * VOUT is the active setting; VOUT_DVS is the pre-loaded DVS target
-         * (selected via the GPIO_DVS pin, see Hekate's max7762x.c). HOS
-         * uses both for fast CPU/GPU DVFS. We surface both per chip for the
-         * tech to compare. */
+         * (0x01). Format: bit7 = enable, bits6:0 = voltage =
+         * 606250 + N * 6250 uV. The old probe used 1.0 V CPU / 1.2 V GPU
+         * as lower health limits because those are BDK's default fields.
+         * They are not operating minima: Hekate starts CPU0 at 0.950 V and
+         * Horizon DVFS tables go lower. Use the MAX77621 programmable domain
+         * from Hekate/Horizon instead. An OFF rail is normal in RCM. */
         struct max77621_rail {
             u32 i2c_addr;
             const char *name;
-            u32 vmin_uv;
-            u32 vmax_uv;
         };
         static const struct max77621_rail bc_rails[] = {
-            {MAX77621_CPU_I2C_ADDR, "CPU", 1000000, 1400000},
-            {MAX77621_GPU_I2C_ADDR, "GPU", 1200000, 1400000},
+            {MAX77621_CPU_I2C_ADDR, "CPU"},
+            {MAX77621_GPU_I2C_ADDR, "GPU"},
         };
+        const u32 rail_min_uv = 606250;
+        const u32 rail_max_uv = 1400000;
         for (size_t r = 0; r < sizeof(bc_rails)/sizeof(bc_rails[0]); r++) {
             u8 vout     = i2c_recv_byte(I2C_5, bc_rails[r].i2c_addr, MAX77621_REG_VOUT);
             u8 vout_dvs = i2c_recv_byte(I2C_5, bc_rails[r].i2c_addr, MAX77621_REG_VOUT_DVS);
@@ -60,18 +61,16 @@ void probe_pmic(void)
             bool en_dvs = (vout_dvs & MAX77621_VOUT_ENABLE_MASK) != 0;
             u32 uv      = ((vout     & MAX77621_DVC_DVS_VOLT_MASK) * 6250) + 606250;
             u32 uv_dvs  = ((vout_dvs & MAX77621_DVC_DVS_VOLT_MASK) * 6250) + 606250;
-            bool ok     = en && uv >= bc_rails[r].vmin_uv && uv <= bc_rails[r].vmax_uv;
-            log_color(ok ? COL_OK : COL_WARN,
-                "  %s VOUT     : %s %d.%03d V  (range %d.%03d - %d.%03d V)\n",
-                bc_rails[r].name,
-                en ? "ON " : "off",
+            bool oob    = en && (uv < rail_min_uv || uv > rail_max_uv);
+            log_color(oob ? COL_ERR : (en ? COL_OK : COL_DEFAULT),
+                "  %s VOUT     : %s %d.%03d V  (legal %d.%03d-%d.%03d V)\n",
+                bc_rails[r].name, en ? "ON " : "off",
                 uv / 1000000, (uv / 1000) % 1000,
-                bc_rails[r].vmin_uv / 1000000, (bc_rails[r].vmin_uv / 1000) % 1000,
-                bc_rails[r].vmax_uv / 1000000, (bc_rails[r].vmax_uv / 1000) % 1000);
+                rail_min_uv / 1000000, (rail_min_uv / 1000) % 1000,
+                rail_max_uv / 1000000, (rail_max_uv / 1000) % 1000);
             log_color(COL_DEFAULT,
                 "  %s VOUT_DVS : %s %d.%03d V  (DVFS pre-load)\n",
-                bc_rails[r].name,
-                en_dvs ? "ON " : "off",
+                bc_rails[r].name, en_dvs ? "ON " : "off",
                 uv_dvs / 1000000, (uv_dvs / 1000) % 1000);
         }
     }
@@ -90,11 +89,11 @@ void probe_pmic(void)
  * answers we mark the probe FAIL and skip; on Erista we don't run
  * this probe at all.
  *
- * VOUT register encoding (M1..M4): vout_mv = 250 + N * 5, range
- * 250..1525 mV (LV variant — Switch uses LV). Values quoted in
- * the BDK's max77812.h match this. EN_CTRL holds per-phase enable
- * bits at 0/2/4/6. BUCK_STAT reflects per-rail power-good /
- * over-current latches; non-zero is a fault signal. */
+ * VOUT register encoding (M1..M4): vout_mv = 250 + N * 5. EN_CTRL
+ * holds per-output enable bits at 0/2/4/6. Do not treat BUCK_STAT,
+ * TOPSYS_STAT or interrupt-mask bytes as generic fault flags: their nonzero
+ * state is not equivalent to "hardware failed". Keep these live status
+ * registers informational unless their individual bit semantics are proven. */
 static u8 _max77812_probe_addr(u8 addr)
 {
     /* Read VERSION register; valid silicon returns ES2_VERSION (0x04)
@@ -155,17 +154,19 @@ void probe_max77812(void)
         u32 vmin_mv;
         u32 vmax_mv;
     };
-    /* PHASE211 retail layout: M1 = GPU, M3 = LPDDR4 VDD2 (1.1 V),
-     * M4 = CPU. Sane operating bands chosen to span the DVFS range
-     * documented for HOS plus a safety margin. */
+    /* PHASE211 retail layout: M1 = GPU, M3 = LPDDR4X VDDQ, M4 = CPU.
+     * MAX77620 SD1 is the separate ~1.1 V memory VDD2 rail. Horizon-OC
+     * explicitly models M3 as MEM Vddq and validates 0.400-0.750 V; Hekate
+     * uses 0.600-0.650 V for its supported RAM regulator settings. CPU/GPU
+     * use the broad normal-DVFS envelope, not a stock point voltage. */
     static const struct rail rails_phase211[] = {
-        {MAX77812_REG_M1_VOUT, MAX77812_EN_CTRL_EN_M1_MASK, "M1 (GPU) ",  500, 1300},
-        {MAX77812_REG_M3_VOUT, MAX77812_EN_CTRL_EN_M3_MASK, "M3 (DRAM)",  900, 1200},
-        {MAX77812_REG_M4_VOUT, MAX77812_EN_CTRL_EN_M4_MASK, "M4 (CPU) ",  600, 1300},
+        {MAX77812_REG_M1_VOUT, MAX77812_EN_CTRL_EN_M1_MASK, "M1 (GPU) ",  600, 1050},
+        {MAX77812_REG_M3_VOUT, MAX77812_EN_CTRL_EN_M3_MASK, "M3 (VDDQ)",  400,  750},
+        {MAX77812_REG_M4_VOUT, MAX77812_EN_CTRL_EN_M4_MASK, "M4 (CPU) ",  600, 1235},
     };
     static const struct rail rails_phase31[] = {
-        {MAX77812_REG_M1_VOUT, MAX77812_EN_CTRL_EN_M1_MASK, "M1 (GPU) ",  500, 1300},
-        {MAX77812_REG_M4_VOUT, MAX77812_EN_CTRL_EN_M4_MASK, "M4 (CPU) ",  600, 1300},
+        {MAX77812_REG_M1_VOUT, MAX77812_EN_CTRL_EN_M1_MASK, "M1 (GPU) ",  600, 1050},
+        {MAX77812_REG_M4_VOUT, MAX77812_EN_CTRL_EN_M4_MASK, "M4 (CPU) ",  600, 1235},
     };
     const struct rail *rails  = phase211 ? rails_phase211 : rails_phase31;
     size_t       n_rails = phase211 ? sizeof(rails_phase211)/sizeof(rails_phase211[0])
@@ -201,22 +202,15 @@ void probe_max77812(void)
             "                 (all rails dormant - normal in RCM, HOS brings them up)\n");
 
     LOG("  EN_CTRL      : 0x%02X\n", en_ctrl);
-    log_color(buck_stat ? COL_WARN : COL_OK,
-        "  BUCK_STAT    : 0x%02X%s\n", buck_stat,
-        buck_stat ? " (per-rail fault latch set - check rails above)" : "");
-    log_color(topsys ? COL_WARN : COL_OK,
-        "  TOPSYS_STAT  : 0x%02X%s\n", topsys,
-        topsys ? " (system-level fault: thermal / OV / UV)" : "");
+    LOG("  BUCK_STAT    : 0x%02X (live status; informational)\n", buck_stat);
+    LOG("  TOPSYS_STAT  : 0x%02X (live status; informational)\n", topsys);
 
-    /* Verdict: only fault on real signals. Rail-off in RCM is expected,
-     * not a fault. We FAIL when a rail is ON but VOUT is out of band
-     * (mis-programmed regulator) or when BUCK/TOPSYS latches are set. */
-    dx_set("max77812",
-        (n_oob || buck_stat || topsys) ? DX_FAIL : DX_PASS,
-        n_oob     ? "%d rails out of band" :
-        buck_stat ? "BUCK_STAT 0x%02X"     :
-        topsys    ? "TOPSYS_STAT 0x%02X"   : "",
-        n_oob ? n_oob : (buck_stat ? buck_stat : topsys));
+    /* Verdict: rail-off in RCM is expected. An enabled rail outside the
+     * source-backed operating envelope is a configuration failure. The exact
+     * BUCK_STAT/TOPSYS_STAT bit semantics are not available in our public
+     * MAX77812 material, so raw live status must not be promoted to FAIL. */
+    dx_set("max77812", n_oob ? DX_FAIL : DX_PASS,
+        n_oob ? "%d enabled rails out of band" : "", n_oob);
 }
 
 void probe_battery(void)
@@ -230,16 +224,22 @@ void probe_battery(void)
             "  SOC          : %d.%d %%\n", soc_int, ((v & 0xFF) * 10) / 256);
     }
     if (max17050_get_property(MAX17050_VCELL, &v) == 0) {
-        log_color(health_color(v, 3700, 4250, 3500, 4350),
-            "  VCELL        : %d mV\n", v);
+        /* Treat VCELL as charge-state evidence, not a rail tolerance check.
+         * Hekate still considers roughly 3.1 V (battery) / 3.3 V (charging)
+         * sufficient for boot handling, while the older repair test accepts
+         * 2.5-4.5 V as a broad gauge sanity range. */
+        u32 vcol = (v < 2500 || v > 4500) ? COL_ERR :
+                   (v < 3300 || v > 4350) ? COL_WARN : COL_OK;
+        log_color(vcol, "  VCELL        : %d mV\n", v);
     }
     if (max17050_get_property(MAX17050_OCVInternal, &v) == 0)
         LOG("  OCV          : %d mV\n", v);
     if (max17050_get_property(MAX17050_TEMP, &v) == 0) {
         int t10 = v;
-        log_color(health_color(t10 / 10, 5, 40, 0, 50),
-            "  Temp         : %d.%d C\n",
-            t10 / 10, (t10 >= 0 ? t10 : ~t10) % 10);
+        u32 tcol = (t10 < -200 || t10 > 700) ? COL_ERR :
+                   (t10 < 0 || t10 >= 450) ? COL_WARN : COL_OK;
+        int frac = t10 < 0 ? (-t10) % 10 : t10 % 10;
+        log_color(tcol, "  Temp         : %d.%d C\n", t10 / 10, frac);
     }
     if (max17050_get_property(MAX17050_AvgCurrent, &v) == 0)
         LOG("  AvgCurrent   : %d mA\n", v / 1000);
@@ -251,26 +251,33 @@ void probe_battery(void)
     max17050_get_property(MAX17050_FullCAP,   &full);
     max17050_get_property(MAX17050_DesignCap, &design);
     LOG("  RepCap       : %d mAh\n", rep);
-    /* Battery health = full / design. Below 80 % means cells are aging. */
+    /* FullCap/DesignCap is a service wear grade, not an electrical failure
+     * threshold from MAX17050. Keep the familiar 80% replacement-warning
+     * point, but do not turn a functional worn pack into a hardware FAIL.
+     * Zero capacity metadata is also advisory after a gauge reset/relearn. */
     int health_pct = design ? (full * 100 / design) : 0;
-    log_color(health_color(health_pct, 80, HEALTH_NONE, 60, HEALTH_NONE),
-        "  FullCap      : %d mAh (%d%% of design)\n", full, health_pct);
+    u32 hcol = (!design || !full || health_pct < 80) ? COL_WARN : COL_OK;
+    log_color(hcol, "  FullCap      : %d mAh (%d%% of design)\n", full, health_pct);
     LOG("  DesignCap    : %d mAh\n", design);
     dx_set("batt_health",
-        health_pct < 60 ? DX_FAIL :
-        health_pct < 80 ? DX_WARN : DX_PASS,
-        health_pct < 80 ? "%d%% of design" : "", health_pct);
+        (!design || !full || health_pct < 80) ? DX_WARN : DX_PASS,
+        !design ? "DesignCap unavailable" :
+        !full ? "FullCap unavailable" :
+        health_pct < 80 ? "%d%% of design (wear grade)" : "", health_pct);
 
-    /* Verdict signal from the temp read above (`v` was last assigned
-     * MAX17050_TEMP). Negative = NTC disconnected, > 45 C = heat stress. */
+    /* MAX17050 temperature is signed. A negative reading is valid in a cold
+     * environment and does NOT mean the NTC is disconnected. Use a broad
+     * -20..70 C plausibility envelope; BQ24193 TempStatus above is the better
+     * source for warm/cool/cold/hot charge-limit classification. */
     int t10 = 0;
     max17050_get_property(MAX17050_TEMP, &t10);
     dx_set("batt_ntc",
-        t10 < 0      ? DX_FAIL :
-        t10 / 10 >= 45 ? DX_WARN : DX_PASS,
-        t10 < 0      ? "%d.%d C (NTC disconnected?)" :
-        t10 / 10 >= 45 ? "%d.%d C hot" : "",
-        t10 / 10, t10 < 0 ? -t10 % 10 : t10 % 10);
+        (t10 < -200 || t10 > 700) ? DX_FAIL :
+        (t10 < 0 || t10 >= 450) ? DX_WARN : DX_PASS,
+        (t10 < -200 || t10 > 700) ? "%d.%d C implausible" :
+        t10 < 0 ? "%d.%d C cold" :
+        t10 >= 450 ? "%d.%d C warm" : "",
+        t10 / 10, t10 < 0 ? (-t10) % 10 : t10 % 10);
 
     if (max17050_get_property(MAX17050_MinVolt, &v) == 0)
         LOG("  Min volt     : %d mV\n", v);
@@ -1066,9 +1073,14 @@ void probe_thermal(void)
     u16 pcb = tmp451_get_pcb_temp(false);
     int soc_int = soc >> 8;
     int pcb_int = pcb >> 8;
-    log_color(health_color(soc_int, HEALTH_NONE, 50, 0, 70),
+    /* Temperatures are operating-condition evidence, not component voltage
+     * tolerances. 82 C SoC and 90 C board are service ceilings used by Switch
+     * hardware tests; crossing them is WARN unless a real TMP451 fault bit is
+     * present. Lower values are colored only to call out an unusually hot RCM
+     * bench condition. */
+    log_color(soc_int >= 82 ? COL_WARN : soc_int >= 70 ? COL_WARN : COL_OK,
         "  SoC die temp : %02d.%d C\n", soc_int, (soc & 0xFF) / 10);
-    log_color(health_color(pcb_int, HEALTH_NONE, 40, HEALTH_NONE, 55),
+    log_color(pcb_int >= 90 ? COL_WARN : pcb_int >= 60 ? COL_WARN : COL_OK,
         "  PCB temp     : %02d.%d C\n", pcb_int, (pcb & 0xFF) / 10);
 
     /* Status register (0x02) and conversion rate. TMP451 status:
@@ -1132,54 +1144,37 @@ void probe_thermal(void)
      * NTC path in particular doesn't behave in a way that makes a spread
      * threshold meaningful. */
 
-    /* Verdict signals. Tegra X1 throttles at 85 C; >70 C in handheld
-     * idle is suspicious. PCB skin shouldn't exceed ~45 C even under
-     * sustained load, so the threshold is tighter on channel 0. An OPEN
-     * remote diode invalidates the SoC reading regardless of value. */
+    /* Verdict signals. Do not turn a hot but valid reading into a hardware
+     * FAIL: the temperature may reflect the state before RCM entry. OPEN is a
+     * real remote-diode path failure. The 82/90 C service ceilings are WARN
+     * conditions that should be interpreted with the fan test and reset history. */
     dx_set("soc_die_temp",
-        open          ? DX_FAIL :
-        soc_int >= 85 ? DX_FAIL :
-        soc_int >= 70 ? DX_WARN : DX_PASS,
-        open          ? "remote diode OPEN" :
-        soc_int >= 85 ? "%d C >= throttle" :
-        soc_int >= 70 ? "%d C warm" : "", soc_int);
+        open ? DX_FAIL : soc_int >= 82 ? DX_WARN : soc_int >= 70 ? DX_WARN : DX_PASS,
+        open ? "remote diode OPEN" :
+        soc_int >= 82 ? "%d C above service ceiling" :
+        soc_int >= 70 ? "%d C warm in RCM" : "", soc_int);
     dx_set("pcb_temp",
-        pcb_int >= 60 ? DX_FAIL :
-        pcb_int >= 45 ? DX_WARN : DX_PASS,
-        pcb_int >= 60 ? "%d C (thermal pad?)" :
-        pcb_int >= 45 ? "%d C warm" : "", pcb_int);
+        pcb_int >= 90 ? DX_WARN : pcb_int >= 60 ? DX_WARN : DX_PASS,
+        pcb_int >= 90 ? "%d C above service ceiling" :
+        pcb_int >= 60 ? "%d C warm in RCM" : "", pcb_int);
 }
 
 
 void probe_regulators(void)
 {
     HEADER("[MAX77620 regulators]");
-    int n_wrong = 0;
-    /* For each rail surface:
-     *   - Power-OK bit (rail crossed ~80% of target during ramp)
-     *   - Configured voltage from the per-rail VOLT register
-     *   - Exact expected voltage for the FIXED-target rails
+    int n_oob = 0, n_ref = 0;
+    /* This page reads PMIC configuration registers, not analog voltage. Keep
+     * three concepts separate:
+     *   - supported domain: values accepted by Hekate's regulator model;
+     *   - reference target: the normal Switch/BDK value when one is stable;
+     *   - live electrical voltage: not measured by MAX77620 and therefore not
+     *     something this probe can claim.
      *
-     * Voltage registers per Hekate's _pmic_regulators table:
-     *   SD0..SD3   = 0x16..0x19 (12.5 mV steps from 600 mV, mask varies)
-     *   LDO0..LDO8 = 0x23/0x25/0x27/.../0x33 (LDOx_CFG, low 6 bits = volt)
-     *               step 25 mV (LDO0/1/4) or 50 mV (LDO2/3/5/6/7/8)
-     * Decoded uV = (reg_val & mask) * uv_step + uv_min.
-     *
-     * `expect_uv` is the exact value BDK's max77620_config_default() programs
-     * (the uv_default column of _pmic_regulators in max7762x.c). A fixed rail
-     * that is ON must read this value EXACTLY, with no tolerance band. A band
-     * would hide a mis-programmed regulator, so we compare for equality.
-     *
-     * A handful of rails genuinely move and cannot be checked against a
-     * single value, so they carry expect_uv = 0 and are reported
-     * informational-only (no verdict contribution):
-     *   SD0  (CPU)   - DVFS, 0.6 V BPMP-idle up to 1.4 V under CPU load
-     *   LDO2 (SDMMC1)- 1.8 V on UHS (SDR104) <-> 3.3 V on legacy SD
-     *   LDO4 (RTC)   - 0.85 V at BDK default, 1.0 V after HOS keygen retune
-     *   LDO8 (XUSB/DP)- multi-purpose, 1.05 V .. 2.8 V depending on use
-     * Rails that are OFF also get no verdict (the configured voltage is
-     * meaningless when the rail is disabled). */
+     * An enabled rail outside the supported domain is FAIL. A source-backed
+     * reference mismatch is WARN because warm-reset, boot-stage and OC state
+     * can legitimately change programmed targets. Variable rails have no
+     * reference comparison. */
     struct rail {
         int  id;
         const char *name;
@@ -1187,79 +1182,63 @@ void probe_regulators(void)
         u8   mask;
         u32  step_uv;
         u32  base_uv;
-        u32  expect_uv;   /* exact expected on Erista; 0 = variable, info-only */
-        u32  expect_uv_mrk; /* Mariko override; 0 = same as expect_uv */
+        u32  min_uv;
+        u32  max_uv;
+        u32  ref_uv_e;
+        u32  ref_uv_m;
     };
-    /* Rail labels cross-referenced against Hekate's bdk/power/max7762x.h
-     * "Switch Power domains" table. Expected voltages come from the
-     * uv_default column of _pmic_regulators (max7762x.c), corrected against
-     * hardware where the two disagree; hardware wins:
-     *   SD1 (DRAM) : 1.125 V Erista (LPDDR4) vs 1.100 V Mariko (LPDDR4X).
-     *   SD2 (LDOsrc): 1.350 V Erista vs 1.325 V Mariko. BDK lists 1.325 V as
-     *                 uv_default for both, but Erista runs the table's max
-     *                 value, so expecting 1.325 V there flags every healthy
-     *                 Erista.
-     * Both pairs measured on real unpatched consoles. */
     static const struct rail rails[] = {
-        /* id  name              volt_reg mask  step    base   erista   mariko */
-        {0,  "SD0  (SoC CPU)",   0x16, 0x7F, 12500, 600000,       0,       0 }, /* DVFS */
-        {1,  "SD1  (DRAM)",      0x17, 0x7F, 12500, 600000, 1125000, 1100000 },
-        {2,  "SD2  (LDO src)",   0x18, 0xFF, 12500, 600000, 1350000, 1325000 },
-        {3,  "SD3  (1V8 gen)",   0x19, 0xFF, 12500, 600000, 1800000,       0 },
-        {4,  "LDO0 (Display)",   0x23, 0x3F, 25000, 800000, 1200000,       0 },
-        {5,  "LDO1 (XUSB+PCIE)", 0x25, 0x3F, 25000, 800000, 1050000,       0 },
-        {6,  "LDO2 (SDMMC1)",    0x27, 0x3F, 50000, 800000,       0,       0 }, /* UHS<->legacy */
-        {7,  "LDO3 (GC ASIC)",   0x29, 0x3F, 50000, 800000, 3100000,       0 },
-        {8,  "LDO4 (RTC)",       0x2B, 0x3F, 12500, 800000,       0,       0 }, /* 0.8<->1.0 */
-        {9,  "LDO5 (GC Card)",   0x2D, 0x3F, 50000, 800000,       0,       0 }, /* OTP/HOS state-dependent */
-        {10, "LDO6 (Touch+ALS)", 0x2F, 0x3F, 50000, 800000,       0,       0 }, /* OTP/HOS state-dependent */
-        {11, "LDO7 (XUSB)",      0x31, 0x3F, 50000, 800000,       0,       0 }, /* OTP/HOS state-dependent */
-        {12, "LDO8 (XUSB/DP)",   0x33, 0x3F, 50000, 800000,       0,       0 }, /* multi-use */
+        /* id name                reg  mask step   base    min     max      E ref    M ref */
+        {0,  "SD0  (SoC)",       0x16,0x7F,12500,600000, 600000,1400000,       0,       0},
+        {1,  "SD1  (MEM VDD2)",  0x17,0x7F,12500,600000, 600000,1237500, 1125000, 1100000},
+        {2,  "SD2  (LDO src)",   0x18,0xFF,12500,600000, 600000,1350000, 1350000, 1325000},
+        {3,  "SD3  (1V8 gen)",   0x19,0xFF,12500,600000, 600000,1800000, 1800000, 1800000},
+        {4,  "LDO0 (Display)",   0x23,0x3F,25000,800000, 800000,1200000, 1200000, 1200000},
+        {5,  "LDO1 (XUSB+PCIE)", 0x25,0x3F,25000,800000, 800000,1050000, 1050000, 1050000},
+        {6,  "LDO2 (SDMMC1)",    0x27,0x3F,50000,800000, 800000,3300000,       0,       0},
+        {7,  "LDO3 (GC source)", 0x29,0x3F,50000,800000, 800000,3100000, 3100000, 3100000},
+        {8,  "LDO4 (RTC)",       0x2B,0x3F,12500,800000, 800000,1000000,       0,       0},
+        {9,  "LDO5 (GC I/O)",    0x2D,0x3F,50000,800000, 800000,1800000,       0,       0},
+        {10, "LDO6 (Touch+ALS)", 0x2F,0x3F,50000,800000, 800000,2900000,       0,       0},
+        {11, "LDO7 (XUSB)",      0x31,0x3F,50000,800000, 800000,1050000,       0,       0},
+        {12, "LDO8 (XUSB/DP)",   0x33,0x3F,50000,800000, 800000,2800000,       0,       0},
     };
     bool is_mariko = (((APB_MISC(APB_MISC_GP_HIDREV) >> 4) & 0xF) == 2);
     for (size_t i = 0; i < sizeof(rails)/sizeof(rails[0]); i++) {
-        int ok = max77620_regulator_get_status(rails[i].id);
-        u8  reg_val = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, rails[i].volt_reg);
+        int on = max77620_regulator_get_status(rails[i].id);
+        u8 reg_val = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, rails[i].volt_reg);
         u32 uv = ((u32)(reg_val & rails[i].mask)) * rails[i].step_uv + rails[i].base_uv;
-        u32 expect = (is_mariko && rails[i].expect_uv_mrk)
-                        ? rails[i].expect_uv_mrk : rails[i].expect_uv;
-        if (!ok) {
-            /* Rail off: configured voltage is meaningless, report neutral. */
-            log_color(COL_DEFAULT,
-                "  %s : off  %d.%03d V\n",
+        u32 ref = is_mariko ? rails[i].ref_uv_m : rails[i].ref_uv_e;
+        bool oob = on && (uv < rails[i].min_uv || uv > rails[i].max_uv);
+        bool mismatch = on && ref && uv != ref;
+
+        if (oob) n_oob++;
+        else if (mismatch) n_ref++;
+
+        if (!on) {
+            log_color(COL_DEFAULT, "  %s : off  %d.%03d V cfg\n",
                 rails[i].name, uv / 1000000, (uv / 1000) % 1000);
-        } else if (expect == 0) {
-            /* No fixed target. Two kinds of rail land here:
-             *  - SD0 and LDO2/4/8 are DVFS/multi-use and scale at runtime.
-             *  - LDO5/6/7 (game-card, touch/ALS, XUSB) are peripheral rails
-             *    with no single RCM voltage to check against. Their value is
-             *    EITHER the cold OTP default OR whatever HOS last programmed:
-             *    a PMIC soft reset (our reboot path) preserves the HOS value,
-             *    only a cold power-cycle restores the OTP default. On one
-             *    Mariko, LDO6 reads 2.9 V warm-from-HOS but 2.8 V cold; the
-             *    Erista reads 2.8 V too. No hardcoded expectation is right in
-             *    both states, and none of these rails matters for booting -
-             *    so report the live value without a verdict. */
-            bool otp_rail = (rails[i].id == REGULATOR_LDO5 ||
-                             rails[i].id == REGULATOR_LDO6 ||
-                             rails[i].id == REGULATOR_LDO7);
-            log_color(COL_OK,
-                "  %s : ON   %d.%03d V  (%s)\n",
+        } else if (oob) {
+            log_color(COL_ERR,
+                "  %s : ON   %d.%03d V cfg  (outside supported domain)\n",
+                rails[i].name, uv / 1000000, (uv / 1000) % 1000);
+        } else if (mismatch) {
+            log_color(COL_WARN,
+                "  %s : ON   %d.%03d V cfg  (reference %d.%03d V)\n",
                 rails[i].name, uv / 1000000, (uv / 1000) % 1000,
-                otp_rail ? "OTP default; HOS may differ" : "variable / DVFS");
+                ref / 1000000, (ref / 1000) % 1000);
+        } else if (ref) {
+            log_color(COL_OK, "  %s : ON   %d.%03d V cfg  (reference)\n",
+                rails[i].name, uv / 1000000, (uv / 1000) % 1000);
         } else {
-            /* Fixed rail: must match the expected value EXACTLY. */
-            bool match = (uv == expect);
-            if (!match) n_wrong++;
-            log_color(match ? COL_OK : COL_ERR,
-                "  %s : ON   %d.%03d V  (expect %d.%03d V)%s\n",
-                rails[i].name,
-                uv / 1000000, (uv / 1000) % 1000,
-                expect / 1000000, (expect / 1000) % 1000,
-                match ? "" : " WRONG");
+            log_color(COL_OK, "  %s : ON   %d.%03d V cfg  (variable)\n",
+                rails[i].name, uv / 1000000, (uv / 1000) % 1000);
         }
     }
-    dx_set("pmic_rails", n_wrong ? DX_FAIL : DX_PASS,
-        n_wrong ? "%d ON but wrong voltage" : "", n_wrong);
+    dx_set("pmic_rails",
+        n_oob ? DX_FAIL : n_ref ? DX_WARN : DX_PASS,
+        n_oob ? "%d enabled rails outside domain" :
+        n_ref ? "%d programmed targets differ from reference" : "",
+        n_oob ? n_oob : n_ref);
 }
 

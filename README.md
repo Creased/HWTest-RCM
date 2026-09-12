@@ -2,18 +2,21 @@
 
 ![hwtest running in the emulator](img/demo.png)
 
-A near read-only RCM (Recovery Mode) payload that probes every BPMP-side IC
-the Switch boot ROM hands off to, then reports identity / status / faults to
-the LCD and UART_B (Joy-Con right rail, 115200 8N1). The BPMP is the Boot and
-Power Management Processor, the small ARM7 core that runs before the main CPU
-comes up. That is what an RCM payload executes on, and it bounds what can be
-tested. Output is also captured into a heap buffer that gets written to
+An active RCM (Recovery Mode) hardware diagnostic that probes the Switch from
+the BPMP environment, then reports identity / status / faults to the LCD and
+UART_B (Joy-Con right rail, 115200 8N1). The BPMP is the Boot and Power
+Management Processor, the small ARM7 core that runs before the main CPU comes
+up. That is what an RCM payload executes on, and it bounds what can be tested.
+Output is also captured into a heap buffer that can be written to
 `backup/<emmc_serial>/hwtest.txt` on the SD card.
 
-Three probes are the exception to "read-only" and write to the hardware: the
-two radio probes power the CYW4356 up, and the audio probe enables the codec,
-programs the audio clocks and plays a tone out of the speakers and the
-headphone jack. Each is documented in its own section below.
+The payload is not register-read-only. Active probes can change temporary rails,
+GPIO/pinmux, clocks, power partitions, PWM, radio reset state, audio fabric,
+gamecard state, touch/ALS power, and CPU0 state. Most changes are volatile and
+many probes restore the state they own, but teardown is not yet exact for every
+subsystem. The touch probe deliberately avoids Hekate's button-triggered
+autotune path, runs the FTS ITO production test without saving compensation, and
+powers the touch controller down afterward.
 
 The intended audience is repair techs working on Erista or Mariko consoles
 (handheld, V2, OLED, Lite). The output is colour-coded so a unit with a
@@ -21,50 +24,74 @@ borderline reading or a real fault stands out without reading every line.
 
 ## Building
 
-The Hekate source tree is vendored as a git submodule at
-`third_party/hekate`. Initialize it before the first build:
+Hekate and Atmosphere are pinned git submodules under `third_party/`.
+Initialize both before the first build:
 
 ```sh
-git submodule update --init
+git submodule update --init --recursive
 export DEVKITARM=/opt/devkitpro/devkitARM   # or wherever yours lives
-make                                        # produces both variants
+make                                        # normal launcher / hardware diagnostic
+make ram                                    # dedicated full-memory DRAM diagnostic
 ```
 
-Two toolchains are involved. devkitARM builds the payload itself; **devkitA64**
-builds the small AArch64 stub the Wi-Fi probe runs on CPU0, because the BPMP
-cannot reach PCIe. `DEVKITA64` defaults to `devkitA64` alongside `DEVKITARM`,
-so an ordinary devkitPro install needs no extra variable — but if it is
-missing, the build still succeeds and quietly drops the stub, and the Wi-Fi
-probe then reports `CPU0 handoff : not built`. Install it with
-`dkp-pacman -S --needed devkitA64`, and pass `REQUIRE_A64=1` to turn a missing
-devkitA64 into a hard error instead of a silently degraded binary (the release
-workflow does exactly this).
+Hekate provides the BDK/SoC support. The RAM build takes the MTC sources,
+register definitions, and timing tables directly from `third_party/Atmosphere`
+and applies `ramtest/patches/atmosphere-mtc.patch` in `build-ram/`; upstream
+Atmosphere files are not duplicated in the main repository.
 
-`make` runs twice. The first pass uses `DEBUG_UART_PORT=1` and produces the
-default build at `build/hwtest.bin`. The second pass uses `JC_PROBE=1` and
-produces `build-jc/hwtest_jc.bin`. The two builds are mutually exclusive on
-the wire because the Joy-Con stack needs UART_B at 1 Mbaud with hardware
-flow control while the debug log uses 115200 8N1, so only one variant can
-run at a time.
+Two toolchains are involved. devkitARM builds the BPMP payload; **devkitA64**
+(or another suitable AArch64 compiler) builds the small freestanding stub the
+Wi-Fi probe runs on CPU0, because BPMP cannot reach PCIe directly. If no AArch64
+compiler is available, the normal build can still complete without that stub and
+the Wi-Fi probe reports `CPU0 handoff : not built`. Release builds use
+`REQUIRE_A64=1`, so a missing CPU0 stub is a hard failure rather than a silently
+degraded release.
 
-| Variant | UART_B owner | Use it when |
-|---|---|---|
-| `hwtest.bin` (default) | debug log @ 115200 8N1 | tech is capturing UART output for diagnosis |
-| `hwtest_jc.bin` | Joy-Con stack @ 1 Mbaud | tech needs Joy-Con detection / FW version |
+Plain `make` produces `build/hwtest.bin`. `make ram` additionally produces
+`build-ram/hwtest_ram.bin`; it is a separate DRAM service payload and is not part
+of plain `make`. The normal launcher's **RAM test** entry loads that payload from
+the SD card. The same RAM payload supports Erista and Mariko by selecting the
+matching memory-training backend from Tegra `GP_HIDREV`.
 
-The default build is what you want 90% of the time.
+## Dedicated RAM diagnostic
+
+`build-ram/hwtest_ram.bin` is for suspected DRAM / memory-bus faults. It tests almost all free DRAM while preserving its own live runtime state. The payload preserves its own runtime, SMMU tables and framebuffer, then reaches the rest of physical memory through a remapped 4 MiB SMMU window, including RAM above 4 GiB.
+
+The payload contains both public Atmosphere Erista and Mariko MTC implementations but **does not run both**. `GP_HIDREV` is checked before `hw_init()`; T210 selects the Erista path and T210B01 selects the Mariko path. Unknown revisions stop before memory training. Both paths use bounded PLL / EMC / DLL waits so a failed memory interface becomes a reported training failure instead of an infinite wait.
+
+The payload opens a persistent physical-key menu: **Quick test**, **Advanced test**, **Custom test**, and **Power off**. VOL+ moves up, VOL- moves down, and POWER selects or toggles. There is no timed mode-selection window. **VOL-** aborts a running test after the current 4 MiB region; after an abort or completed run, POWER returns to the RAM-test menu and VOL- powers off.
+
+| Mode | Coverage |
+|---|---|
+| Quick | 1600 MHz training, walking data-bit preflight, one full Address-pattern write sweep, then a separate full verify sweep |
+| Advanced | Training/preflight plus all seven patterns: Address, Inverse address, all-zero, all-one, `AA`, `55`, and address-seeded PRBS with retention |
+| Custom | Training/preflight plus any non-empty user-selected subset of the seven patterns |
+
+Writes and verification are separate full-memory phases on purpose: an address-decoder alias can otherwise pass an immediate write/read-back test. The build also proves the self-extractor cannot overwrite unread compressed input; the current build is roughly 168 KiB expanded and 73 KiB as the injected payload, comfortably below the 130392-byte TegraRcmSmash ceiling.
 
 ## Running
 
-Inject like any other RCM payload (fusee-launcher, TegraRcmGUI, modchip, RCM
-jig). The unit boots into the diagnostic dump within ~3 seconds, writes the
-SD report, and lands on the on-LCD pager.
+Inject `build/hwtest.bin` like any other RCM payload (fusee-launcher,
+TegraRcmGUI, modchip, RCM jig). It opens a physical-key launcher before storage,
+touch, thermal, or other diagnostic subsystems are initialized:
 
-If the SD slot is empty / faulty / the unit was injected without a card, the
-payload still boots and runs. The save step is skipped cleanly with an `[save]
-SD not ready` line on UART; the LCD pager remains usable.
+| Launcher entry | Action |
+|---|---|
+| **Hardware test** | Run the complete hardware diagnostic sweep |
+| **RAM test** | Load `hwtest_ram.bin` from SD and enter the dedicated RAM-test menu |
+| **Custom test** | Choose which hardware diagnostic groups should run |
+| **Power off** | Request a clean PMIC power-off without running diagnostics |
 
-| Key | Action |
+VOL+ moves up, VOL- moves down, and POWER selects. For RAM test the launcher
+searches `bootloader/payloads/hwtest_ram.bin`, `hwtest_ram.bin`, then
+`/hwtest_ram.bin`. If RAM payload loading fails, control returns to the launcher
+instead of starting the hardware sweep.
+
+After Hardware test or Custom test completes, the LCD pager opens on the
+verdict. If SD is unavailable, the diagnostic still runs; report saving is
+skipped and the LCD/UART results remain usable.
+
+| Pager/UART key | Action |
 |---|---|
 | `n` / space / VOL+ | Next page |
 | `p` / `b` / VOL- | Previous page |
@@ -93,7 +120,7 @@ the detail when something needs chasing:
 | Wireless | Bluetooth radio: full CYW4356 power-up, then HCI over UART-D. Reports whether the radio answers and identifies itself. Then the WLAN half: a complete T210 PCIe bring-up, link training and endpoint enumeration (`14E4:43EC`) — enumeration is the verdict, the die-level ChipID is firmware-gated and left to the OS |
 | Audio | ALC5639 codec identity over I2C-1 + an I2C-1 census + APE/AHUB power and clocks + AUD_MCLK, then a melody clocked out of I2S1: first phrase on the left speaker, second on the right, tail on the headphone jack — so a dead or weak output is obvious by ear, one output at a time |
 | Display | DSI panel ID + backlight PWM + GPIO state |
-| Inputs | touch FW + Joy-Con rails + buttons + AC adapter |
+| Inputs | FTS touch FW + electrical ITO open/short test + ALS + Joy-Con rails + buttons + AC adapter |
 | Raw state | GPIO pin census + UART debug port + reset reason + PMC scratch |
 
 ### Terms used in that table
@@ -499,11 +526,18 @@ before assignment coming up with a garbage value.
 
 ## Host viewer (`host_tools/hwtest_viewer.py`)
 
-ImGui front-end that connects to the same UART, parses the line-oriented dump,
-and shows it as a clickable page list with green, yellow, or red severity
-colouring. The toolbar exposes the pager keys (`n`, `p`, `r`, `s`, `q`) plus a
-"Refresh group" button that sends a `G<group>\n` command. That refreshes just
-the selected group on the host side without touching the LCD.
+ImGui front-end that connects to the same UART and understands both payloads.
+For `hwtest.bin` it parses the page/section diagnostic dump plus `[boot]` and
+`[save]` runtime messages. For `hwtest_ram.bin` it presents RAM mode, training,
+live progress, completed passes, abort/final statistics, MTC flags and failing
+word records as a dedicated **RAM test** page. The raw UART transcript remains
+available unchanged in both cases.
+
+When connected to the normal hardware payload, the toolbar can refresh the
+selected group (`G<group>\n`), refresh all probes (`a`), save the SD report
+(`s`) or request power-off (`q`). The dedicated RAM payload is transmit-only on
+this UART protocol, so those remote-command buttons are disabled while a RAM
+stream is active; RAM run-again/power-off remains controlled on the console.
 
 ```sh
 pip install -r host_tools/requirements.txt
@@ -541,11 +575,17 @@ cpu_mbox.h           - BPMP <-> CPU0 mailbox, shared by both toolchains
 cpu_stub/            - AArch64 stub that does the PCIe half on CPU0
 emmcsn.c             - Hekate-style backup/<emmc_serial>/<sub>/<file> path
 diskio.c, ffconf.h   - FatFS glue + config (vendored from the Hekate bootloader)
-exception_handlers.S - boot relocator (vendored from the Hekate bootloader)
+exception_handlers.S - boot exception/relocation entry (vendored from Hekate)
+ui_menu.c/.h         - physical-key launcher, custom probe selection, RAM payload loader
+ui_theme.h           - shared LCD colors and menu geometry used by hwtest and RAM UI
+chain_reloc.S        - tiny upper-IRAM relocator used for the hwtest -> RAM handoff
 gfx/                 - LCD driver (vendored from the Hekate bootloader)
 stubs.c              - minerva_deinit no-op
 link.ld              - link script; also keeps .bss off BDK's SDRAM scratch
-Makefile             - devkitARM build for both variants, devkitA64 for the stub
+Makefile             - devkitARM normal payload + `make ram`, AArch64 CPU0-stub build support
+third_party/hekate/  - pinned Hekate BDK git submodule
+third_party/Atmosphere/ - pinned Atmosphere MTC/timing-table git submodule
+ramtest/             - universal Erista/Mariko DRAM diagnostic + Atmosphere MTC adaptation patch
 host_tools/          - ImGui + pyserial UART viewer (parser, GUI, replay)
 ```
 
@@ -554,6 +594,7 @@ host_tools/          - ImGui + pyserial UART viewer (parser, GUI, replay)
 Heavy reliance on the work of:
 
 - [Hekate / BDK](https://github.com/CTCaer/hekate)
+- [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere) — public Erista/Mariko MTC code and timing tables used by the dedicated RAM diagnostic
 - [Lockpick_RCM](https://github.com/shchmue/Lockpick_RCM)
 - [switchbrew.org](https://switchbrew.org/wiki/)
 - [shinyquagsire23's hekate audio branch](https://github.com/shinyquagsire23/hekate/tree/audio)

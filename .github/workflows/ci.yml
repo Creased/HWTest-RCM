@@ -1,0 +1,66 @@
+name: Firmware CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Test host UART parser
+        working-directory: host_tools
+        run: python3 test_parser.py
+
+      - name: Install an aarch64 compiler for the CPU0 stub
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          aarch64-linux-gnu-gcc --version | head -1
+
+      - name: Build production payloads
+        run: |
+          make all REQUIRE_A64=1 A64_CC=aarch64-linux-gnu-gcc A64_OC=aarch64-linux-gnu-objcopy
+          make ram
+
+      - name: Verify CPU0 stub and production menus
+        run: |
+          test -s build/cpu_stub.bin || { echo 'FAIL: build/cpu_stub.bin missing'; exit 1; }
+          grep -qa 'CPU0 handoff (PCIe needs' build/hwtest_unc.bin || {
+            echo 'FAIL: normal payload is missing the CPU0 handoff path'; exit 1;
+          }
+          if grep -qa 'devkitA64 absent at build time' build/hwtest_unc.bin; then
+            echo 'FAIL: normal payload was built without the CPU0 stub'; exit 1
+          fi
+          for s in 'Hardware test' 'RAM test' 'Custom test' 'Power off'; do
+            grep -qa "$s" build/hwtest_unc.bin || { echo "FAIL: launcher string missing: $s"; exit 1; }
+          done
+          for s in 'Quick test' 'Advanced test' 'Custom test' 'Power off'; do
+            grep -qa "$s" build-ram/hwtest_ram_unc.bin || { echo "FAIL: RAM-menu string missing: $s"; exit 1; }
+          done
+          if grep -qai 'destructive' build/hwtest_unc.bin build-ram/hwtest_ram_unc.bin; then
+            echo 'FAIL: deprecated destructive wording is present'; exit 1
+          fi
+
+      - name: Check RCM injection size ceiling
+        run: |
+          limit=130392
+          for f in build/hwtest.bin build-ram/hwtest_ram.bin; do
+            size=$(stat -c%s "$f")
+            if [ "$size" -gt "$limit" ]; then
+              echo "FAIL: $f is $size bytes, over the $limit ceiling"; exit 1
+            fi
+            echo "ok: $f is $size bytes ($((limit - size)) to spare)"
+          done

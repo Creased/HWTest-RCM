@@ -86,10 +86,7 @@ void _log_emit(u32 color)
 }
 
 /* Translate \n to \r\n on the way to UART so terminals don't stair-step
- * the output. The gfx and report-buffer sides keep bare \n. (In the
- * JC_PROBE build this compiles out: the header provides an inline no-op
- * because there is no DEBUG_UART_PORT and UART_B is never initialised.) */
-#ifndef JC_PROBE
+ * the output. The gfx and report-buffer sides keep bare \n. */
 void uart_send_crlf(u32 idx, const u8 *buf, u32 n)
 {
     static const u8 cr = '\r';
@@ -107,7 +104,6 @@ void uart_send_crlf(u32 idx, const u8 *buf, u32 n)
         uart_send(idx, buf + start, n - start);
     uart_wait_xfer(idx, UART_TX_IDLE);
 }
-#endif  /* !JC_PROBE */
 
 void _log_color_impl(u32 color, const char *fmt, ...)
 {

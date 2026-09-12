@@ -121,246 +121,25 @@ void probe_inputs(void)
 }
 
 /* ------------------------------------------------------------------------ */
-/* Joy-Con detection + version (UART_B / UART_C HID)                        */
+/* Joy-Con rail attachment                                                  */
 /*                                                                          */
-/* The Joy-Con MCUs talk to the Switch over UART_B (right) and UART_C       */
-/* (left) at 1 Mbaud. Detecting them physically is just two GPIO reads      */
-/* (PH6 / PE6) and we already do that in the input census; this probe       */
-/* adds the *interactive* layer - bringing up the rails, polling the        */
-/* Joy-Cons via Hekate's BDK, and reporting battery + BT MAC + connection   */
-/* type.                                                                    */
-/*                                                                          */
-/* It only does the polling in the JC_PROBE Makefile build because Hekate's */
-/* joycon.c body is gated on `#if !defined(DEBUG_UART_PORT) ||              */
-/* !(DEBUG_UART_PORT)`, in the default build UART_B carries our debug    */
-/* log, which is electrically the same line a real Joy-Con-R would speak    */
-/* on, so the two uses are mutually exclusive at compile time.              */
-/*                                                                          */
-/* Build with `make JC_PROBE=1` to drop UART debug and pick up Joy-Con      */
-/* polling for both rails. The default build still surfaces the IsAttached  */
-/* bits so you know whether a Joy-Con / chassis adapter is physically       */
-/* present, just without protocol-level info. */
-
-#ifdef JC_PROBE
-/* ------------------------------------------------------------------------ */
-/* Joy-Con HID device-info subcommand (0x02) - firmware version fetcher    */
-/*                                                                          */
-/* Hekate's joycon.c retrieves MAC + type at init via the wired             */
-/* JC_WIRED_CMD_GET_INFO (subcmd 0x01) but never sends the *HID*-level     */
-/* REQUEST_DEVICE_INFO (subcmd 0x02) which is what carries the firmware     */
-/* version major/minor. The HID transport over UART works after the         */
-/* Joy-Con has handshaked (jc->state >= HID_CONN). We rebuild the wire      */
-/* packet manually here so we don't have to fork joycon.c just to add this  */
-/* one command.                                                             */
-/*                                                                          */
-/* Wire format (from Hekate's jc_wired_hdr_t / jc_hid_out_rpt_t):           */
-/*                                                                          */
-/*   send (host -> Joy-Con):                                                */
-/*     19 01 03                  jc_uart_hdr_t magic                        */
-/*     12 00                     total_size LE = sizeof(wired_hdr) - 5 + 11 */
-/*     92                        cmd = JC_WIRED_HID                         */
-/*     00                        subcmd (header-level)                      */
-/*     0B 00                     payload_size LE = 11                       */
-/*     00                        status                                     */
-/*     00                        crc_payload (not enforced)                 */
-/*     XX                        crc_hdr = CRC8(cmd..crc_payload, 6 bytes) */
-/*    , HID output report payload (11 bytes),                           */
-/*     01                        cmd = JC_HID_OUTPUT_RPT                    */
-/*     00                        pkt_id (rolling, 0..F)                     */
-/*     00 01 40 40 00 01 40 40   rumble (mute pattern)                      */
-/*     02                        subcmd = REQUEST_DEVICE_INFO               */
-/*                                                                          */
-/*   receive (Joy-Con -> host):                                             */
-/*     19 81 03                  RX magic                                   */
-/*     ...wired header...        cmd 0x92                                   */
-/*    , HID input subcmd reply payload,                                 */
-/*     21                        cmd = JC_HID_SUBMCD_RPT                    */
-/*     pkt_id, conn+batt, btn x3, lstick x3, rstick x3, vib  (12 bytes)    */
-/*     82                        submcd_ack (= 0x80 | subcmd)               */
-/*     02                        subcmd                                     */
-/*     fw_major fw_minor jc_type 02 mac[6:reversed] 01 spi_color  (subcmd_data) */
-/*                                                                          */
-/* CRC8 polynomial 0x8D, MSB-first - copied from Hekate's _jc_crc.         */
-static u8 _jc_crc8(const u8 *data, u16 len)
-{
-    u8 crc = 0;
-    for (u16 i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int j = 0; j < 8; j++)
-            crc = (crc & 0x80) ? (u8)((crc << 1) ^ 0x8D) : (u8)(crc << 1);
-    }
-    return crc;
-}
-
-/* Send REQUEST_DEVICE_INFO subcmd to one Joy-Con UART, read reply, extract
- * firmware version. Returns 0 on success, 1 on no-reply / parse failure.
- * Caller is responsible for ensuring the Joy-Con on this UART is already
- * in HID-connected state (joycon_poll has been driven to completion). */
-static int probe_jc_fw_version(u32 uart, u8 *fw_major, u8 *fw_minor)
-{
-    /* Build request (23 bytes total) */
-    u8 pkt[23] = {0};
-    /* jc_uart_hdr_t */
-    pkt[0]  = 0x19; pkt[1] = 0x01; pkt[2] = 0x03;
-    pkt[3]  = 18;   pkt[4] = 0;          /* total_size LE = 12 - 5 + 11 = 18 */
-    /* jc_wired_hdr_t (cmd, subcmd, payload_size, status, crc_payload, crc_hdr) */
-    pkt[5]  = 0x92;                       /* JC_WIRED_HID */
-    pkt[6]  = 0;                          /* subcmd (header-level) */
-    pkt[7]  = 11;   pkt[8] = 0;          /* payload_size LE = 11 */
-    pkt[9]  = 0;                          /* status */
-    pkt[10] = 0;                          /* crc_payload */
-    pkt[11] = _jc_crc8(&pkt[5], 6);       /* crc_hdr over cmd..crc_payload */
-    /* HID output report */
-    pkt[12] = 0x01;                       /* JC_HID_OUTPUT_RPT */
-    pkt[13] = 0;                          /* pkt_id */
-    /* rumble[2] = mute pattern (8 bytes) */
-    pkt[14] = 0x00; pkt[15] = 0x01; pkt[16] = 0x40; pkt[17] = 0x40;
-    pkt[18] = 0x00; pkt[19] = 0x01; pkt[20] = 0x40; pkt[21] = 0x40;
-    pkt[22] = 0x02;                       /* subcmd = REQUEST_DEVICE_INFO */
-
-    uart_send(uart, pkt, sizeof(pkt));
-    uart_wait_xfer(uart, UART_TX_IDLE);
-
-    /* Drain UART for ~150 ms collecting bytes into a scratch buffer */
-    static u8 rx[256];
-    u32 rx_pos = 0;
-    u32 deadline = get_tmr_us() + 150000;
-    while ((s32)(deadline - get_tmr_us()) > 0 && rx_pos < sizeof(rx)) {
-        u8 b;
-        if (uart_recv(uart, &b, 1) == 1)
-            rx[rx_pos++] = b;
-    }
-
-    /* Scan for the wired RX magic followed by a SUBMCD_RPT for 0x02 */
-    /* Reply layout: rx[i..i+11] = jc_wired_hdr_t (12 bytes), then the HID
-     * input report. The HID report's submcd_ack is at +13 from payload
-     * start (after cmd, pkt_id, conn/batt, 3 stick groups, vib_decider).
-     * We're looking for: cmd=0x21, submcd_ack=0x82, subcmd=0x02. */
-    for (u32 i = 0; i + 30 < rx_pos; i++) {
-        if (rx[i] != 0x19 || rx[i+1] != 0x81 || rx[i+2] != 0x03)
-            continue;
-        if (rx[i+5] != 0x92)               /* not JC_WIRED_HID */
-            continue;
-        const u8 *hid = &rx[i + 12];        /* HID input report starts here */
-        if (hid[0]  != 0x21)                /* not JC_HID_SUBMCD_RPT */
-            continue;
-        if (hid[13] != 0x82 || hid[14] != 0x02)  /* not the 0x02 reply */
-            continue;
-        /* subcmd_data starts at hid + 15 */
-        *fw_major = hid[15];
-        *fw_minor = hid[16];
-        return 0;
-    }
-    return 1;
-}
-#endif  /* JC_PROBE */
+/* UART_B remains dedicated to the 115200 diagnostic console, so hwtest does
+ * not take ownership of the right Joy-Con serial protocol. The two physical
+ * IsAttached inputs are still useful repair evidence and are safe to sample. */
 
 void probe_joycon(void)
 {
-    HEADER("[Joy-Con detection + version]");
+    HEADER("[Joy-Con rail attachment]");
 
-#ifdef JC_PROBE
-    /* In JC_PROBE builds jc_init_hw + initial polling already ran in
-     * ipl_main, so by the time this probe runs:
-     *   - The PH6/PE6 GPIO buffer was unlatched by _jc_rail_detect
-     *     (Hekate's "HW BUG" workaround in joycon.c) and now reads true.
-     *   - The Joy-Con MCUs have completed handshake (rail detect ->
-     *     wake -> baud-rate-up -> HID input mode) and joycon_poll()
-     *     returns valid conn_l / conn_r and bt_conn_* fields.
-     * We run a handful more polls here to refresh the report - cheap. */
-    for (u32 i = 0; i < 10; i++) {
-        joycon_poll();
-        msleep(5);
-    }
-#endif
-
-    /* IsAttached pins (PH6 = R, PE6 = L), active low. In default builds
-     * these reads can be stale until something runs the unlatch dance,
-     * which we don't do (it would interfere with UART_B debug). The
-     * status here is best-effort in default mode; for accurate Joy-Con
-     * detection switch to the JC_PROBE build. */
     int jc_r_attached = !gpio_read(GPIO_PORT_H, GPIO_PIN_6);
     int jc_l_attached = !gpio_read(GPIO_PORT_E, GPIO_PIN_6);
     log_color(jc_r_attached ? COL_OK : COL_DEFAULT,
-        "  JC-R rail  : %s   (PH6 IsAttached)\n",
+        "  JC-R rail     : %s (PH6 IsAttached)\n",
         jc_r_attached ? "ATTACHED" : "empty   ");
     log_color(jc_l_attached ? COL_OK : COL_DEFAULT,
-        "  JC-L rail  : %s   (PE6 IsAttached)\n",
+        "  JC-L rail     : %s (PE6 IsAttached)\n",
         jc_l_attached ? "ATTACHED" : "empty   ");
-
-#ifdef JC_PROBE
-    LOG("  Joy-Con poll : enabled (JC_PROBE=1 build)\n");
-    jc_gamepad_rpt_t *rpt = joycon_poll();
-    if (rpt) {
-        if (rpt->conn_l) {
-            log_color(COL_OK,
-                "  JC-L state  : connected, batt=0x%02X chrg=0x%02X type=0x%02X\n",
-                rpt->batt_info_l, rpt->batt_chrg_l, rpt->bt_conn_l.type);
-        } else if (jc_l_attached) {
-            log_color(COL_WARN,
-                "  JC-L state  : attached but did not respond over UART (timeout)\n");
-        }
-        if (rpt->conn_r) {
-            log_color(COL_OK,
-                "  JC-R state  : connected, batt=0x%02X chrg=0x%02X type=0x%02X\n",
-                rpt->batt_info_r, rpt->batt_chrg_r, rpt->bt_conn_r.type);
-        } else if (jc_r_attached) {
-            log_color(COL_WARN,
-                "  JC-R state  : attached but did not respond over UART (timeout)\n");
-        }
-        /* Pull pairing info (BT MAC of each Joy-Con + the host MAC it
-         * was paired to). Two flags come back: is_l_hos / is_r_hos
-         * indicating whether each Joy-Con's pairing slot points at this
-         * console (HOS = current Switch). Only meaningful when at least
-         * one Joy-Con responded. */
-        if (rpt->conn_l || rpt->conn_r) {
-            bool is_l_hos = false, is_r_hos = false;
-            jc_gamepad_rpt_t *pair = jc_get_bt_pairing_info(&is_l_hos, &is_r_hos);
-            if (pair) {
-                if (rpt->conn_l) {
-                    LOG("  JC-L MAC    : %02X:%02X:%02X:%02X:%02X:%02X (paired to this Switch: %s)\n",
-                        pair->bt_conn_l.mac[5], pair->bt_conn_l.mac[4],
-                        pair->bt_conn_l.mac[3], pair->bt_conn_l.mac[2],
-                        pair->bt_conn_l.mac[1], pair->bt_conn_l.mac[0],
-                        is_l_hos ? "yes" : "no");
-                }
-                if (rpt->conn_r) {
-                    LOG("  JC-R MAC    : %02X:%02X:%02X:%02X:%02X:%02X (paired to this Switch: %s)\n",
-                        pair->bt_conn_r.mac[5], pair->bt_conn_r.mac[4],
-                        pair->bt_conn_r.mac[3], pair->bt_conn_r.mac[2],
-                        pair->bt_conn_r.mac[1], pair->bt_conn_r.mac[0],
-                        is_r_hos ? "yes" : "no");
-                }
-            }
-        }
-        /* Firmware version via HID subcmd 0x02 (REQUEST_DEVICE_INFO).
-         * Hekate's joycon stack doesn't fetch this - we send the wired
-         * HID packet manually. JC-L lives on UART_C, JC-R on UART_B. */
-        if (rpt->conn_l) {
-            u8 fw_maj = 0, fw_min = 0;
-            if (probe_jc_fw_version(UART_C, &fw_maj, &fw_min) == 0)
-                log_color(COL_OK,
-                    "  JC-L firmware: %d.%02d\n", fw_maj, fw_min);
-            else
-                log_color(COL_WARN,
-                    "  JC-L firmware: read FAILED (no reply within 150 ms)\n");
-        }
-        if (rpt->conn_r) {
-            u8 fw_maj = 0, fw_min = 0;
-            if (probe_jc_fw_version(UART_B, &fw_maj, &fw_min) == 0)
-                log_color(COL_OK,
-                    "  JC-R firmware: %d.%02d\n", fw_maj, fw_min);
-            else
-                log_color(COL_WARN,
-                    "  JC-R firmware: read FAILED (no reply within 150 ms)\n");
-        }
-    } else {
-        log_color(COL_WARN, "  joycon_poll() returned NULL (jc_init_hw failed?)\n");
-    }
-#else
-    log_color(COL_DEFAULT,
-        "  Joy-Con poll : disabled (UART_B owned by debug log)\n");
-#endif
+    LOG("  serial poll   : not used; UART_B stays on hwtest debug\n");
 }
 
 
@@ -368,18 +147,40 @@ void probe_touch(void)
 {
     HEADER("[Touch panel (FTS4, I2C3 @ 0x49)]");
 
-    /* The touch IC is unpowered at boot and I2C3's clock is gated. If we
-     * called touch_get_*() now, the i2c_xfer_packet poll loop would spin
-     * forever and the watchdog would reset the SoC after ~5 s. Hekate's
-     * `touch_power_on()` configures the GPIO reset pin, enables LDO6 (the
-     * AVDD/DVDD supply for the panel), pinmux/clock-init's I2C3, releases
-     * the reset, waits for the controller-ready event, and runs the
-     * sense-enable handshake. Returns 0 on full success, 1 if init
-     * retries gave up - we report either way and keep probing for the
-     * static info populated during the attempt. */
-    int power_rc = touch_power_on();
+    /* Do not call BDK touch_power_on() here. That helper contains Hekate's
+     * maintenance shortcut: if VOL+ and VOL- are both held it runs the ITO
+     * production test and, when that passes, executes autotune followed by
+     * FTS4_CMD_SAVE_CX_TUNING. The save command writes compensation data to
+     * the touch controller's EEPROM, which is not an acceptable implicit
+     * side effect for a repair sweep.
+     *
+     * Reproduce only the public BDK power/reset/sense sequence and omit the
+     * button-triggered calibration branch. touch_sys_reset() is global in
+     * BDK touch.c but not part of the public header, so declare it locally. */
+    extern int touch_sys_reset(void);
+    PINMUX_AUX(PINMUX_AUX_DAP4_SCLK) = PINMUX_PULL_DOWN | 1;
+    gpio_direction_output(GPIO_PORT_J, GPIO_PIN_7, GPIO_LOW);
+    usleep(20);
+    max7762x_regulator_set_voltage(REGULATOR_LDO6, 2900000);
+    max7762x_regulator_enable(REGULATOR_LDO6, true);
+    pinmux_config_i2c(I2C_3);
+    clock_enable_i2c(I2C_3);
+    i2c_init(I2C_3);
+    usleep(1000);
+    gpio_write(GPIO_PORT_J, GPIO_PIN_7, GPIO_HIGH);
+    msleep(10);
+
+    int power_rc = touch_sys_reset();
+    if (!power_rc)
+        power_rc = touch_sense_enable();
     log_color(power_rc ? COL_ERR : COL_OK,
         "  power-on     : %s\n", power_rc ? "FAILED (panel cable / IC fault?)" : "OK");
+    if (power_rc) {
+        dx_set("touch_id", DX_FAIL, "safe touch init failed");
+        dx_set("touch_ito", DX_WARN, "not run because touch init failed");
+        touch_power_off();
+        return;
+    }
 
     touch_info_t *info = touch_get_chip_info();
     log_color(info->chip_id == 0x3670 ? COL_OK : COL_ERR,
@@ -425,6 +226,47 @@ void probe_touch(void)
     } else {
         log_color(COL_ERR, "  fw read FAILED\n");
     }
+
+    /* FTS4's ITO production command is exactly the electrical test a repair
+     * tool wants: it checks force/sense opens and shorts and returns an error
+     * class plus the affected line. It resets the controller before/after the
+     * test but does NOT save compensation data. Keep this separate from the
+     * EEPROM-writing autotune path above. */
+    if (info->chip_id != FTS4_I2C_CHIP_ID || info->clone) {
+        log_color(COL_WARN,
+            "  ITO test     : skipped (unsupported/clone controller)\n");
+        dx_set("touch_ito", DX_WARN, "unsupported or clone controller");
+    } else {
+        static const char *ito_err[] = {
+            "no error",
+            "force open", "sense open",
+            "force-GND short", "sense-GND short",
+            "force-VCM short", "sense-VCM short",
+            "force-force short", "sense-sense short",
+            "force-sense short", "FPC force open", "FPC sense open",
+            "key force open", "key sense open",
+            "reserved", "reserved", "reserved"
+        };
+        u8 err[2] = {0};
+        int ito_rc = touch_panel_ito_test(err);
+        if (ito_rc) {
+            log_color(COL_WARN, "  ITO test     : no result within timeout\n");
+            dx_set("touch_ito", DX_WARN, "ITO command timed out");
+        } else if (!err[0] && !err[1]) {
+            log_color(COL_OK, "  ITO test     : PASS, no opens/shorts\n");
+            dx_set("touch_ito", DX_PASS, "");
+        } else {
+            const char *why = err[0] < ARRAY_SIZE(ito_err) ? ito_err[err[0]] :
+                              err[0] == ITO_MAX_ERR_REACHED ? "max errors" : "unknown";
+            log_color(COL_ERR, "  ITO test     : FAIL err %02X pin %d (%s)\n",
+                err[0], err[1], why);
+            dx_set("touch_ito", DX_FAIL, "err %02X pin %d %s", err[0], err[1], why);
+        }
+    }
+
+    /* Leave the controller reset and the shared touch/ALS rail off. The ALS
+     * probe follows this page and powers LDO6 back up for itself. */
+    touch_power_off();
 }
 
 /* Rohm BH1730 ambient-light sensor on I2C2 @ 0x29. The ALS sits on the
@@ -436,8 +278,8 @@ void probe_touch(void)
  *   - configured gain / cycle (driver default = 64x, 38)
  *   - raw visible / IR ADC counts after one integration window
  *   - decoded lux (over-limit flagged when any channel saturates).
- * als_power_on() enables LDO6 (already enabled by the regulator probe
- * but idempotent), pinmuxes I2C2, and triggers a continuous-conversion
+ * als_power_on() enables LDO6 (the touch probe deliberately powers that
+ * shared rail back down first), pinmuxes I2C2, and triggers a continuous-conversion
  * mode. Default integration time is ~103 ms (cycle * 2.7 ms). */
 void probe_als(void)
 {

@@ -1,24 +1,21 @@
 # hwtest -- Switch RCM hardware probe
 #
-# Builds two flat .bin payloads:
+# Builds diagnostic payload:
 #
-#   build/hwtest.bin       UART_B debug + IsAttached-only Joy-Con detection
-#   build-jc/hwtest_jc.bin No UART debug, full Joy-Con polling on both rails
+#   build/hwtest.bin       UART_B debug/report console + LCD/touch launcher
 #
-# Joy-Con polling can't share UART_B with debug -- the controller can only
-# be in one config at a time (1 Mbaud + HW flow control for Joy-Con vs
-# 115200 8N1 for debug), and Hekate's joycon.c body is gated on
-# !DEBUG_UART_PORT for that reason. So we ship both variants and let the
-# user flash whichever fits the moment.
+# The dedicated full-memory RAM diagnostic remains a separate payload built by
+# `make ram`. The normal launcher chainloads it from SD so the large Erista +
+# Mariko memory-training engines do not consume the normal RCM size budget.
 #
-# Hekate source tree is vendored as a git submodule at third_party/hekate.
-# We reuse its BDK (the bdk/ subdirectory) instead of vendoring the SoC
-# drivers in-tree. Run `git submodule update --init` after a fresh clone.
+# Hekate and Atmosphere are git submodules under third_party/. Hekate provides
+# the BDK/SoC support; the dedicated RAM payload builds Atmosphere's MTC from
+# the pinned submodule plus a small local adaptation patch. Initialize both
+# with `git submodule update --init --recursive` after a fresh clone.
 
 ifeq ($(strip $(DEVKITARM)),)
 $(error "Set DEVKITARM, e.g. export DEVKITARM=/opt/devkitpro/devkitARM")
 endif
-
 include $(DEVKITARM)/base_rules
 
 # Match Hekate's compile-for address. RCM injects at 0x40010000 but start.S
@@ -33,17 +30,12 @@ HEKATE    := third_party/hekate
 BDKDIR    := $(HEKATE)/bdk
 GFXDIR    := gfx
 
-# Per-variant output dirs and suffixes. Both variants share the same source
-# tree; the only thing that differs is CUSTOMDEFINES and the joycon.o
-# inclusion.
-DEFAULT_DIR   := build
-DEFAULT_BIN   := $(DEFAULT_DIR)/$(TARGET).bin
-JC_DIR        := build-jc
-JC_BIN        := $(JC_DIR)/$(TARGET)_jc.bin
+DEFAULT_DIR := build
+DEFAULT_BIN := $(DEFAULT_DIR)/$(TARGET).bin
 
-# Object list shared by both variants.
+# Object list for the normal launcher payload.
 COMMON_OBJS = \
-    start.o exception_handlers.o main.o stubs.o emmcsn.o \
+    start.o exception_handlers.o chain_reloc.o main.o ui_menu.o stubs.o emmcsn.o \
     log.o dx.o report.o verdict.o \
     probe_soc.o probe_power.o probe_memclk.o probe_inputs.o probe_bt.o probe_audio.o probe_audio_beep.o \
     probe_wifi.o probe_display.o probe_storage.o probe_gamecard.o probe_lowlevel.o \
@@ -59,11 +51,7 @@ COMMON_OBJS = \
     hw_init.o \
     ff.o ffsystem.o ffunicode.o diskio.o
 
-# Joy-Con build pulls in Hekate's joycon.c on top of the common set.
-JC_EXTRA_OBJS := joycon.o
-
 DEFAULT_OBJS := $(addprefix $(DEFAULT_DIR)/,$(COMMON_OBJS))
-JC_OBJS      := $(addprefix $(JC_DIR)/,$(COMMON_OBJS) $(JC_EXTRA_OBJS))
 
 # Source search path. The bdk subtree isn't a flat directory, so we list each
 # leaf so VPATH can find the .c files by name. The bootloader/ leaves are
@@ -90,9 +78,6 @@ BASE_DEFINES := \
 DEFAULT_DEFINES := $(BASE_DEFINES) \
     -DDEBUG_UART_PORT=1 -DDEBUG_UART_BAUDRATE=115200 -DDEBUG_UART_INVERT=0
 
-# JC build leaves DEBUG_UART_PORT undefined so Hekate's hw_init skips the
-# UART setup and joycon.c's body compiles in.
-JC_DEFINES      := $(BASE_DEFINES) -DJC_PROBE=1
 
 WARNINGS := -Wall -Wsign-compare -Wno-array-bounds -Wno-stringop-overread -Wno-stringop-overflow
 
@@ -117,7 +102,7 @@ ARCH    := -march=armv4t -mtune=arm7tdmi -mthumb -mthumb-interwork $(WARNINGS)
 # the toolchain, not the source, and -fno-strict-aliasing does not help.
 # The release CI runs whatever devkitARM the container ships, so pinning a
 # compiler would only move the trap. Costs ~4.7 KB against the ceiling above,
-# which self-extraction leaves room for. Re-test both variants in the emulator
+# which self-extraction leaves room for. Re-test the payload in the emulator
 # before putting it back.
 OPT    ?= -Os
 INLINE ?=
@@ -136,15 +121,14 @@ EXTRA_DEFINES ?=
 .DEFAULT_GOAL := all
 
 DEF_STAMP_D := $(DEFAULT_DIR)/.extra_defines
-DEF_STAMP_J := $(JC_DIR)/.extra_defines
-$(shell mkdir -p $(DEFAULT_DIR) $(JC_DIR) 2>/dev/null; \
-    for f in $(DEF_STAMP_D) $(DEF_STAMP_J); do \
+$(shell mkdir -p $(DEFAULT_DIR) 2>/dev/null; \
+    for f in $(DEF_STAMP_D); do \
         printf '%s\n' '$(EXTRA_DEFINES)' | cmp -s - $$f || \
             printf '%s\n' '$(EXTRA_DEFINES)' > $$f; \
     done)
 # The rule below regenerates the stamps when `make clean all` deletes them
 # mid-invocation (the parse-time $(shell) above has already run by then).
-$(DEF_STAMP_D) $(DEF_STAMP_J):
+$(DEF_STAMP_D):
 	@mkdir -p $(dir $@)
 	@printf '%s\n' '$(EXTRA_DEFINES)' > $@
 
@@ -160,29 +144,28 @@ LDFLAGS := $(ARCH) -nostartfiles -lgcc -Wl,--nmagic,--gc-sections \
 CC      := arm-none-eabi-gcc
 OBJCOPY := arm-none-eabi-objcopy
 
-.PHONY: all default jc clean
+.PHONY: all default ram clean
 
-# `make` (no args) builds both variants.
-all: default jc
+# `make` (no args) builds the normal launcher payload.
+all: default
 
 default: $(DEFAULT_BIN)
-jc:      $(JC_BIN)
 
-$(DEFAULT_DIR) $(JC_DIR):
+# Dedicated full-memory DRAM diagnostic. Kept out of `all` because the build
+# embeds both public Atmosphere MTC engines/tables and is intentionally a
+# separate service payload, not part of the normal hwtest sweep.
+ram:
+	$(MAKE) -C ramtest all
+
+$(DEFAULT_DIR):
 	@mkdir -p $@
 
-# Per-variant compile rules. The %-pattern keeps the obj name parallel
-# across variants (e.g. main.o lives in both build/ and build-jc/) but
-# each gets its own CFLAGS via the variant-specific define set.
+# Normal payload compile rules.
 $(DEFAULT_DIR)/%.o: %.c $(DEF_STAMP_D) | $(DEFAULT_DIR)
 	$(CC) $(CFLAGS_BASE) $(DEFAULT_DEFINES) -c -o $@ $<
 $(DEFAULT_DIR)/%.o: %.S $(DEF_STAMP_D) | $(DEFAULT_DIR)
 	$(CC) $(CFLAGS_BASE) $(DEFAULT_DEFINES) -c -o $@ $<
 
-$(JC_DIR)/%.o: %.c $(DEF_STAMP_J) | $(JC_DIR)
-	$(CC) $(CFLAGS_BASE) $(JC_DEFINES) -c -o $@ $<
-$(JC_DIR)/%.o: %.S $(DEF_STAMP_J) | $(JC_DIR)
-	$(CC) $(CFLAGS_BASE) $(JC_DEFINES) -c -o $@ $<
 
 # ---- CPU0 stub (AArch64) --------------------------------------------------
 #
@@ -249,20 +232,14 @@ $(DEFAULT_DIR)/cpu_stub_bin.c: $(DEFAULT_DIR)/cpu_stub.bin
 $(DEFAULT_DIR)/cpu_stub_bin.o: $(DEFAULT_DIR)/cpu_stub_bin.c | $(DEFAULT_DIR)
 	$(CC) $(CFLAGS_BASE) $(DEFAULT_DEFINES) -c -o $@ $<
 
-$(JC_DIR)/cpu_stub_bin.o: $(DEFAULT_DIR)/cpu_stub_bin.c | $(JC_DIR)
-	$(CC) $(CFLAGS_BASE) $(JC_DEFINES) -c -o $@ $<
 
-# Both variants carry the CPU stub. The wifi probe's verdict path is part of
-# the shipped binaries, and the Joy-Con build reports through its LCD console
-# like every other probe - the users must not need to rebuild anything.
+# Release builds carry the CPU0 stub so the PCIe/WLAN probe is not degraded.
 ifneq ($(HAVE_A64),)
 DEFAULT_OBJS    += $(DEFAULT_DIR)/cpu_stub_bin.o
 DEFAULT_DEFINES += -DHAVE_CPU_STUB=1
-JC_OBJS         += $(JC_DIR)/cpu_stub_bin.o
-JC_DEFINES      += -DHAVE_CPU_STUB=1
 endif
 
-# Link + objcopy per variant.
+# Link + objcopy.
 $(DEFAULT_DIR)/$(TARGET).elf: $(DEFAULT_OBJS) link.ld
 	$(CC) $(LDFLAGS) -o $@ $(DEFAULT_OBJS) -lgcc
 
@@ -306,33 +283,5 @@ $(DEFAULT_BIN): $(DEFAULT_DIR)/loader.elf
 	@printf '   built %s (%s bytes, %s uncompressed)\n' $@ $$(stat -c%s $@) $$(stat -c%s $(DEFAULT_DIR)/$(TARGET)_unc.bin)
 	@if [ $$(stat -c%s $@) -gt 130392 ]; then printf '   WARNING: over the 130392-byte RCM injector limit\n'; fi
 
-$(JC_DIR)/$(TARGET)_jc.elf: $(JC_OBJS) link.ld
-	$(CC) $(LDFLAGS) -o $@ $(JC_OBJS) -lgcc
-
-# The Joy-Con variant gets the same wrapper - it is the larger of the two and
-# would otherwise be the one that silently truncates.
-$(JC_DIR)/$(TARGET)_jc_unc.bin: $(JC_DIR)/$(TARGET)_jc.elf
-	$(OBJCOPY) -O binary $< $@
-
-$(JC_DIR)/payload_lz.h: $(JC_DIR)/$(TARGET)_jc_unc.bin
-	@python3 tools/mkpayload.py $< $(JC_DIR)/payload.lz $@
-
-$(JC_DIR)/ldr_loader.o: $(LDRDIR)/loader.c $(JC_DIR)/payload_lz.h
-	$(CC) $(ARCH) -Os -g -nostdlib -ffunction-sections -fdata-sections -fomit-frame-pointer -std=gnu11 -I$(BDKDIR) -I$(JC_DIR) -I$(LDRDIR) -DBL_MAGIC=$(IPL_MAGIC) -c -o $@ $<
-$(JC_DIR)/ldr_start.o: $(HEKATE)/loader/start.S
-	$(CC) $(LDR_CFLAGS) -c -o $@ $<
-$(JC_DIR)/ldr_lz.o: $(BDKDIR)/libs/compr/lz.c
-	$(CC) $(LDR_CFLAGS) -c -o $@ $<
-
-JC_LDR_OBJS := $(JC_DIR)/ldr_start.o $(JC_DIR)/ldr_loader.o $(JC_DIR)/ldr_lz.o
-
-$(JC_DIR)/loader.elf: $(JC_LDR_OBJS) $(LDRDIR)/link.ld
-	$(CC) $(LDR_LDFLAGS) -o $@ $(JC_LDR_OBJS) -lgcc
-
-$(JC_BIN): $(JC_DIR)/loader.elf
-	$(OBJCOPY) -O binary $< $@
-	@printf '   built %s (%s bytes, %s uncompressed)\n' $@ $$(stat -c%s $@) $$(stat -c%s $(JC_DIR)/$(TARGET)_jc_unc.bin)
-	@if [ $$(stat -c%s $@) -gt 130392 ]; then printf '   WARNING: over the 130392-byte RCM injector limit\n'; fi
-
 clean:
-	rm -rf $(DEFAULT_DIR) $(JC_DIR)
+	rm -rf $(DEFAULT_DIR) build-jc build-ram

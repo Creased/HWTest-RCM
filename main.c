@@ -20,6 +20,7 @@
  */
 
 #include "hwtest.h"
+#include "ui_menu.h"
 
 
 
@@ -49,6 +50,7 @@ static u32 g_status_spin_idx = 0;
  * just check `_log_uart_only` because the 'G' handler also flips that
  * to suppress LCD writes, we need a distinct concept. */
 bool g_show_status = false;
+u32 g_run_mask = PROBE_G_ALL;
 
 void status_set(const char *msg)
 {
@@ -169,19 +171,71 @@ static const struct page_entry g_pages[] = {
     {probe_joycon,     "Inputs"},
     {probe_inputs,     "Inputs"},
 
-    /* Low-level dumps. probe_uart_b is excluded in the JC_PROBE build
-     * where the Joy-Con stack owns UART_B. */
+    /* Low-level dumps. UART_B is always the debug/report console. */
     {probe_gpio_census,"Raw state"},
-#ifndef JC_PROBE
     {probe_uart_b,     "Raw state"},
-#endif
     {probe_reset,      "Raw state"},
     {probe_pmc_scratch,"Raw state"},
 };
 #define N_PAGES (sizeof(g_pages) / sizeof(g_pages[0]))
 
-void run_all_probes(void)
+/* Execution group for each page. Index 0 is the aggregate Diagnostics page
+ * and is always emitted after the selected data probes. Keep this parallel
+ * to g_pages so the existing page table remains simple and parser tooling can
+ * continue to inventory probe functions directly. */
+static const u32 g_page_groups[] = {
+    0,
+    PROBE_G_IDENTITY, PROBE_G_IDENTITY, PROBE_G_IDENTITY,
+    PROBE_G_POWER, PROBE_G_POWER, PROBE_G_POWER, PROBE_G_POWER, PROBE_G_POWER,
+    PROBE_G_POWER, PROBE_G_POWER, PROBE_G_POWER, PROBE_G_POWER, PROBE_G_POWER,
+    PROBE_G_MEMORY, PROBE_G_MEMORY,
+    PROBE_G_STORAGE, PROBE_G_STORAGE, PROBE_G_STORAGE, PROBE_G_STORAGE,
+    PROBE_G_STORAGE, PROBE_G_STORAGE, PROBE_G_STORAGE, PROBE_G_STORAGE,
+    PROBE_G_STORAGE, PROBE_G_STORAGE,
+    PROBE_G_WIRELESS, PROBE_G_WIRELESS, PROBE_G_WIRELESS,
+    PROBE_G_AUDIO, PROBE_G_AUDIO, PROBE_G_SOUND,
+    PROBE_G_DISPLAY, PROBE_G_DISPLAY,
+    PROBE_G_INPUTS, PROBE_G_INPUTS, PROBE_G_INPUTS, PROBE_G_INPUTS,
+    PROBE_G_RAW, PROBE_G_RAW, PROBE_G_RAW, PROBE_G_RAW,
+};
+_Static_assert(sizeof(g_page_groups) / sizeof(g_page_groups[0]) == N_PAGES,
+               "g_page_groups must match g_pages");
+
+static bool _page_enabled(int idx)
 {
+    return idx == 0 || (g_page_groups[idx] & g_run_mask) != 0;
+}
+
+static int _enabled_page_count(void)
+{
+    int n = 0;
+    for (u32 i = 0; i < N_PAGES; i++)
+        if (_page_enabled(i)) n++;
+    return n;
+}
+
+static int _enabled_page_ordinal(int idx)
+{
+    int n = 0;
+    for (int i = 0; i <= idx; i++)
+        if (_page_enabled(i)) n++;
+    return n;
+}
+
+static int _page_step(int idx, int dir)
+{
+    for (u32 n = 0; n < N_PAGES; n++) {
+        idx += dir;
+        if (idx < 0) idx = (int)N_PAGES - 1;
+        if (idx >= (int)N_PAGES) idx = 0;
+        if (_page_enabled(idx)) return idx;
+    }
+    return 0;
+}
+
+void run_probe_mask(u32 mask)
+{
+    g_run_mask = mask & PROBE_G_ALL;
     /* Data probes populate the dx registry; the verdict aggregates it.
      * Reset between sweeps so a refresh-all (`a`) doesn't see stale
      * findings from the previous run. The verdict runs LAST because it
@@ -206,6 +260,8 @@ void run_all_probes(void)
 #endif
 
     for (u32 i = 1; i < N_PAGES; i++) {
+        if (!_page_enabled((int)i))
+            continue;
         status_set(g_pages[i].name);
         log_color(COL_HEADER, "\n--- %s ---\n", g_pages[i].name);
         g_pages[i].fn();
@@ -214,6 +270,11 @@ void run_all_probes(void)
     log_color(COL_HEADER, "\n--- %s ---\n", g_pages[0].name);
     g_pages[0].fn();
     status_set("done - rendering pager");
+}
+
+void run_all_probes(void)
+{
+    run_probe_mask(PROBE_G_ALL);
 }
 
 /* Compute the position of LCD page idx within its display group, e.g.
@@ -226,7 +287,7 @@ static void _page_group_pos(int idx, int *out_group_idx, int *out_group_total)
     const char *name = g_pages[idx].name;
     int total = 0, pos = 0;
     for (u32 i = 0; i < N_PAGES; i++) {
-        if (strcmp(g_pages[i].name, name) == 0) {
+        if (_page_enabled((int)i) && strcmp(g_pages[i].name, name) == 0) {
             total++;
             if ((int)i <= idx) pos = total;
         }
@@ -252,10 +313,12 @@ static void render_page(int idx)
     _log_no_uart = true;
     if (gtot > 1) {
         log_color(COL_HEADER, "hwtest - %s [%d/%d]  -  page %d/%d\n",
-                  g_pages[idx].name, gidx, gtot, idx + 1, (int)N_PAGES);
+                  g_pages[idx].name, gidx, gtot,
+                  _enabled_page_ordinal(idx), _enabled_page_count());
     } else {
         log_color(COL_HEADER, "hwtest - %s  -  page %d/%d\n",
-                  g_pages[idx].name, idx + 1, (int)N_PAGES);
+                  g_pages[idx].name,
+                  _enabled_page_ordinal(idx), _enabled_page_count());
     }
     LOG("n next | p prev | r refresh | a all | w wifi | s save | R reboot | q off\n");
     LOG("=============================================================\n\n");
@@ -277,12 +340,6 @@ static int g_uart_pushback = -1;
 
 static int uart_getc(void)
 {
-#ifdef JC_PROBE
-    /* No DEBUG_UART_PORT in this build -> UART_B isn't initialised, so
-     * uart_recv would block on UART_LSR.RDR forever. The pager loop
-     * still works, just without keyboard shortcuts over serial. */
-    return -1;
-#else
     if (g_uart_pushback >= 0) {
         int c = g_uart_pushback;
         g_uart_pushback = -1;
@@ -292,7 +349,6 @@ static int uart_getc(void)
     if (uart_recv(UART_B, &c, 1) != 1)
         return -1;
     return c;
-#endif
 }
 
 /* Reboot the console. Split out of the pager so it can be reached from
@@ -356,6 +412,11 @@ void msleep_poll(u32 ms)
     }
 }
 
+static void _boot_trace(const char *msg)
+{
+    uart_send_crlf(UART_B, (u8 *)msg, strlen(msg));
+}
+
 void ipl_main(void)
 {
     /* Bring up clocks, regulators, I2C, etc. */
@@ -393,7 +454,6 @@ void ipl_main(void)
      *
      * TX appears to "just work" without (2)/(3)/(4) because the Tegra side
      * drives the line directly, but the return path is asymmetric. */
-#ifndef JC_PROBE
     gpio_config(GPIO_PORT_G, GPIO_PIN_1, GPIO_MODE_SPIO);
     PINMUX_AUX(PINMUX_AUX_UARTX_RX(UART_B)) = PINMUX_INPUT_ENABLE | PINMUX_PULL_UP;
     regulator_5v_enable(REGULATOR_5V_JC_R);
@@ -414,11 +474,10 @@ void ipl_main(void)
         while (*uart_b_lsr & 0x01)        /* LSR.RDR */
             (void)*uart_b_rbr;            /* read and discard */
     }
-#endif  /* !JC_PROBE , JC_PROBE-specific init runs after display setup so we can animate it */
 
     static const char banner[] =
-        "\n=== hwtest === read-only,"
-        " single write: backup/<emmc_serial>/hwtest.txt\n";
+        "\n=== hwtest === active hardware diagnostic;"
+        " SD report: backup/<emmc_serial>/hwtest.txt\n";
     uart_send_crlf(UART_B, (u8 *)banner, strlen(banner));
 
     /* Bring up the LCD + console. The LCD is physically 720 x 1280
@@ -428,9 +487,12 @@ void ipl_main(void)
      * Hold the console with the right Joy-Con rail (UART side) at the
      * top to read the screen naturally. */
     display_init();
+    _boot_trace("[boot] display_init ok\n");
     u32 *fb = display_init_window_a_pitch();
+    _boot_trace("[boot] framebuffer ok\n");
     gfx_init_ctxt(fb, 1280, 720, 720);
     gfx_con_init();
+    _boot_trace("[boot] gfx ok\n");
 
     /* Render the "initialising" splash IMMEDIATELY (before backlight
      * ramp + before any other init) so when the panel becomes visible
@@ -447,75 +509,53 @@ void ipl_main(void)
      * splash text below will already be on screen. */
     display_backlight_pwm_init();
     display_backlight_brightness(100, 1000);
+    _boot_trace("[boot] backlight ok\n");
 
-    /* SD card + eMMC init done unconditionally before the boot dump.
-     *
-     * This brings up LDO2 (SDMMC1 rail), enables SDMMC1/SDMMC4 clocks,
-     * and writes the SD/eMMC pinmux. The lazy entry point is
-     * probe_storage, which runs AFTER probe_regulators and probe_clocks
-     * in page order: leaving the init to it makes the boot dump capture
-     * those regulators / clocks in their *pre-init* state while a
-     * subsequent 'a' refresh-all sees them post-init. Doing the init up
-     * front makes both captures byte-identical for the storage-derived
-     * fields.
-     *
-     * Failure handling: sd_initialize and emmc_initialize each return
-     * non-zero when the card / chip can't be brought up. Both have
-     * bounded timeouts (~1-2 s) inside Hekate, so an empty SD slot or
-     * a faulty SD reader produces a fail-then-continue, NOT a hang.
-     * probe_storage reads sd_storage.initialized + emmc_storage.initialized
-     * to detect this state and prints "sd_initialize FAILED" cleanly
-     * instead of crashing. save_report sees g_sd_ok=false and logs
-     * "[save] SD not ready" without retrying. This means the payload
-     * boots and runs end-to-end whether the user RCM-injected via SD,
-     * via TegraRcmGUI, or via a unit with a dead SD reader, there's
-     * no failure mode that strands them at a black screen.
-     *
-     * UHS-I timing note: on the JC_PROBE build, sd_initialize must run
-     * BEFORE jc_init_hw, the long Joy-Con poll between rail-up and
-     * SD init would otherwise cause the CMD11 1.8 V switch to silently
-     * fall back to HS25 at 3.3 V. */
-    gfx_printf("  SD card / eMMC init     ...");
-    sd_initialize(false);                /* return value intentionally
-                                            ignored; probe_storage will
-                                            re-check sd_storage.initialized
-                                            and skip / report cleanly */
-    emmc_initialize(false);              /* same, eMMC is soldered, so
-                                            failure here is genuinely a
-                                            board-fault diagnostic, not
-                                            a missing-card situation */
-    gfx_printf(" done\n");
-
-#ifdef JC_PROBE
-    /* Joy-Con stack init: powers both rails, runs Hekate's PH6/PE6
-     * unlatch dance, then poll-spins the controllers for 5 s so the
-     * MCU has time to wake up + answer the Discover request. */
-    gfx_printf("  Joy-Con stack init      ...");
-    jc_init_hw();
-    gfx_printf(" done\n");
-
-    /* 250 polls × 20 ms = 5 s. Print one dot every ~250 ms (every 12
-     * iterations) so the operator can see polling is making progress. */
-    gfx_printf("  Polling Joy-Cons (~5 s) ...");
-    for (u32 i = 0; i < 250; i++) {
-        joycon_poll();
-        if (i && (i % 12 == 0))
-            gfx_printf(".");
-        msleep(20);
+    /* Launcher. Keep it minimal: display plus VOL+/VOL-/POWER only.
+     * Touch and diagnostic subsystems are initialized only by tests that need
+     * them. RAM is a separate service payload because both memory trainers/tables
+     * cannot fit inside the normal RCM image. A failed RAM launch returns to
+     * this menu instead of trapping the user. */
+    ui_selection_t ui_sel = { UI_ACTION_HARDWARE, PROBE_G_ALL };
+    _boot_trace("[boot] launcher enter\n");
+    for (;;) {
+        ui_launcher(&ui_sel);
+        _boot_trace("[boot] launcher returned\n");
+        if (ui_sel.action != UI_ACTION_RAM)
+            break;
+        ui_chainload_ram();
     }
-    gfx_printf(" done\n");
-#endif
 
-    /* Common second phase: thermal sensor + clock boost, then probes.
-     * These steps are quick (<100 ms) so they get a single combined
-     * line rather than per-step animation. */
-    gfx_printf("  Hardware setup          ...");
-    /* TMP451 needs an explicit conversion-rate write to leave its
-     * power-on 0.0625 Hz mode. */
-    tmp451_init();
-    /* Match Hekate: boost BPMP/SCLK before SDMMC init. */
+    /* Defer subsystem setup until an actual hardware test was selected.
+     * The launcher itself needs only display + physical buttons. */
     bpmp_clk_rate_set(BPMP_CLK_NORMAL);
-    gfx_printf(" done\n\n");
+    _boot_trace("[boot] bpmp clock ok\n");
+
+    if (ui_sel.probe_mask & PROBE_G_STORAGE) {
+        gfx_printf("  SD card / eMMC init     ...");
+        _boot_trace("[boot] sd init begin\n");
+        g_sd_ok = (sd_initialize(false) == 0);
+        _boot_trace("[boot] sd init end\n");
+        _boot_trace("[boot] emmc init begin\n");
+        g_emmc_ok = (emmc_initialize(false) == 0);
+        _boot_trace("[boot] emmc init end\n");
+        gfx_printf(" %s / %s\n", g_sd_ok ? "SD ok" : "SD fail",
+                                  g_emmc_ok ? "eMMC ok" : "eMMC fail");
+    }
+
+    if (ui_sel.probe_mask & PROBE_G_POWER) {
+        gfx_printf("  Thermal setup           ...");
+        tmp451_init();
+        _boot_trace("[boot] tmp451 ok\n");
+        gfx_printf(" done\n");
+    }
+
+    gfx_clear_grey(0x1B);
+    gfx_con_setpos(0, 0);
+    gfx_con_setcol(COL_HEADER, 1, COL_BG);
+    gfx_printf("hwtest - %s\n\n",
+               ui_sel.action == UI_ACTION_CUSTOM ? "custom hardware test" : "hardware test");
+    gfx_con_setcol(COL_DEFAULT, 1, COL_BG);
     gfx_printf("Running probes, building report...\n");
 
     /* Allocate the SD-report buffer BEFORE the boot dump and arm the
@@ -540,7 +580,7 @@ void ipl_main(void)
     g_show_status  = true;
     _log_uart_only = true;
     log_color(COL_HEADER, "\n=== hwtest full UART dump ===\n");
-    run_all_probes();
+    run_probe_mask(ui_sel.probe_mask);
     log_color(COL_HEADER, "\n=== end of dump - pager active on LCD ===\n\n");
     _log_uart_only = false;
     g_show_status  = false;
@@ -593,9 +633,8 @@ void ipl_main(void)
                     break;
                 }
             }
-            int new_page = ((int)page + delta) % (int)N_PAGES;
-            if (new_page < 0) new_page += (int)N_PAGES;
-            page = new_page;
+            while (delta > 0) { page = _page_step(page, 1); delta--; }
+            while (delta < 0) { page = _page_step(page, -1); delta++; }
             render_page(page);
         } else if (refresh) {
             render_page(page);
@@ -658,7 +697,7 @@ void ipl_main(void)
              * so the on-console display stays in sync. */
             _log_uart_only = true;
             log_color(COL_HEADER, "\n=== hwtest full UART dump ===\n");
-            run_all_probes();
+            run_probe_mask(g_run_mask);
             log_color(COL_HEADER, "\n=== end of dump - pager active on LCD ===\n\n");
             _log_uart_only = false;
             render_page(page);

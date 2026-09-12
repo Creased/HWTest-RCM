@@ -6,12 +6,6 @@ on:
       - 'v*'
   workflow_dispatch:
 
-# TODO(2026-06-02): remove this env block. Node.js 24 becomes the runner
-# default on that date, making this opt-in a no-op. Node 20 is fully removed
-# on 2026-09-16, so the latest safe deletion date is mid-September 2026.
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
 jobs:
   build-bins:
     runs-on: ubuntu-latest
@@ -20,12 +14,16 @@ jobs:
       contents: write
     steps:
       - name: Checkout (with submodules)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
       - name: Mark workspace safe for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Test host UART parser
+        working-directory: host_tools
+        run: python3 test_parser.py
 
       # The devkitarm image carries only devkitARM, and the Wi-Fi probe's PCIe
       # half runs on CPU0 from an AArch64 stub - without a second toolchain the
@@ -44,9 +42,10 @@ jobs:
 
       # REQUIRE_A64=1 makes a missing aarch64 compiler fail the build instead
       # of quietly producing a payload without the stub.
-      - name: Build both variants
+      - name: Build diagnostic payloads
         run: |
           make all REQUIRE_A64=1 A64_CC=aarch64-linux-gnu-gcc A64_OC=aarch64-linux-gnu-objcopy
+          make ram
 
       # Grep the uncompressed images: the shipped .bin is the self-extracting
       # stub plus an LZ blob, so no string from the payload survives in it as
@@ -55,14 +54,26 @@ jobs:
       - name: Verify the CPU0 stub was actually built in
         run: |
           test -s build/cpu_stub.bin || { echo "build/cpu_stub.bin missing"; exit 1; }
-          for f in build/hwtest_unc.bin build-jc/hwtest_jc_unc.bin; do
+          for f in build/hwtest_unc.bin; do
             if grep -qa 'devkitA64 absent at build time' "$f"; then
               echo "FAIL: $f was built without the CPU0 stub"; exit 1
             fi
             grep -qa 'CPU0 handoff (PCIe needs' "$f" || {
               echo "FAIL: $f is missing the CPU0 handoff path"; exit 1; }
           done
-          echo "CPU0 stub present in both variants ($(stat -c%s build/cpu_stub.bin) bytes)"
+          echo "CPU0 stub present ($(stat -c%s build/cpu_stub.bin) bytes)"
+
+      - name: Verify production launcher and RAM menus
+        run: |
+          for s in 'Hardware test' 'RAM test' 'Custom test' 'Power off'; do
+            grep -qa "$s" build/hwtest_unc.bin || { echo "FAIL: launcher string missing: $s"; exit 1; }
+          done
+          for s in 'Quick test' 'Advanced test' 'Custom test' 'Power off'; do
+            grep -qa "$s" build-ram/hwtest_ram_unc.bin || { echo "FAIL: RAM-menu string missing: $s"; exit 1; }
+          done
+          if grep -qai 'destructive' build/hwtest_unc.bin build-ram/hwtest_ram_unc.bin; then
+            echo 'FAIL: deprecated destructive wording is present'; exit 1
+          fi
 
       # TegraRcmSmash prepends a 66216-byte prologue and truncates the result to
       # 192 KiB without saying so, so anything past this ceiling reaches the
@@ -71,7 +82,7 @@ jobs:
       - name: Check the payloads fit the RCM injection ceiling
         run: |
           limit=130392
-          for f in build/hwtest.bin build-jc/hwtest_jc.bin; do
+          for f in build/hwtest.bin build-ram/hwtest_ram.bin; do
             size=$(stat -c%s "$f")
             if [ "$size" -gt "$limit" ]; then
               echo "FAIL: $f is $size bytes, over the $limit ceiling"; exit 1
@@ -80,21 +91,21 @@ jobs:
           done
 
       - name: Upload workflow artifact (always)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hwtest-bins
           path: |
             build/hwtest.bin
-            build-jc/hwtest_jc.bin
+            build-ram/hwtest_ram.bin
           if-no-files-found: error
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             build/hwtest.bin
-            build-jc/hwtest_jc.bin
+            build-ram/hwtest_ram.bin
           fail_on_unmatched_files: true
           generate_release_notes: true
 
@@ -106,16 +117,20 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         # No submodules needed -- host_tools is pure Python with no native deps
         # beyond what pip pulls in.
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: 'pip'
           cache-dependency-path: host_tools/requirements.txt
+
+      - name: Test UART parser
+        working-directory: host_tools
+        run: python test_parser.py
 
       - name: Install dependencies
         working-directory: host_tools
@@ -148,7 +163,7 @@ jobs:
         run: dir dist\hwtest_viewer.exe
 
       - name: Upload workflow artifact (always)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hwtest-viewer-exe
           path: host_tools/dist/hwtest_viewer.exe
@@ -156,7 +171,7 @@ jobs:
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: host_tools/dist/hwtest_viewer.exe
           fail_on_unmatched_files: true

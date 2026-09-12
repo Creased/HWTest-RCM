@@ -1,0 +1,342 @@
+diff --git a/fusee/program/source/mtc/fusee_mtc_erista.cpp b/fusee/program/source/mtc/fusee_mtc_erista.cpp
+index 0981f3769..29cba84f0 100644
+--- a/fusee/program/source/mtc/fusee_mtc_erista.cpp
++++ b/fusee/program/source/mtc/fusee_mtc_erista.cpp
+@@ -34,0 +35,9 @@ namespace ams::nxboot {
++        static constinit u32 g_hwtest_mtc_errors = 0;
++        static constinit u32 g_hwtest_mtc_active_training = 0;
++        static constinit u32 g_hwtest_mtc_failed_training = 0;
++        static constinit bool g_hwtest_mtc_at_1600 = false;
++        constexpr u32 HWTEST_MTC_ERR_TABLE          = 1u << 0;
++        constexpr u32 HWTEST_MTC_ERR_ENTRY_CLOCK    = 1u << 1;
++        constexpr u32 HWTEST_MTC_ERR_PLL_TIMEOUT    = 1u << 2;
++        constexpr u32 HWTEST_MTC_ERR_STATUS_TIMEOUT = 1u << 3;
++
+@@ -166 +175,2 @@ namespace ams::nxboot {
+-                ShowFatalError("Unexpected ProgramPllm next rate %" PRIu32 "\n", next_rate_khz);
++                g_hwtest_mtc_errors |= HWTEST_MTC_ERR_TABLE;
++                return next_clk_src;
+@@ -188,2 +198,7 @@ namespace ams::nxboot {
+-                while (!reg::HasValue(CLKRST + CLK_RST_CONTROLLER_PLLMB_BASE, CLK_RST_REG_BITS_ENUM(PLLMB_BASE_PLLMB_LOCK, LOCK))) {
+-                    /* ... */
++                bool locked = false;
++                for (u32 i = 0; i < 1000; ++i) {
++                    if (reg::HasValue(CLKRST + CLK_RST_CONTROLLER_PLLMB_BASE, CLK_RST_REG_BITS_ENUM(PLLMB_BASE_PLLMB_LOCK, LOCK))) {
++                        locked = true;
++                        break;
++                    }
++                    util::WaitMicroSeconds(1);
+@@ -190,0 +206,2 @@ namespace ams::nxboot {
++                if (!locked)
++                    g_hwtest_mtc_errors |= HWTEST_MTC_ERR_PLL_TIMEOUT;
+@@ -212,2 +229,7 @@ namespace ams::nxboot {
+-                while (!reg::HasValue(CLKRST + CLK_RST_CONTROLLER_PLLM_BASE, CLK_RST_REG_BITS_ENUM(PLLM_BASE_PLLM_LOCK, LOCK))) {
+-                    /* ... */
++                bool locked = false;
++                for (u32 i = 0; i < 1000; ++i) {
++                    if (reg::HasValue(CLKRST + CLK_RST_CONTROLLER_PLLM_BASE, CLK_RST_REG_BITS_ENUM(PLLM_BASE_PLLM_LOCK, LOCK))) {
++                        locked = true;
++                        break;
++                    }
++                    util::WaitMicroSeconds(1);
+@@ -214,0 +237,2 @@ namespace ams::nxboot {
++                if (!locked)
++                    g_hwtest_mtc_errors |= HWTEST_MTC_ERR_PLL_TIMEOUT;
+@@ -252,0 +277,4 @@ namespace ams::nxboot {
++            if (result) {
++                g_hwtest_mtc_errors |= HWTEST_MTC_ERR_STATUS_TIMEOUT;
++                g_hwtest_mtc_failed_training |= g_hwtest_mtc_active_training;
++            }
+@@ -350 +378,2 @@ namespace ams::nxboot {
+-            do {
++            bool dll_ready = false;
++            for (u32 i = 0; i < 1000; ++i) {
+@@ -352 +381,7 @@ namespace ams::nxboot {
+-            } while ((~emc_dig_dll_status & 0x28000) != 0);
++                if ((~emc_dig_dll_status & 0x28000) == 0) { dll_ready = true; break; }
++                util::WaitMicroSeconds(1);
++            }
++            if (!dll_ready) {
++                g_hwtest_mtc_errors |= HWTEST_MTC_ERR_STATUS_TIMEOUT;
++                g_hwtest_mtc_failed_training |= g_hwtest_mtc_active_training;
++            }
+@@ -2653 +2688,2 @@ namespace ams::nxboot {
+-            do {
++            bool dll_locked = false;
++            for (u32 i = 0; i < 1000; ++i) {
+@@ -2655 +2691,7 @@ namespace ams::nxboot {
+-            } while (!(emc_dig_dll_status & (1 << 15)));
++                if (emc_dig_dll_status & (1 << 15)) { dll_locked = true; break; }
++                util::WaitMicroSeconds(1);
++            }
++            if (!dll_locked) {
++                g_hwtest_mtc_errors |= HWTEST_MTC_ERR_STATUS_TIMEOUT;
++                g_hwtest_mtc_failed_training |= g_hwtest_mtc_active_training;
++            }
+@@ -2713,0 +2756 @@ namespace ams::nxboot {
++                    g_hwtest_mtc_active_training = training_params[i];
+@@ -2715,0 +2759,2 @@ namespace ams::nxboot {
++                    if (g_hwtest_mtc_errors & (HWTEST_MTC_ERR_PLL_TIMEOUT | HWTEST_MTC_ERR_STATUS_TIMEOUT))
++                        break;
+@@ -2716,0 +2762 @@ namespace ams::nxboot {
++                g_hwtest_mtc_active_training = 0;
+@@ -2718,2 +2764,2 @@ namespace ams::nxboot {
+-                /* Set tables as trained. */
+-                dst_timing->trained = 1;
++                if (!(g_hwtest_mtc_errors & (HWTEST_MTC_ERR_PLL_TIMEOUT | HWTEST_MTC_ERR_STATUS_TIMEOUT)))
++                    dst_timing->trained = 1;
+@@ -2815,0 +2862,2 @@ namespace ams::nxboot {
++                if (g_hwtest_mtc_errors & HWTEST_MTC_ERR_PLL_TIMEOUT)
++                    return;
+@@ -2844,0 +2893,5 @@ namespace ams::nxboot {
++        g_hwtest_mtc_errors = 0;
++        g_hwtest_mtc_active_training = 0;
++        g_hwtest_mtc_failed_training = 0;
++        g_hwtest_mtc_at_1600 = false;
++
+@@ -2853 +2906,2 @@ namespace ams::nxboot {
+-            ShowFatalError("EmcDvfsTimingTables seem corrupted %" PRIu32 " %" PRIu32  " %" PRIu32 "?\n", timing_204->rate_khz, timing_800->rate_khz, timing_1600->rate_khz);
++            g_hwtest_mtc_errors |= HWTEST_MTC_ERR_TABLE;
++            return;
+@@ -2859,0 +2914 @@ namespace ams::nxboot {
++            g_hwtest_mtc_errors |= HWTEST_MTC_ERR_ENTRY_CLOCK;
+@@ -2864,0 +2920 @@ namespace ams::nxboot {
++        if (g_hwtest_mtc_errors) return;
+@@ -2867,0 +2924 @@ namespace ams::nxboot {
++        if (g_hwtest_mtc_errors) return;
+@@ -2870,0 +2928 @@ namespace ams::nxboot {
++        if (g_hwtest_mtc_errors) return;
+@@ -2873,0 +2932,2 @@ namespace ams::nxboot {
++        if (g_hwtest_mtc_errors) return;
++        g_hwtest_mtc_at_1600 = true;
+@@ -2881,0 +2942,17 @@ namespace ams::nxboot {
++    void DoPeriodicTrainingErista(void *mtc_tables_buffer) {
++        if (!g_hwtest_mtc_at_1600) return;
++        auto *timing = reinterpret_cast<EmcDvfsTimingTable *>(mtc_tables_buffer) + 2;
++        PeriodicCompensationRoutine(timing);
++    }
++
++    void RestoreMemoryClockRateErista(void *mtc_tables_buffer) {
++        if (!g_hwtest_mtc_at_1600) return;
++        auto *timing = reinterpret_cast<EmcDvfsTimingTable *>(mtc_tables_buffer);
++        Dvfs(timing + 1, timing + 2, false); /* 1600 -> trained 800 MHz */
++        g_hwtest_mtc_at_1600 = false;
++    }
++
++    u32 GetMemoryTrainingErrorsErista() { return g_hwtest_mtc_errors; }
++    u32 GetMemoryTrainingFailedMaskErista() { return g_hwtest_mtc_failed_training; }
++    bool DidMemoryTrainingErista() { return g_hwtest_mtc_at_1600 && g_hwtest_mtc_errors == 0; }
++
+diff --git a/fusee/program/source/mtc/fusee_mtc_mariko.cpp b/fusee/program/source/mtc/fusee_mtc_mariko.cpp
+index e6497af70..56e0aceb6 100644
+--- a/fusee/program/source/mtc/fusee_mtc_mariko.cpp
++++ b/fusee/program/source/mtc/fusee_mtc_mariko.cpp
+@@ -35,0 +36,11 @@ namespace ams::nxboot {
++        /* hwtest diagnostic hardening: Atmosphere's boot path assumes known-good
++         * hardware and can wait forever for a dead PLL.  A board diagnostic must
++         * return a result instead.  These flags are queried by the thin C ABI. */
++        static constinit u32 g_hwtest_mtc_errors = 0;
++        static constinit u32 g_hwtest_mtc_active_training = 0;
++        static constinit u32 g_hwtest_mtc_failed_training = 0;
++        constexpr u32 HWTEST_MTC_ERR_TABLE          = 1u << 0;
++        constexpr u32 HWTEST_MTC_ERR_ENTRY_CLOCK    = 1u << 1;
++        constexpr u32 HWTEST_MTC_ERR_PLL_TIMEOUT    = 1u << 2;
++        constexpr u32 HWTEST_MTC_ERR_STATUS_TIMEOUT = 1u << 3;
++
+@@ -198 +209,10 @@ namespace ams::nxboot {
+-                while ((reg::Read(CLKRST + CLK_RST_CONTROLLER_PLLMB_BASE) & 0x8000000) == 0) { /* ... */ }
++                bool locked = false;
++                for (u32 i = 0; i < 1000; ++i) {
++                    if (reg::Read(CLKRST + CLK_RST_CONTROLLER_PLLMB_BASE) & 0x08000000) {
++                        locked = true;
++                        break;
++                    }
++                    util::WaitMicroSeconds(1);
++                }
++                if (!locked)
++                    g_hwtest_mtc_errors |= HWTEST_MTC_ERR_PLL_TIMEOUT;
+@@ -227 +247,10 @@ namespace ams::nxboot {
+-                while ((reg::Read(CLKRST + CLK_RST_CONTROLLER_PLLM_BASE) & 0x8000000) == 0) { /* ... */ }
++                bool locked = false;
++                for (u32 i = 0; i < 1000; ++i) {
++                    if (reg::Read(CLKRST + CLK_RST_CONTROLLER_PLLM_BASE) & 0x08000000) {
++                        locked = true;
++                        break;
++                    }
++                    util::WaitMicroSeconds(1);
++                }
++                if (!locked)
++                    g_hwtest_mtc_errors |= HWTEST_MTC_ERR_PLL_TIMEOUT;
+@@ -265,0 +295,4 @@ namespace ams::nxboot {
++            if (result) {
++                g_hwtest_mtc_errors |= HWTEST_MTC_ERR_STATUS_TIMEOUT;
++                g_hwtest_mtc_failed_training |= g_hwtest_mtc_active_training;
++            }
+@@ -2735,0 +2769 @@ namespace ams::nxboot {
++                    g_hwtest_mtc_active_training = training_params[i];
+@@ -2737,0 +2772,2 @@ namespace ams::nxboot {
++                    if (g_hwtest_mtc_errors & (HWTEST_MTC_ERR_PLL_TIMEOUT | HWTEST_MTC_ERR_STATUS_TIMEOUT))
++                        break;
+@@ -2738,0 +2775 @@ namespace ams::nxboot {
++                g_hwtest_mtc_active_training = 0;
+@@ -2740,2 +2777,3 @@ namespace ams::nxboot {
+-                /* Set tables as trained. */
+-                dst_timing->trained = 1;
++                /* A failed status/PLL wait is not a trained table. */
++                if (!(g_hwtest_mtc_errors & (HWTEST_MTC_ERR_PLL_TIMEOUT | HWTEST_MTC_ERR_STATUS_TIMEOUT)))
++                    dst_timing->trained = 1;
+@@ -2768,0 +2807,2 @@ namespace ams::nxboot {
++                        if (g_hwtest_mtc_errors & HWTEST_MTC_ERR_PLL_TIMEOUT)
++                            return;
+@@ -2797,0 +2838,5 @@ namespace ams::nxboot {
++        g_hwtest_mtc_errors = 0;
++        g_hwtest_mtc_active_training = 0;
++        g_hwtest_mtc_failed_training = 0;
++        *out_did_training = false;
++
+@@ -2805 +2850,2 @@ namespace ams::nxboot {
+-            ShowFatalError("EmcDvfsTimingTables seem corrupted %" PRIu32 " %" PRIu32 "?\n", src_timing->rate_khz, dst_timing->rate_khz);
++            g_hwtest_mtc_errors |= HWTEST_MTC_ERR_TABLE;
++            return;
+@@ -2812 +2858 @@ namespace ams::nxboot {
+-            *out_did_training = false;
++            g_hwtest_mtc_errors |= HWTEST_MTC_ERR_ENTRY_CLOCK;
+@@ -2818,0 +2865,3 @@ namespace ams::nxboot {
++        if (g_hwtest_mtc_errors)
++            return;
++
+@@ -2822,2 +2871,2 @@ namespace ams::nxboot {
+-        /* Set ourselves as having done training */
+-        *out_did_training = true;
++        /* Set ourselves as having done training only when every bounded wait passed. */
++        *out_did_training = (g_hwtest_mtc_errors == 0);
+@@ -2834 +2883,2 @@ namespace ams::nxboot {
+-            ShowFatalError("EmcDvfsTimingTables seem corrupted %" PRIu32 " %" PRIu32 "?\n", src_timing->rate_khz, dst_timing->rate_khz);
++            g_hwtest_mtc_errors |= HWTEST_MTC_ERR_TABLE;
++            return;
+@@ -2840,0 +2891,16 @@ namespace ams::nxboot {
++    void DoPeriodicTrainingMariko(void *mtc_tables_buffer) {
++        auto *timing = reinterpret_cast<EmcDvfsTimingTable *>(mtc_tables_buffer) + 1;
++        if (!timing->trained || !timing->periodic_training)
++            return;
++        const u32 dram_dev_num = (reg::Read(MC + MC_EMEM_ADR_CFG) & 1) + 1;
++        PeriodicCompensationHandler(PERIODIC_TRAINING_SEQUENCE, dram_dev_num, timing, timing);
++    }
++
++    u32 GetMemoryTrainingErrorsMariko() {
++        return g_hwtest_mtc_errors;
++    }
++
++    u32 GetMemoryTrainingFailedMaskMariko() {
++        return g_hwtest_mtc_failed_training;
++    }
++
+diff --git a/fusee/program/source/mtc/fusee_mtc_tables_erista.inc b/fusee/program/source/mtc/fusee_mtc_tables_erista.inc
+index 6fc664d4d..fa26ef235 100644
+--- a/fusee/program/source/mtc/fusee_mtc_tables_erista.inc
++++ b/fusee/program/source/mtc/fusee_mtc_tables_erista.inc
+@@ -17 +17 @@
+-constexpr const u8 T210SdevEmcDvfsTableS6gb01[] = {
++alignas(4) constexpr const u8 T210SdevEmcDvfsTableS6gb01[] = {
+@@ -21 +21 @@ constexpr const u8 T210SdevEmcDvfsTableS6gb01[] = {
+-constexpr const u8 T210SdevEmcDvfsTableH4gb01[] = {
++alignas(4) constexpr const u8 T210SdevEmcDvfsTableH4gb01[] = {
+@@ -25 +25 @@ constexpr const u8 T210SdevEmcDvfsTableH4gb01[] = {
+-constexpr const u8 T210SdevEmcDvfsTableS4gb01[] = {
++alignas(4) constexpr const u8 T210SdevEmcDvfsTableS4gb01[] = {
+@@ -28 +27,0 @@ constexpr const u8 T210SdevEmcDvfsTableS4gb01[] = {
+-
+diff --git a/fusee/program/source/mtc/fusee_mtc_tables_mariko.inc b/fusee/program/source/mtc/fusee_mtc_tables_mariko.inc
+index de7f89dfb..f705deb01 100644
+--- a/fusee/program/source/mtc/fusee_mtc_tables_mariko.inc
++++ b/fusee/program/source/mtc/fusee_mtc_tables_mariko.inc
+@@ -17 +17 @@
+-constexpr const u8 T210b01SdevEmcDvfsTableM4gb03[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableM4gb03[] = {
+@@ -21 +21 @@ constexpr const u8 T210b01SdevEmcDvfsTableM4gb03[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableS4gb01[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableS4gb01[] = {
+@@ -25 +25 @@ constexpr const u8 T210b01SdevEmcDvfsTableS4gb01[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableS1z4gb01[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableS1z4gb01[] = {
+@@ -29 +29 @@ constexpr const u8 T210b01SdevEmcDvfsTableS1z4gb01[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableS1y8gbY01[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableS1y8gbY01[] = {
+@@ -33 +33 @@ constexpr const u8 T210b01SdevEmcDvfsTableS1y8gbY01[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableM1a4gb01[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableM1a4gb01[] = {
+@@ -37 +37 @@ constexpr const u8 T210b01SdevEmcDvfsTableM1a4gb01[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableH4gb03[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableH4gb03[] = {
+@@ -41 +41 @@ constexpr const u8 T210b01SdevEmcDvfsTableH4gb03[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableS1y4gbX03[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableS1y4gbX03[] = {
+@@ -45 +45 @@ constexpr const u8 T210b01SdevEmcDvfsTableS1y4gbX03[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableM1y4gb01[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableM1y4gb01[] = {
+@@ -49 +49 @@ constexpr const u8 T210b01SdevEmcDvfsTableM1y4gb01[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableS1y4gb01[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableS1y4gb01[] = {
+@@ -53 +53 @@ constexpr const u8 T210b01SdevEmcDvfsTableS1y4gb01[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableH1y4gb01[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableH1y4gb01[] = {
+@@ -57 +57 @@ constexpr const u8 T210b01SdevEmcDvfsTableH1y4gb01[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableS4gb03[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableS4gb03[] = {
+@@ -61 +61 @@ constexpr const u8 T210b01SdevEmcDvfsTableS4gb03[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableS4gbY01[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableS4gbY01[] = {
+@@ -65 +65 @@ constexpr const u8 T210b01SdevEmcDvfsTableS4gbY01[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableS1y8gb04[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableS1y8gb04[] = {
+@@ -69 +69 @@ constexpr const u8 T210b01SdevEmcDvfsTableS1y8gb04[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableH1a4gb01[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableH1a4gb01[] = {
+@@ -73 +73 @@ constexpr const u8 T210b01SdevEmcDvfsTableH1a4gb01[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableS1y4gbY01[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableS1y4gbY01[] = {
+@@ -77 +77 @@ constexpr const u8 T210b01SdevEmcDvfsTableS1y4gbY01[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableS8gb03[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableS8gb03[] = {
+@@ -81 +81 @@ constexpr const u8 T210b01SdevEmcDvfsTableS8gb03[] = {
+-constexpr const u8 T210b01SdevEmcDvfsTableS1y8gbX03[] = {
++alignas(4) constexpr const u8 T210b01SdevEmcDvfsTableS1y8gbX03[] = {
+@@ -84 +83,0 @@ constexpr const u8 T210b01SdevEmcDvfsTableS1y8gbX03[] = {
+-
+diff --git a/libraries/libvapours/include/vapours/tegra/tegra_clkrst.hpp b/libraries/libvapours/include/vapours/tegra/tegra_clkrst.hpp
+index c5e6719d3..bd8e92a71 100644
+--- a/libraries/libvapours/include/vapours/tegra/tegra_clkrst.hpp
++++ b/libraries/libvapours/include/vapours/tegra/tegra_clkrst.hpp
+@@ -17,6 +16,0 @@
+-#include <vapours/common.hpp>
+-#include <vapours/assert.hpp>
+-#include <vapours/literals.hpp>
+-#include <vapours/util.hpp>
+-#include <vapours/results.hpp>
+-#include <vapours/reg.hpp>
+@@ -499 +492,0 @@ CLK_RST_FOREACH_DEVICE(CLK_RST_DEFINE_SET_CLR_REG)
+-
+diff --git a/libraries/libvapours/include/vapours/tegra/tegra_emc.hpp b/libraries/libvapours/include/vapours/tegra/tegra_emc.hpp
+index 2121b62ec..6e12a4aeb 100644
+--- a/libraries/libvapours/include/vapours/tegra/tegra_emc.hpp
++++ b/libraries/libvapours/include/vapours/tegra/tegra_emc.hpp
+@@ -17,6 +16,0 @@
+-#include <vapours/common.hpp>
+-#include <vapours/assert.hpp>
+-#include <vapours/literals.hpp>
+-#include <vapours/util.hpp>
+-#include <vapours/results.hpp>
+-#include <vapours/reg.hpp>
+@@ -636 +629,0 @@ DEFINE_EMC_REG_BIT_ENUM(PMACRO_TRAINING_CTRL_1_CH1_TRAINING_DRV_DQS,        4, D
+-
+diff --git a/libraries/libvapours/include/vapours/tegra/tegra_mc.hpp b/libraries/libvapours/include/vapours/tegra/tegra_mc.hpp
+index d58e8b5ba..920bd3c63 100644
+--- a/libraries/libvapours/include/vapours/tegra/tegra_mc.hpp
++++ b/libraries/libvapours/include/vapours/tegra/tegra_mc.hpp
+@@ -17,6 +16,0 @@
+-#include <vapours/common.hpp>
+-#include <vapours/assert.hpp>
+-#include <vapours/literals.hpp>
+-#include <vapours/util.hpp>
+-#include <vapours/results.hpp>
+-#include <vapours/reg.hpp>

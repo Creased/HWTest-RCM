@@ -1,8 +1,9 @@
 """
 hwtest_viewer.py - ImGui front-end for the hwtest UART output stream.
 
-Connects to a serial port (default 115200 8N1, the rate hwtest's UART_B
-is configured for in the non-JC build), reads the diagnostic dump, and
+Understands both the normal hardware diagnostic protocol and the dedicated
+RAM tester protocol. Connects to a serial port (default 115200 8N1, the rate hwtest's UART_B
+is configured for), reads the diagnostic dump, and
 presents it as a clickable tab UI:
 
     [Verdict] [SoC] [Fuses] [PMICs] ... [Raw log]
@@ -283,7 +284,7 @@ class App:
         Falls back to a plain 'r' (refresh whatever the LCD is showing)
         if no real page is selected."""
         target = self.selected_page
-        if not target or target == "__raw__" or target == "Boot banner":
+        if (not target or target in {"__raw__", "Boot banner", "Runtime"}):
             self.reader.send(b"r")
             return
         # Group name plus '\n' terminator. The C-side reader stops on \n
@@ -354,7 +355,13 @@ class App:
         # for the host's currently-selected group and re-emits them
         # over UART, WITHOUT touching the LCD page the operator is
         # viewing. Refresh ALL re-runs every probe.
-        imgui.begin_disabled(not self.reader.connected)
+        #
+        # The dedicated RAM payload is transmit-only on this UART protocol;
+        # it does not implement the hardware pager command bytes.  Disable the
+        # command controls once the parser identifies a RAM stream rather than
+        # pretending a command was accepted.
+        commands_enabled = self.reader.connected and not self.parser.ram_active
+        imgui.begin_disabled(not commands_enabled)
 
         if imgui.button("Refresh group"):
             self._refresh_selected_group()
@@ -369,6 +376,9 @@ class App:
             self.reader.send(b"q")
         imgui.same_line()
         imgui.end_disabled()
+        if self.reader.connected and self.parser.ram_active:
+            imgui.same_line()
+            imgui.text_colored(COL_INFO, "RAM tester: UART controls are display-only")
 
         # Status spacer + clear/save buttons.
         imgui.new_line()

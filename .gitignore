@@ -1,5 +1,6 @@
 build/
 build-jc/
+build-ram/
 *.bin
 *.elf
 *.o

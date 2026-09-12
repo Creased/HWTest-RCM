@@ -11,13 +11,11 @@
 #include <bdk.h>
 #include <gfx_utils.h>
 #include <libs/fatfs/ff.h>
-#ifdef JC_PROBE
-#include <input/joycon.h>
-#endif
 #include <stdarg.h>
 #include <string.h>
 
 #include "cpu_mbox.h"
+#include "ui_theme.h"
 
 extern void pivot_stack(u32 stack);
 extern char *emmcsn_path_impl(char *path, char *sub_dir, char *filename,
@@ -55,17 +53,24 @@ extern char *emmcsn_path_impl(char *path, char *sub_dir, char *filename,
 #define GP_MWR(off, pins, hi) \
     (GPIO(off) = ((u32)(pins) << 8) | ((hi) ? (u32)(pins) : 0u))
 
-/* ---- colours ---- */
-#define COL_HEADER  0xFFFF8000   /* orange */
-#define COL_DEFAULT 0xFFCCCCCC   /* light grey */
-#define COL_OK      0xFF96FF00   /* green */
-#define COL_WARN    0xFFFFDD00   /* yellow */
-#define COL_ERR     0xFFFF5050   /* red */
-#define COL_INFO    0xFF00DDFF   /* cyan, for section subtitles */
-#define COL_BG      0xFF1B1B1B
-
 /* LCD geometry: 1280x720 landscape, 16 px per char = 80 columns. */
 #define LCD_COLS 80
+
+/* ---- probe groups used by the launcher/custom sweep ---- */
+#define PROBE_G_IDENTITY BIT(0)
+#define PROBE_G_POWER    BIT(1)
+#define PROBE_G_MEMORY   BIT(2)
+#define PROBE_G_STORAGE  BIT(3)
+#define PROBE_G_WIRELESS BIT(4)
+#define PROBE_G_AUDIO    BIT(5)
+#define PROBE_G_SOUND    BIT(6)
+#define PROBE_G_DISPLAY  BIT(7)
+#define PROBE_G_INPUTS   BIT(8)
+#define PROBE_G_RAW      BIT(9)
+#define PROBE_G_ALL      (PROBE_G_IDENTITY | PROBE_G_POWER | PROBE_G_MEMORY | \
+                          PROBE_G_STORAGE | PROBE_G_WIRELESS | PROBE_G_AUDIO | \
+                          PROBE_G_SOUND | PROBE_G_DISPLAY | PROBE_G_INPUTS | \
+                          PROBE_G_RAW)
 
 /* ---- three-sink logging (LCD + UART_B + report capture buffer) ---- */
 
@@ -76,14 +81,7 @@ extern char *_log_capture;
 extern u32  _log_capture_pos;
 extern u32  _log_capture_cap;
 
-#ifdef JC_PROBE
-static inline void uart_send_crlf(u32 idx, const u8 *buf, u32 n)
-{
-    (void)idx; (void)buf; (void)n;
-}
-#else
 void uart_send_crlf(u32 idx, const u8 *buf, u32 n);
-#endif
 
 void _log_emit(u32 color);
 void _log_color_impl(u32 color, const char *fmt, ...);
@@ -141,6 +139,7 @@ extern bool g_wifi_armed;
 extern bool g_wifi_brought_up;
 extern bool g_sd_ok;
 extern bool g_emmc_ok;
+extern u32 g_run_mask;
 extern char *g_report_body;
 
 /* ---- probes ---- */
@@ -189,5 +188,6 @@ void probe_pmc_scratch(void);
 void probe_verdict(void);
 
 void run_all_probes(void);
+void run_probe_mask(u32 mask);
 
 #endif /* HWTEST_H */
