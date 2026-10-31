@@ -135,6 +135,33 @@ def test_runtime_uart_messages() -> None:
     print("PASS test_runtime_uart_messages")
 
 
+def test_step_breadcrumbs_mid_page() -> None:
+    """status_step() lines land in the middle of a probe page. They must be
+    recorded as the last step - the answer on a frozen console - without
+    becoming rows of that page or pulling the viewer off it."""
+    p = Parser()
+    p.feed_chunk("""
+=== hwtest full UART dump ===
+
+--- Wireless ---
+[Wi-Fi radio - PCIe link and endpoint]
+[step] Wireless: CPU rail
+  CPU rail      : before: off 606 mV
+[step] Wireless: CPU RAM repair
+  CPU RAM repair: done in 4 us
+""")
+    rep = p.report
+    steps = _rows_by_section(rep.pages["Runtime"])["Step"]
+    assert steps["Last step"].value == "Wireless: CPU RAM repair"
+    assert steps["Last step"].severity == "info"
+    wireless = rep.pages["Wireless"]
+    keys = [r.key for s in wireless.sections for r in s.rows]
+    assert "CPU rail" in keys and "CPU RAM repair" in keys, keys
+    assert not any("step" in k.lower() for k in keys), keys
+    assert rep.latest_page == "Wireless", rep.latest_page
+    print("PASS test_step_breadcrumbs_mid_page")
+
+
 def test_ram_uart_success_protocol() -> None:
     """Exercise every stable success-path shape emitted by ramtest_main.c."""
     p = Parser()
@@ -418,6 +445,7 @@ if __name__ == "__main__":
     test_classify_bis_keys_states()
     test_classify_verdict_summary()
     test_runtime_uart_messages()
+    test_step_breadcrumbs_mid_page()
     test_ram_uart_success_protocol()
     test_ram_uart_abort_and_error_protocol()
     test_ram_rerun_replaces_structured_state()

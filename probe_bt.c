@@ -587,6 +587,7 @@ static bool bt_attempt(const bt_arm_t *arm, u8 *ev, u32 ev_max, u32 *ev_n)
 
 void probe_bt_radio(void)
 {
+    status_step("Wireless: Bluetooth radio");
     volatile uart_t *u = BT_UART_REGS;
     u8  ev[72];
     u32 ev_n = 0;

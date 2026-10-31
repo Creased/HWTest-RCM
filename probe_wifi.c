@@ -264,6 +264,191 @@ static void pcie_msleep(u32 ms)
 #ifdef HAVE_CPU_STUB
 extern const u8  cpu_stub_bin[];
 extern const u32 cpu_stub_bin_size;
+
+/* --- CPU0 bring-up, checked ---------------------------------------------- */
+
+/* The regulator that feeds the A57 cluster. Erista: the MAX77621 at I2C5
+ * 0x1B, enable is VOUT bit 7, 606.25 mV + 6.25 mV/step. Mariko: phase M4 of
+ * the MAX77812, at 0x33 on PHASE211 retail boards or 0x31 on PHASE31, chosen
+ * by the same fuse bit bdk power/max7762x.c reads. On PHASE211 that one chip
+ * also carries M3 (LPDDR4X VDDQ) and M1 (GPU), see probe_max77812(). */
+typedef struct {
+    bool ack;       /* chip answered on I2C */
+    bool en;        /* CPU output enabled */
+    u32  mv;        /* programmed output, mV */
+    bool has_stat;  /* MAX77812 only: live status registers below */
+    u8   stat;      /* BUCK_STAT */
+    u8   topsys;    /* TOPSYS_STAT */
+} cpu_rail_t;
+
+/* i2c_recv_buf_small() returns 0 on SUCCESS and non-zero on a NAK or
+ * timeout (bdk soc/i2c.c, _i2c_send_normal/_i2c_recv_normal). This tree has
+ * got that convention wrong before - check it, do not guess it. */
+static void _cpu_rail_read(cpu_rail_t *r)
+{
+    memset(r, 0, sizeof(*r));
+
+    if (hw_get_chip_id() == GP_HIDREV_MAJOR_T210) {
+        u8 vout = 0;
+        if (i2c_recv_buf_small(&vout, 1, I2C_5, MAX77621_CPU_I2C_ADDR,
+                               MAX77621_REG_VOUT))
+            return;
+        r->ack = true;
+        r->en  = (vout & MAX77621_DVC_DVS_ENABLE_MASK) != 0;
+        r->mv  = (606250 + (vout & MAX77621_DVC_DVS_VOLT_MASK) * 6250) / 1000;
+        return;
+    }
+
+    u8 addr = (FUSE(FUSE_RESERVED_ODM28_B01) & 1)
+            ? MAX77812_PHASE211_CPU_I2C_ADDR : MAX77812_PHASE31_CPU_I2C_ADDR;
+    u8 en_ctrl = 0, vout = 0;
+    if (i2c_recv_buf_small(&en_ctrl, 1, I2C_5, addr, MAX77812_REG_EN_CTRL) ||
+        i2c_recv_buf_small(&vout, 1, I2C_5, addr, MAX77812_REG_M4_VOUT))
+        return;
+    r->ack = true;
+    r->en  = (en_ctrl & MAX77812_EN_CTRL_EN_M4_MASK) != 0;
+    r->mv  = 250 + (vout & MAX77812_BUCK_VOLT_MASK) * 5;
+    /* Raw only: our public MAX77812 material does not give these bits'
+     * meanings (see probe_max77812), so they are compared across the
+     * snapshots rather than judged. A bit that moves once the cluster is
+     * drawing current is the regulator saying something. */
+    r->has_stat = !i2c_recv_buf_small(&r->stat, 1, I2C_5, addr,
+                                      MAX77812_REG_BUCK_STAT) &&
+                  !i2c_recv_buf_small(&r->topsys, 1, I2C_5, addr,
+                                      MAX77812_REG_TOPSYS_STAT);
+}
+
+static void _cpu_rail_log(const char *when, const cpu_rail_t *r)
+{
+    if (!r->ack) {
+        log_color(COL_ERR, "  CPU rail      : %s: no I2C answer\n", when);
+        return;
+    }
+    if (r->has_stat)
+        LOG("  CPU rail      : %s: %s %d mV  BUCK_STAT=%02X TOPSYS=%02X\n",
+            when, r->en ? "on" : "off", r->mv, r->stat, r->topsys);
+    else
+        LOG("  CPU rail      : %s: %s %d mV\n",
+            when, r->en ? "on" : "off", r->mv);
+}
+
+/* The RAM repair takes microseconds on a working cluster. */
+#define CPU_RAM_REPAIR_US 10000
+
+/* bdk soc/ccplex.c ccplex_boot_cpu0(), step for step at the pinned submodule
+ * commit (lock = false, as every caller here passes, so the SB_CSR write is
+ * left out), plus the three things it cannot do:
+ *
+ *  1. Confirm the CPU regulator took the enable. max7762x_regulator_enable()
+ *     and _set_voltage() return 0 whatever the I2C write did, so a dead or
+ *     absent regulator is invisible to them. Read it back.
+ *  2. Notice a CPU partition that will not power up. pmc_domain_pwrgate_set()
+ *     reports that, and ccplex_boot_cpu0() drops the result.
+ *  3. Bound the RAM-repair wait. ccplex_boot_cpu0() spins forever on
+ *     FLOW_CTLR RAM_REPAIR_STS, which only sets once every segment of the CPU
+ *     repair chain has acknowledged (TRM 17.1.3.2, after software has powered
+ *     the CPU rail), so a rail that is not delivering hangs the BPMP right
+ *     there with nothing printed - a console "frozen in Wireless".
+ *
+ * `quiet` drops the success-path rail lines. The handoff boots CPU0 up to
+ * three times plus a diagnostic re-boot, and this page already sits near the
+ * screen's 45 rows on a stalling console; gfx wraps an overflowing page back
+ * over its own top. A failure always prints in full.
+ *
+ * Returns NULL once CPU0 is out of reset. On failure it names the step, sets
+ * the cpu_complex verdict key and powers the cluster back down. It lives here
+ * rather than as a patch because the BDK submodule stays pristine. */
+static const char *_cpu0_boot_checked(u32 entry, bool quiet)
+{
+    bool t210 = hw_get_chip_id() == GP_HIDREV_MAJOR_T210;
+    const char *why = NULL;
+    cpu_rail_t before, r;
+    u32 t0;
+
+    FLOW_CTLR(FLOW_CTLR_BPMP_CLUSTER_CONTROL) &= ~CLUSTER_CTRL_ACTIVE_SLOW;
+
+    status_step("Wireless: CPU rail");
+    _cpu_rail_read(&before);
+    if (!quiet)
+        _cpu_rail_log("before", &before);
+    if (t210) {
+        max77620_config_gpio(5, MAX77620_GPIO_OUTPUT_ENABLE);
+        max77621_config_default(REGULATOR_CPU0, MAX77621_CTRL_HOS_CFG);
+        max7762x_regulator_set_voltage(REGULATOR_CPU0, 950000);
+        max7762x_regulator_enable(REGULATOR_CPU0, true);
+    } else {
+        max7762x_regulator_set_voltage(REGULATOR_CPU1, 800000);
+        max7762x_regulator_enable(REGULATOR_CPU1, true);
+    }
+    _cpu_rail_read(&r);
+    if (!quiet)
+        _cpu_rail_log("enabled", &r);
+    if (!r.ack) { why = "CPU regulator does not answer on I2C"; goto fail; }
+    if (!r.en)  { why = "CPU regulator did not take the enable"; goto fail; }
+
+    status_step("Wireless: CPU clocks");
+    clock_enable_pllx();
+    if (!(CLOCK(CLK_RST_CONTROLLER_PLLX_BASE) & PLL_BASE_LOCK))
+        log_color(COL_WARN, "  PLLX          : not locked after its wait\n");
+    CLOCK(CLK_RST_CONTROLLER_CLK_SOURCE_MSELECT) = (0 << 29) | CLK_SRC_DIV(4);
+    CLOCK(CLK_RST_CONTROLLER_CLK_ENB_V_SET)      = BIT(CLK_V_MSELECT);
+    CLOCK(CLK_RST_CONTROLLER_CCLK_BURST_POLICY)  = 0x20008888; /* PLLX_OUT0_LJ */
+    CLOCK(CLK_RST_CONTROLLER_SUPER_CCLK_DIVIDER) = BIT(31);
+    CLOCK(CLK_RST_CONTROLLER_CLK_ENB_V_SET)      = BIT(CLK_V_CPUG);
+    clock_enable_coresight();
+    CLOCK(CLK_RST_CONTROLLER_CPU_SOFTRST_CTRL2) &= 0xFFFFF000;
+
+    status_step("Wireless: CPU partitions");
+    if (pmc_domain_pwrgate_set(POWER_RAIL_CRAIL, ENABLE)) {
+        why = "CRAIL partition did not power up"; goto fail;
+    }
+    if (pmc_domain_pwrgate_set(POWER_RAIL_C0NC, ENABLE)) {
+        why = "C0NC partition did not power up"; goto fail;
+    }
+    if (pmc_domain_pwrgate_set(POWER_RAIL_CE0, ENABLE)) {
+        why = "CE0 partition did not power up"; goto fail;
+    }
+
+    status_step("Wireless: CPU RAM repair");
+    FLOW_CTLR(FLOW_CTLR_RAM_REPAIR) = RAM_REPAIR_REQ;
+    t0 = get_tmr_us();
+    while (!(FLOW_CTLR(FLOW_CTLR_RAM_REPAIR) & RAM_REPAIR_STS)) {
+        if (get_tmr_us() - t0 > CPU_RAM_REPAIR_US) {
+            why = "CPU RAM repair never completed"; goto fail;
+        }
+    }
+    if (!quiet) {
+        LOG("  CPU RAM repair: done in %d us\n", get_tmr_us() - t0);
+        _cpu_rail_read(&r);
+        _cpu_rail_log("powered", &r);
+    }
+
+    status_step("Wireless: CPU0 out of reset");
+    EXCP_VEC(EVP_CPU_RESET_VECTOR) = 0;
+    SB(SB_AA64_RESET_LOW)  = entry | SB_AA64_RST_AARCH64_MODE_EN;
+    SB(SB_AA64_RESET_HIGH) = 0;
+    CLOCK(CLK_RST_CONTROLLER_RST_DEV_V_CLR)      = BIT(CLK_V_MSELECT);
+    CLOCK(CLK_RST_CONTROLLER_RST_CPUG_CMPLX_CLR) = BIT(29);  /* NONCPU */
+    CLOCK(CLK_RST_CONTROLLER_RST_CPUG_CMPLX_CLR) =
+        BIT(30) | BIT(24) | BIT(16) | BIT(0);
+    return NULL;
+
+fail:
+    /* A quiet boot skipped these; on a failure they are the evidence. */
+    if (quiet) {
+        _cpu_rail_log("before", &before);
+        _cpu_rail_log("enabled", &r);
+    }
+    log_color(COL_ERR,
+        "  CPU0 boot     : %s (PWRGATE_STATUS=%08X RAM_REPAIR=%08X)\n",
+        why, PMC(APBDEV_PMC_PWRGATE_STATUS), FLOW_CTLR(FLOW_CTLR_RAM_REPAIR));
+    dx_set("cpu_complex", DX_FAIL, "%s", why);
+    /* Every wait in the teardown is bounded (its one unbounded loop is
+     * compiled out by CCPLEX_FLOWCTRL_POWERGATING 0). */
+    ccplex_powergate_cpu0();
+    return why;
+}
+
 #endif
 
 /* The endpoint read runs on CPU0 via the stub - see pcie_cpu_handoff()
@@ -295,6 +480,7 @@ static void pcie_cpu_handoff(void)
         return;
     }
 
+    status_step("Wireless: CPU0 stub to DRAM");
     memcpy((void *)CPU_STUB_ADDR, cpu_stub_bin, cpu_stub_bin_size);
     memset((void *)mb, 0, sizeof(cpu_mbox_t));
 
@@ -316,7 +502,14 @@ static void pcie_cpu_handoff(void)
      * reset drains the AFI's outstanding transactions, which is what
      * wedges MSELECT reads on the next boot otherwise. */
     for (u32 attempt = 0; attempt < 3; attempt++) {
-    ccplex_boot_cpu0(CPU_STUB_ADDR, false);
+    if (_cpu0_boot_checked(CPU_STUB_ADDR, attempt > 0)) {
+        /* No point retrying: a rail that will not come up does not come up
+         * on the second ask, and the cluster is already powered down. */
+        dx_set("wifi_pcie", DX_FAIL, "CPU0 could not be powered");
+        return;
+    }
+    dx_set("cpu_complex", DX_PASS, "");
+    status_step("Wireless: waiting for CPU0");
 
     /* Wait for the stub to say anything at all, then for it to finish,
      * treating a stalled heartbeat rather than a fixed deadline as failure -
@@ -348,6 +541,16 @@ static void pcie_cpu_handoff(void)
             break;
         usleep(500);
         uart_poll_reboot();
+    }
+
+    /* The only snapshot taken with CPU0 having actually run at PLLX, i.e.
+     * under real load. A droop, or a status bit that moved since "powered",
+     * is the regulator struggling. Once per handoff, on the attempt that
+     * ends it, rather than on each retry (see _cpu0_boot_checked). */
+    if (done || !alive || attempt == 2) {
+        cpu_rail_t r;
+        _cpu_rail_read(&r);
+        _cpu_rail_log("running", &r);
     }
 
     if (!alive) {
@@ -398,11 +601,13 @@ static void pcie_cpu_handoff(void)
             mb->done = 0;
             mb->diag_mode = CPU_DIAG_READ_INTR;
             bpmp_mmu_maintenance(BPMP_MMU_MAINT_CLN_INV_WAY, false);
-            ccplex_boot_cpu0(CPU_STUB_ADDR, false);
-            for (u32 i = 0; i < 2000; i++) {
-                bpmp_mmu_maintenance(BPMP_MMU_MAINT_CLN_INV_WAY, false);
-                if (mb->done == CPU_MBOX_DONE) break;
-                usleep(500);
+            status_step("Wireless: CPU0 diagnostic boot");
+            if (_cpu0_boot_checked(CPU_STUB_ADDR, true) == NULL) {
+                for (u32 i = 0; i < 2000; i++) {
+                    bpmp_mmu_maintenance(BPMP_MMU_MAINT_CLN_INV_WAY, false);
+                    if (mb->done == CPU_MBOX_DONE) break;
+                    usleep(500);
+                }
             }
             mb->diag_mode = CPU_DIAG_NONE;
         }
@@ -806,6 +1011,7 @@ void probe_wifi_pcie(void)
         return;
     }
     g_wifi_armed = false;    /* one shot: re-arm deliberately each time */
+    status_step("Wireless: Wi-Fi PCIe setup");
 
     /* ---- entry state -------------------------------------------------- */
     u32 enb_u = CLOCK(CLK_RST_CONTROLLER_CLK_OUT_ENB_U);
@@ -934,6 +1140,7 @@ void probe_wifi_pcie(void)
     GP_MWR(GPH_MOE,  GPIO_PIN_0, 1);
 #endif
 
+    status_step("Wireless: WLAN power cycle");
     PINMUX_AUX(PMX_PH1_WL_REG_ON) = PINMUX_INPUT_ENABLE | PINMUX_PULL_DOWN;
     GP_MWR(GPH_MOUT, GPIO_PIN_1, 0);
     GP_MWR(GPH_MCNF, GPIO_PIN_1, 1);
@@ -1028,6 +1235,7 @@ void probe_wifi_pcie(void)
      * full host-side power episode - PERST# drop and a lane electrical
      * idle - which the stub's config reads depend on. The AFI stays in
      * reset through the cycle, exactly as U-Boot leaves it. */
+    status_step("Wireless: PCIe partition");
     LOG("  PCIe partition: powergate cycle (U-Boot's power_on)\n");
     CLOCK(CLK_RST_CONTROLLER_RST_DEV_U_SET) =
         BIT(CLK_U_PCIE) | BIT(CLK_U_AFI) | BIT(CLK_U_PCIEXCLK);
@@ -1057,6 +1265,7 @@ void probe_wifi_pcie(void)
      * The ordering is load-bearing: a padctl held in reset does not latch
      * writes and reverts every register when released, so a lane mux
      * programmed before this line is silently thrown away. */
+    status_step("Wireless: PCIe pad controller");
     pcie_padctl_ungate();
     if (!pcie_padctl_readable()) {
         log_color(COL_ERR,
@@ -1095,6 +1304,7 @@ void probe_wifi_pcie(void)
         XUSB_PADCTL(r) |= UPHY_MISC_TX_IDDQ_OVRD | UPHY_MISC_RX_IDDQ_OVRD;
     }
 
+    status_step("Wireless: PCIe lanes");
     pcie_lane_func(0, PADCTL_LANE_FUNC_PCIE_X1);
 #if WIFI_CFG_X4_LANES
     for (u32 l = 1; l <= 4; l++)
@@ -1164,6 +1374,7 @@ void probe_wifi_pcie(void)
 void probe_wifi_link(void)
 {
     HEADER("[Wi-Fi radio - PCIe link and endpoint]");
+    status_step("Wireless: Wi-Fi link (CPU0)");
 
     /* The endpoint's config space only answers when the full bring-up
      * precedes the handoff: a bare handoff re-run reads FFFF:FFFF,

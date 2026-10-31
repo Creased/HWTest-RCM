@@ -85,6 +85,30 @@ void status_set(const char *msg)
     gfx_con.fgcol = saved_fg;
 }
 
+/* A step INSIDE a probe, for when the console dies straight after it.
+ * status_set() only names the page, and pages share names - BT, Wi-Fi bring-up
+ * and the Wi-Fi link all spin as "Wireless" - so "it freezes in Wireless"
+ * could be any of them. This names the step on both sinks a tester might have:
+ *
+ *  - UART, synchronously: uart_send_crlf() waits for TX idle, so the line has
+ *    left the wire before the next, possibly fatal, access is made.
+ *  - the LCD status row. The framebuffer is in DRAM and the BPMP maps all of
+ *    DRAM write-back cached (bdk soc/bpmp.c mmu_entries), so a line drawn
+ *    just before a bus hang can sit in the cache and never be scanned out.
+ *    Clean it, or the screen shows the PREVIOUS step and blames the wrong one.
+ *
+ * Keep messages short: the line buffer is fixed. */
+void status_step(const char *msg)
+{
+    char line[96];
+    s_printf(line, "[step] %s\n", msg);
+    uart_send_crlf(UART_B, (u8 *)line, strlen(line));
+
+    status_set(msg);
+    if (g_show_status)
+        bpmp_mmu_maintenance(BPMP_MMU_MAINT_CLEAN_WAY, false);
+}
+
 /* ------------------------------------------------------------------------ */
 /* Pager + UART command loop                                                */
 

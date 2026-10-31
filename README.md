@@ -117,7 +117,7 @@ the detail when something needs chasing:
 | Power & charging | MAX77620 + GPIOs + regulators + 5V + battery + charger + USB-PD + thermal + fan |
 | Memory & clocks | LPDDR4 mode regs + CLK_RST raw + decoded rates |
 | Storage | SD + eMMC + partitions + health + GPT + BOOT0/pkg1 + AutoRCM + SD content scan, plus PRODINFO: serial, CAL0 body SHA-256, config ID, product model vs SoC, LCD vendor vs fitted panel, WLAN/BD MACs, battery lot, USB-C PD rev, touch IC, IMU, sticks, region, speaker calibration |
-| Wireless | Bluetooth radio: full CYW4356 power-up, then HCI over UART-D. Reports whether the radio answers and identifies itself. Then the WLAN half: a complete T210 PCIe bring-up, link training and endpoint enumeration (`14E4:43EC`) — enumeration is the verdict, the die-level ChipID is firmware-gated and left to the OS |
+| Wireless | Bluetooth radio: full CYW4356 power-up, then HCI over UART-D. Reports whether the radio answers and identifies itself. Then the WLAN half: a complete T210 PCIe bring-up, link training and endpoint enumeration (`14E4:43EC`) — enumeration is the verdict, the die-level ChipID is firmware-gated and left to the OS. The PCIe half runs on CPU0, so this is also the only page that powers the A57 cluster: its bring-up reads the CPU regulator back and bounds the RAM repair, and a dead CPU rail is reported on the Verdict's own **CPU complex** row rather than hanging the console |
 | Audio | ALC5639 codec identity over I2C-1 + an I2C-1 census + APE/AHUB power and clocks + AUD_MCLK, then a melody clocked out of I2S1: first phrase on the left speaker, second on the right, tail on the headphone jack — so a dead or weak output is obvious by ear, one output at a time |
 | Display | DSI panel ID + backlight PWM + GPIO state |
 | Inputs | FTS touch FW + electrical ITO open/short test + ALS + Joy-Con rails + buttons + AC adapter |
@@ -527,8 +527,11 @@ before assignment coming up with a garbage value.
 ## Host viewer (`host_tools/hwtest_viewer.py`)
 
 ImGui front-end that connects to the same UART and understands both payloads.
-For `hwtest.bin` it parses the page/section diagnostic dump plus `[boot]` and
-`[save]` runtime messages. For `hwtest_ram.bin` it presents RAM mode, training,
+For `hwtest.bin` it parses the page/section diagnostic dump plus `[boot]`,
+`[save]` and `[step]` runtime messages. `[step]` is the step a probe is about
+to take, sent before an access that may hang the console and also shown on
+its status line, so on a frozen console the Runtime page's **Last step** says
+where it stopped. For `hwtest_ram.bin` it presents RAM mode, training,
 live progress, completed passes, abort/final statistics, MTC flags and failing
 word records as a dedicated **RAM test** page. The raw UART transcript remains
 available unchanged in both cases.

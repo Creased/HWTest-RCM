@@ -170,6 +170,10 @@ static const char *_k_storage[] = { "emmc_health", "emmc_bus", "sd_bus",
                                     "xc_emmc_mode", "emmc_errors",
                                     "sd_errors", "gc_asic", NULL };
 static const char *_k_wireless[] = { "bt_hci", "wifi_pcie", NULL };
+/* Set by the Wi-Fi link page's CPU0 bring-up, the only code in this payload
+ * that powers the A57 cluster. Its own row so a dead CPU rail reads as that,
+ * not as a Wi-Fi fault - HOS needs the same cluster from its first stage. */
+static const char *_k_cpu[]     = { "cpu_complex", NULL };
 static const char *_k_audio[]   = { "audio_codec", "audio_clocks", "audio_beep", NULL };
 static const char *_k_display[] = { "dsi_id", "backlight", NULL };
 static const char *_k_inputs[]  = { "touch_id", "touch_ito", "als_id", NULL };
@@ -191,6 +195,7 @@ static const struct dx_macro _macros[] = {
     { "Battery       ", _k_battery,  PROBE_G_POWER,                     false },
     { "Thermal       ", _k_thermal,  PROBE_G_POWER,                     false },
     { "Storage       ", _k_storage,  PROBE_G_STORAGE,                   false },
+    { "CPU complex   ", _k_cpu,      PROBE_G_WIRELESS,                  false },
     { "Wireless      ", _k_wireless, PROBE_G_WIRELESS,                  false },
     { "Audio         ", _k_audio,    PROBE_G_AUDIO | PROBE_G_SOUND,     false },
     { "Display       ", _k_display,  PROBE_G_DISPLAY,                   false },

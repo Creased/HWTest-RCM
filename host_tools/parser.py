@@ -85,7 +85,7 @@ _RE_ROW = re.compile(r"^  ([^:]{1,30}?)\s*:\s*(.*)$")
 
 # Non-page UART protocols.  These are deliberately strict enough not to steal
 # arbitrary probe text from the normal page parser.
-_RE_RUNTIME_TAG = re.compile(r"^\[(boot|save)\]\s*(.*)$", re.IGNORECASE)
+_RE_RUNTIME_TAG = re.compile(r"^\[(boot|save|step)\]\s*(.*)$", re.IGNORECASE)
 _RE_RAM_TAG = re.compile(r"^\[ram\]\s*(.*)$", re.IGNORECASE)
 _RE_RAM_MODE = re.compile(
     r"^mode=(\w+)\s+patterns=(\d+)\s+mask=([0-9A-Fa-f]+)$")
@@ -295,18 +295,28 @@ class Parser:
         section.rows.append(Row(key=key, value=value, severity=sev))
 
     def _feed_runtime_tag(self, kind: str, body: str) -> None:
+        kind = kind.lower()
         page = self.report.page("Runtime")
-        section = self._get_section(
-            page, "Boot" if kind.lower() == "boot" else "Save")
-        key = "State" if kind.lower() == "boot" else "Report"
+        section_name, key = {
+            "boot": ("Boot", "State"),
+            "save": ("Save", "Report"),
+            # status_step() in the firmware: the step a probe is about to
+            # take, sent before an access that may hang the console. On a
+            # frozen console the last one is the answer, so keep it.
+            "step": ("Step", "Last step"),
+        }[kind]
+        section = self._get_section(page, section_name)
         # Runtime breadcrumbs are state snapshots.  Raw UART retains the full
         # history; the structured page keeps the latest actionable state.
-        if kind.lower() == "save":
+        if kind == "save":
             sev = "ok" if re.search(r"\(\d+ bytes\)$", body) else "err"
         else:
             sev = "info"
         self._upsert_row(section, key, body or "(empty)", sev)
-        self.report.latest_page = "Runtime"
+        # Steps arrive in the middle of a page. Do not pull the viewer off
+        # the page being probed for each one.
+        if kind != "step":
+            self.report.latest_page = "Runtime"
 
     def _reset_ram_page_for_run(self) -> Page:
         page = self.report.page("RAM test")

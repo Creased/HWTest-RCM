@@ -128,6 +128,7 @@ u32 health_color(int v, int warn_lo, int warn_hi, int err_lo, int err_hi);
 const char *panel_model_name(u16 dec);
 const char *_pmx_pull_str(u32 pmx);
 void status_set(const char *msg);
+void status_step(const char *msg);
 void uart_poll_reboot(void);
 void msleep_poll(u32 ms);
 int save_report(void);
