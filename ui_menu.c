@@ -45,7 +45,7 @@ static void _footer(const char *action)
     gfx_con.fntsz = 16;
     gfx_con_setcol(COL_DEFAULT, 1, COL_BG);
     gfx_con_setpos(UI_TITLE_X, UI_FOOTER_Y);
-    gfx_printf("VOL+: Up   VOL-: Down   PWR: %s", action);
+    gfx_printf("VOL-: Up   VOL+: Down   PWR: %s", action);
 }
 
 static void _menu_row(int x, int y, int w, int h, bool selected, const char *text)
@@ -147,9 +147,11 @@ static int _custom_menu(u32 *mask)
         u8 btn = btn_read();
         int activated = -1;
 
-        if (btn & BTN_VOL_UP) {
+        /* VOL+ moves forward (down the list), as it turns the page in the
+         * pager; VOL- goes back. */
+        if (btn & BTN_VOL_DOWN) {
             selected = (selected + CUSTOM_N + 1) % (CUSTOM_N + 2);
-        } else if (btn & BTN_VOL_DOWN) {
+        } else if (btn & BTN_VOL_UP) {
             selected = (selected + 1) % (CUSTOM_N + 2);
         } else if (btn & BTN_POWER) {
             activated = selected;
@@ -194,9 +196,9 @@ void ui_launcher(ui_selection_t *selection)
             u8 btn = btn_read();
             int activated = -1;
 
-            if (btn & BTN_VOL_UP) {
+            if (btn & BTN_VOL_DOWN) {           /* VOL+ forward, as above */
                 selected = (selected + 3) % 4;
-            } else if (btn & BTN_VOL_DOWN) {
+            } else if (btn & BTN_VOL_UP) {
                 selected = (selected + 1) % 4;
             } else if (btn & BTN_POWER) {
                 activated = selected;

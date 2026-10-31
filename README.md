@@ -59,7 +59,7 @@ matching memory-training backend from Tegra `GP_HIDREV`.
 
 The payload contains both public Atmosphere Erista and Mariko MTC implementations but **does not run both**. `GP_HIDREV` is checked before `hw_init()`; T210 selects the Erista path and T210B01 selects the Mariko path. Unknown revisions stop before memory training. Both paths use bounded PLL / EMC / DLL waits so a failed memory interface becomes a reported training failure instead of an infinite wait.
 
-The payload opens a persistent physical-key menu: **Quick test**, **Advanced test**, **Custom test**, and **Power off**. VOL+ moves up, VOL- moves down, and POWER selects or toggles. There is no timed mode-selection window. **VOL-** aborts a running test after the current 4 MiB region; after an abort or completed run, POWER returns to the RAM-test menu and VOL- powers off.
+The payload opens a persistent physical-key menu: **Quick test**, **Advanced test**, **Custom test**, and **Power off**. VOL+ moves down, VOL- moves up, and POWER selects or toggles. There is no timed mode-selection window. **VOL-** aborts a running test after the current 4 MiB region; after an abort or completed run, POWER returns to the RAM-test menu and VOL- powers off.
 
 | Mode | Coverage |
 |---|---|
@@ -82,7 +82,8 @@ touch, thermal, or other diagnostic subsystems are initialized:
 | **Custom test** | Choose which hardware diagnostic groups should run |
 | **Power off** | Request a clean PMIC power-off without running diagnostics |
 
-VOL+ moves up, VOL- moves down, and POWER selects. For RAM test the launcher
+VOL+ moves down, VOL- moves up (VOL+ always goes forward, here and in the
+pager), and POWER selects. For RAM test the launcher
 searches `bootloader/payloads/hwtest_ram.bin`, `hwtest_ram.bin`, then
 `/hwtest_ram.bin`. If RAM payload loading fails, control returns to the launcher
 instead of starting the hardware sweep.

@@ -598,7 +598,7 @@ static void menu_footer(const char *action)
     gfx_con.fntsz = 16;
     gfx_con_setcol(COL_DEFAULT, 1, COL_BG);
     gfx_con_setpos(UI_TITLE_X, UI_FOOTER_Y);
-    gfx_printf("VOL+: Up   VOL-: Down   PWR: %s", action);
+    gfx_printf("VOL-: Up   VOL+: Down   PWR: %s", action);
     set_color(COL_TEXT);
 }
 
@@ -669,9 +669,11 @@ static bool custom_menu(void)
         u8 btn = btn_read();
         int activated = -1;
 
-        if (btn & BTN_VOL_UP)
+        /* VOL+ moves forward (down the list), the same way as hwtest's
+         * launcher and pager; VOL- goes back. */
+        if (btn & BTN_VOL_DOWN)
             selected = (selected + PAT_COUNT + 1) % (PAT_COUNT + 2);
-        else if (btn & BTN_VOL_DOWN)
+        else if (btn & BTN_VOL_UP)
             selected = (selected + 1) % (PAT_COUNT + 2);
         else if (btn & BTN_POWER)
             activated = selected;
@@ -720,9 +722,9 @@ static void choose_mode(void)
             u8 btn = btn_read();
             int activated = -1;
 
-            if (btn & BTN_VOL_UP)
+            if (btn & BTN_VOL_DOWN)             /* VOL+ forward, as above */
                 selected = (selected + 3) % 4;
-            else if (btn & BTN_VOL_DOWN)
+            else if (btn & BTN_VOL_UP)
                 selected = (selected + 1) % 4;
             else if (btn & BTN_POWER)
                 activated = selected;
