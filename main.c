@@ -358,21 +358,29 @@ static void render_page(int idx)
     g_pages[idx].fn();
 }
 
-/* One byte of push-back, so uart_poll_reboot() can look at an incoming
- * character without stealing it from the pager. */
-static int g_uart_pushback = -1;
+/* Push-back FIFO, so uart_poll_reboot() can drain the UART looking for 'R'
+ * without stealing anything from the pager. A single slot used to do this,
+ * and one stray key queued ahead of the 'R' parked in it for good: every
+ * poll re-read that same byte and never reached the 'R' behind it. */
+#define UART_PUSHBACK_N 16
+static u8  g_uart_pb[UART_PUSHBACK_N];
+static u32 g_uart_pb_head, g_uart_pb_tail;
 
 static int uart_getc(void)
 {
-    if (g_uart_pushback >= 0) {
-        int c = g_uart_pushback;
-        g_uart_pushback = -1;
-        return c;
-    }
+    if (g_uart_pb_tail != g_uart_pb_head)
+        return g_uart_pb[g_uart_pb_tail++ % UART_PUSHBACK_N];
     u8 c;
     if (uart_recv(UART_B, &c, 1) != 1)
         return -1;
     return c;
+}
+
+/* Hand a byte back to uart_getc(); dropped if the FIFO is full. */
+static void uart_ungetc(u8 c)
+{
+    if (g_uart_pb_head - g_uart_pb_tail < UART_PUSHBACK_N)
+        g_uart_pb[g_uart_pb_head++ % UART_PUSHBACK_N] = c;
 }
 
 /* Reboot the console. Split out of the pager so it can be reached from
@@ -412,16 +420,16 @@ static void do_reboot(void)
  * point to push a new build, so this is called from the per-probe status
  * tick and from every long wait.
  *
- * Anything that isn't 'R' is pushed back so the pager still sees it. */
+ * Everything waiting is drained; anything that isn't 'R' is pushed back so
+ * the pager still sees it (beyond the FIFO's depth it is dropped). */
 void uart_poll_reboot(void)
 {
-    int c = uart_getc();
-    if (c < 0)
-        return;
-    if (c == 'R')
-        do_reboot();
-    else if (g_uart_pushback < 0)
-        g_uart_pushback = c;
+    u8 c;
+    while (uart_recv(UART_B, &c, 1) == 1) {
+        if (c == 'R')
+            do_reboot();
+        uart_ungetc(c);
+    }
 }
 
 /* msleep() that stays responsive to a reboot request. Use instead of a bare
@@ -652,11 +660,9 @@ void ipl_main(void)
                 else if (next == 'p' || next == 'b') delta--;
                 else if (next < 0) break;       /* FIFO empty, render now */
                 else {
-                    /* Different command queued. uart_recv has already
-                     * consumed the byte and it can't be pushed back to
-                     * the FIFO, so it is dropped here; following a nav
-                     * burst with another command in one write is rare
-                     * in practice. */
+                    /* Different command queued: hand it back so it runs
+                     * after this page renders. */
+                    uart_ungetc((u8)next);
                     break;
                 }
             }
@@ -707,6 +713,17 @@ void ipl_main(void)
                 gname[glen++] = (char)b;
             }
             gname[glen] = 0;
+            /* An over-long name: discard the rest of the line, or what is
+             * left of it would be parsed as commands ('q' powers off). */
+            while (glen == sizeof(gname) - 1) {
+                int b = uart_getc();
+                if (b < 0) {
+                    if ((s32)(get_tmr_us() - deadline) > 0) break;
+                    msleep(2);
+                    continue;
+                }
+                if (b == '\n' || b == '\r') break;
+            }
             if (glen > 0) {
                 bool prev = _log_uart_only;
                 _log_uart_only = true;   /* suppress LCD writes */

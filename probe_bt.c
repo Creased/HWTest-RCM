@@ -160,12 +160,20 @@ static bool bt_send(const u8 *buf, u32 len)
 static int bt_getb(u32 deadline_us)
 {
     volatile uart_t *u = BT_UART_REGS;
+    /* The arms add up to ~9 s of waiting; look at UART-B for the host's
+     * 'R' about once a millisecond. UART-D's 16-byte FIFO covers the
+     * 250 us an empty poll costs. */
+    u32 next_poll = get_tmr_us() + 1000u;
 
     for (;;) {
         if (u->UART_LSR & UART_LSR_RDR)
             return (int)(u->UART_THR_DLAB & 0xFF);
         if ((s32)(deadline_us - get_tmr_us()) <= 0)
             return -1;
+        if ((s32)(get_tmr_us() - next_poll) >= 0) {
+            uart_poll_reboot();
+            next_poll += 1000u;
+        }
     }
 }
 
