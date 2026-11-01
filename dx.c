@@ -39,10 +39,19 @@ void dx_set(const char *key, dx_sev_t sev, const char *fmt, ...)
     }
     f->sev = sev;
     if (fmt) {
+        /* bdk's s_vprintf has no length bound, so render into scratch and
+         * truncate: a reason one byte over the detail field used to run
+         * into the next entry's key pointer. */
+        static char tmp[256];
         va_list ap;
         va_start(ap, fmt);
-        s_vprintf(f->detail, fmt, ap);
+        s_vprintf(tmp, fmt, ap);
         va_end(ap);
+        u32 n = strlen(tmp);
+        if (n > sizeof(f->detail) - 1)
+            n = sizeof(f->detail) - 1;
+        memcpy(f->detail, tmp, n);
+        f->detail[n] = 0;
     } else {
         f->detail[0] = 0;
     }

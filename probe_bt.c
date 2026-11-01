@@ -855,6 +855,9 @@ restore_state:
         } else {
             LOG("  Result        : inconclusive - UART-D loopback failed\n");
             LOG("  (controller-side fault, says nothing about the radio)\n");
+            /* Not a radio fault, but not a pass either: the verdict used to
+             * show nothing at all for this case. */
+            dx_set("bt_hci", DX_WARN, "inconclusive (loopback failed)");
         }
         return;
     }

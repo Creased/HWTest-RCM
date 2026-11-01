@@ -19,9 +19,18 @@
 /* both sections - cross-checks plus verdict aggregate - in one navigable   */
 /* LCD page. The xc_* keys are dx_set here and consumed by the aggregator   */
 /* immediately below. */
-static void _emit_xchecks(void)
+static void _xchecks_power(void)
 {
-    HEADER("[Cross-checks]");
+    if (!(g_run_mask & PROBE_G_POWER))
+        return;
+    /* A charger that does not answer reads as "no VBUS", which would turn
+     * into a spurious observer disagreement here; its own row already
+     * says what is wrong. */
+    const dx_finding_t *chg = dx_get("charger_id");
+    if (chg && chg->sev == DX_FAIL) {
+        log_color(COL_WARN, "  (charger dead - VBUS checks skipped)\n");
+        return;
+    }
 
     /* === A. VBUS / ACOK / USB-PD consistency ===
      * Three independent chips observe the USB-C input:
@@ -109,6 +118,13 @@ static void _emit_xchecks(void)
             ok ? "" : "BQ charging but gauge sees %d mA", current_ma);
     }
 
+}
+
+static void _xchecks_storage(void)
+{
+    if (!(g_run_mask & PROBE_G_STORAGE))
+        return;
+
     /* === C. eMMC HS400 mode requires 8-bit bus ===
      * HS400 is the highest-speed eMMC mode and is only valid on 8-bit.
      * If init_mode landed at HS400 but bus_width came back narrower
@@ -131,6 +147,16 @@ static void _emit_xchecks(void)
             ok ? "" : "HS400 active but bus %d-bit",
             is_8bit ? 8 : (bw == SDMMC_BUS_WIDTH_4 ? 4 : 1));
     }
+}
+
+/* Each cross-check needs only its own group: A and B read Power-page
+ * hardware, C the eMMC. Gating all three on Power AND Storage threw the
+ * charger checks away on a Power-only custom run for no reason. */
+static void _emit_xchecks(void)
+{
+    HEADER("[Cross-checks]");
+    _xchecks_power();
+    _xchecks_storage();
 }
 
 /* ------------------------------------------------------------------------ */
@@ -210,13 +236,12 @@ void probe_verdict(void)
     /* Cross-checks first - they dx_set() the xc_* keys that the verdict
      * aggregator below picks up. Both sections live on the same Verdict
      * pane (single page header `--- Verdict ---` from run_all_probes). */
-    if ((g_run_mask & (PROBE_G_POWER | PROBE_G_STORAGE)) ==
-        (PROBE_G_POWER | PROBE_G_STORAGE)) {
+    if (g_run_mask & (PROBE_G_POWER | PROBE_G_STORAGE)) {
         _emit_xchecks();
     } else {
         HEADER("[Cross-checks]");
         log_color(COL_WARN,
-            "  custom run: cross-checks skipped unless Power + Storage are selected\n");
+            "  custom run: cross-checks need Power or Storage selected\n");
     }
 
     HEADER("[Verdict]");
@@ -229,7 +254,10 @@ void probe_verdict(void)
                                    : selected_groups == 0)
             continue;
         int p = 0, w = 0, f = 0;
+        /* The reason shown is the worst finding, not the first in list
+         * order: a FAIL row used to carry an earlier WARN's text. */
         const char *why = NULL;
+        bool why_is_fail = false;
         for (const char *const *k = mc->keys; *k; k++) {
             const dx_finding_t *fnd = dx_get(*k);
             if (!fnd) continue;     /* probe didn't run / didn't set */
@@ -241,7 +269,10 @@ void probe_verdict(void)
                 break;
             case DX_FAIL:
                 f++;
-                if (!why) why = fnd->detail[0] ? fnd->detail : *k;
+                if (!why_is_fail) {
+                    why = fnd->detail[0] ? fnd->detail : *k;
+                    why_is_fail = true;
+                }
                 break;
             }
         }
