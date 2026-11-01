@@ -132,12 +132,16 @@ void probe_storage(void)
             "  app class    : %s\n", app_str);
         /* AU (Allocation Unit) sizes: relevant for filesystem alignment
          * and large-file write performance. uhs_au_size takes precedence
-         * if set (UHS-mode AU); falls back to legacy au_size. Encoded as
-         * 4-bit tier where N -> 16 KiB << N. */
+         * if set (UHS-mode AU); falls back to legacy au_size. The SD spec's
+         * table is not a plain power of two past code 0xA (bdk sdmmc.c
+         * decodes it the same way). */
+        static const u16 kAuKiB[] = { 0, 16, 32, 64, 128, 256, 512, 1024,
+                                      2048, 4096, 8192, 12288, 16384,
+                                      24576, 32768 };
         u8 au = sd_storage.ssr.uhs_au_size ? sd_storage.ssr.uhs_au_size
                                            : sd_storage.ssr.au_size;
         if (au && au <= 14)
-            LOG("  AU size      : %d KiB%s\n", 16 << (au - 1),
+            LOG("  AU size      : %d KiB%s\n", kAuKiB[au],
                 sd_storage.ssr.uhs_au_size ? " (UHS)" : "");
     } else {
         log_color(COL_WARN, "  sd_initialize FAILED (ejected? unsupported?)\n");
@@ -854,20 +858,27 @@ void probe_emmc_health(void)
      * 0x0B alone means the estimated lifetime has been exceeded. Highlight
      * 0x09/0x0A as late-life WARN and reserve FAIL for exceeded lifetime or
      * PRE_EOL urgent. Values above 0x0B are reserved/unknown. */
-    bool a_valid = a <= 0x0B;
-    bool b_valid = b <= 0x0B;
-    u32 acol = !a_valid ? COL_WARN : a == 0x0B ? COL_ERR : a >= 0x09 ? COL_WARN : COL_OK;
-    u32 bcol = !b_valid ? COL_WARN : b == 0x0B ? COL_ERR : b >= 0x09 ? COL_WARN : COL_OK;
+    /* 0x00 is JEDEC "not defined": the part does not report that memory
+     * type (some Switch eMMCs leave B at 0x00). Neither 0-10 % used
+     * nor a fault, so it is shown as such and kept out of the verdict. */
+    bool a_valid = a >= 1 && a <= 0x0B;
+    bool b_valid = b >= 1 && b <= 0x0B;
+    u32 acol = !a ? COL_DEFAULT : !a_valid ? COL_WARN :
+               a == 0x0B ? COL_ERR : a >= 0x09 ? COL_WARN : COL_OK;
+    u32 bcol = !b ? COL_DEFAULT : !b_valid ? COL_WARN :
+               b == 0x0B ? COL_ERR : b >= 0x09 ? COL_WARN : COL_OK;
     if (a_valid)
         log_color(acol, "  Life used A  : 0x%02X (%d-%d%%)\n", a,
-            a == 0 ? 0 : (a - 1) * 10, a == 0 ? 10 : a >= 0x0A ? 100 : a * 10);
+            (a - 1) * 10, a >= 0x0A ? 100 : a * 10);
     else
-        log_color(acol, "  Life used A  : 0x%02X (reserved / unknown)\n", a);
+        log_color(acol, "  Life used A  : 0x%02X (%s)\n", a,
+            a ? "reserved / unknown" : "not reported");
     if (b_valid)
         log_color(bcol, "  Life used B  : 0x%02X (%d-%d%%)\n", b,
-            b == 0 ? 0 : (b - 1) * 10, b == 0 ? 10 : b >= 0x0A ? 100 : b * 10);
+            (b - 1) * 10, b >= 0x0A ? 100 : b * 10);
     else
-        log_color(bcol, "  Life used B  : 0x%02X (reserved / unknown)\n", b);
+        log_color(bcol, "  Life used B  : 0x%02X (%s)\n", b,
+            b ? "reserved / unknown" : "not reported");
     LOG("  EXT_CSD rev  : %d\n", emmc_storage.ext_csd.rev);
     LOG("  Card type    : 0x%02X\n", emmc_storage.ext_csd.card_type);
     LOG("  Cache size   : %d KiB\n", emmc_storage.ext_csd.cache_size / 1024);
@@ -923,7 +934,8 @@ void probe_emmc_health(void)
      * (0x09/0x0A) is late-life service WARN, not device failure. */
     bool life_exceeded = (a_valid && a == 0x0B) || (b_valid && b == 0x0B);
     bool life_late = (a_valid && a >= 0x09) || (b_valid && b >= 0x09);
-    bool life_unknown = !a_valid || !b_valid;
+    /* Unknown is a reserved value, or neither type reported at all. */
+    bool life_unknown = a > 0x0B || b > 0x0B || (!a && !b);
     dx_set("emmc_health",
         (eol == 3 || life_exceeded) ? DX_FAIL :
         (eol == 2 || life_late || life_unknown) ? DX_WARN : DX_PASS,
@@ -1104,12 +1116,13 @@ void probe_boot0_pkg1(void)
     /* Anti-downgrade cross-check: HOS at boot compares the burnt fuse
      * count against the minimum its pkg1 requires. Two failure modes:
      *
-     *   burnt < required  -> eMMC was restored from a console with
-     *                        older HOS that hadn't yet burnt the fuses
-     *                        the current pkg1 needs. HOS refuses boot
-     *                        because it thinks the bootrom is too old.
-     *                        FAIL — the only fix is to downgrade pkg1
-     *                        to match, or burn fuses manually.
+     *   burnt < required  -> the pkg1 is newer than the fuses: a console
+     *                        updated under CFW with fuse burning blocked
+     *                        (Atmosphère's default), or an eMMC restored
+     *                        from a newer dump. OFW's pkg1 burns the
+     *                        missing fuses on its next boot and carries on,
+     *                        so this is a WARN that names the consequence,
+     *                        not a fault.
      *
      *   burnt > required  -> the inverse: this console was once on a
      *                        newer HOS that burnt the next anti-
@@ -1136,9 +1149,9 @@ void probe_boot0_pkg1(void)
         };
         int min_f = kFusesByIdx[pk1_hos_idx];
         dx_set("fuses_pkg1",
-            burnt != min_f ? DX_FAIL : DX_PASS,
-            burnt < min_f ? "%d burnt < %d (HOS pkg1 too NEW for this console)" :
-            burnt > min_f ? "%d burnt > %d (OFW won't boot - CFW only)" : "",
+            burnt > min_f ? DX_FAIL : burnt < min_f ? DX_WARN : DX_PASS,
+            burnt < min_f ? "%d burnt < %d: OFW burns on next boot" :
+            burnt > min_f ? "%d burnt > %d: OFW won't boot, CFW only" : "",
             burnt, min_f);
     }
 
