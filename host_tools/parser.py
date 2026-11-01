@@ -119,7 +119,7 @@ _WARN_KEYWORDS = (
     # them yellow, and matching them here turned every GPIO census row
     # with no-pull or n/a orange in the host viewer.
     "warn", "advisory", "aging", "suspect", "unknown", "aborted",
-    "not present", "not read", "skipped",
+    "not present", "not read", "skipped", "not built", "inconclusive",
     "downgrade", "floating", "unverified", "cannot",
     # PRODINFO / BIS-keys probe failure modes. "invalid" covers
     # "loaded but invalid", "gibberish" + "encrypted" cover the two
@@ -135,9 +135,15 @@ _OK_KEYWORDS = (
     # Falls below the WARN check so "loaded but invalid" still surfaces
     # yellow.
     "loaded",
-    # "pass" comes from the new macro-grouped verdict ("Charger: pass").
-    "pass",
 )
+
+# "pass" comes from the macro-grouped verdict ("Charger: pass"). Matched
+# whole, unlike the lists above, so "passthrough" does not green a row.
+_RE_OK_PASS = re.compile(r"\bpass(?:ed)?\b", re.IGNORECASE)
+
+# A probe that could not reach a verdict says so; the reason it gives often
+# contains "failed" (a loopback, a read) and must not be shown as a FAIL.
+_RE_INCONCLUSIVE = re.compile(r"\binconclusive\b", re.IGNORECASE)
 
 # Counter-summary line emitted by probe_verdict: '8 pass, 0 warn, 0 fail'.
 # A naive substring search hits the literal 'fail' / 'warn' words and
@@ -184,6 +190,9 @@ def classify(value: str) -> str:
             return "warn"
         return "ok"
 
+    if _RE_INCONCLUSIVE.search(value):
+        return "warn"
+
     # If the value reports the *absence* of a fail condition ("no faults",
     # "0 fail", "no carrier"), classify as ok directly, the row is good
     # news. Without this short-circuit, the negated text would get stripped
@@ -202,7 +211,7 @@ def classify(value: str) -> str:
         return "err"
     if _kw_match(value, _WARN_KEYWORDS):
         return "warn"
-    if _kw_match(value, _OK_KEYWORDS):
+    if _kw_match(value, _OK_KEYWORDS) or _RE_OK_PASS.search(value):
         return "ok"
     return "info"
 

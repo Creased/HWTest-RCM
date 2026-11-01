@@ -30,6 +30,7 @@ one go on connect).
 from __future__ import annotations
 
 import argparse
+import codecs
 import queue
 import sys
 import threading
@@ -115,12 +116,17 @@ class SerialReader:
         self.last_error = None
         self.connected = True
         self.rx_bytes = 0
-        self._stop.clear()
+        # Each reader owns its stop event: a shared one that open_* cleared
+        # could revive a previous thread still blocked in read(), which then
+        # fed the new port's bytes into the queue alongside ours.
+        stop = threading.Event()
+        self._stop = stop
         self._thread = threading.Thread(
-            target=self._serial_loop, daemon=True, name="hwtest-serial-reader")
+            target=self._serial_loop, args=(self._ser, stop), daemon=True,
+            name="hwtest-serial-reader")
         self._thread.start()
 
-    def _serial_loop(self) -> None:
+    def _serial_loop(self, ser, stop: threading.Event) -> None:
         # Pyserial gotcha: `Serial.in_waiting` on some USB-UART drivers
         # (FTDI in particular) under-reports because bytes sit in the
         # chip's internal buffer until the latency timer fires (~16 ms
@@ -131,21 +137,26 @@ class SerialReader:
         # bytes have arrived within the timeout, up to N. With timeout
         # 0.05 s and 4096-byte reads we drain promptly and spend the
         # rest of each tick blocked in the kernel rather than spinning.
-        assert self._ser is not None
         try:
-            self._ser.reset_input_buffer()
+            ser.reset_input_buffer()
         except (OSError, serial.SerialException):
             pass
-        while not self._stop.is_set():
+        # Incremental decoder: a 4096-byte chunk can end mid-sequence, and
+        # decoding each chunk on its own turned those into U+FFFD.
+        dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        while not stop.is_set():
             try:
-                data = self._ser.read(4096)
+                data = ser.read(4096)
             except (OSError, serial.SerialException) as e:
-                self.last_error = f"read: {e}"
-                self.connected = False
+                if not stop.is_set():
+                    self.last_error = f"read: {e}"
+                    self.connected = False
                 return
             if data:
                 self.rx_bytes += len(data)
-                self.q.put(data.decode("utf-8", errors="replace"))
+                text = dec.decode(data)
+                if text:
+                    self.q.put(text)
 
     def send(self, byte: bytes) -> None:
         if self._ser is None or not self.connected:
@@ -166,29 +177,33 @@ class SerialReader:
         self._replay_path = path
         self.last_error = None
         self.connected = True
-        self._stop.clear()
+        stop = threading.Event()
+        self._stop = stop
         self._thread = threading.Thread(
-            target=self._replay_loop, daemon=True, name="hwtest-replay-reader")
+            target=self._replay_loop, args=(path, stop), daemon=True,
+            name="hwtest-replay-reader")
         self._thread.start()
 
-    def _replay_loop(self) -> None:
-        assert self._replay_path is not None
+    def _replay_loop(self, path: Path, stop: threading.Event) -> None:
         try:
-            text = self._replay_path.read_text(encoding="utf-8", errors="replace")
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
             self.last_error = f"replay read: {e}"
             self.connected = False
             return
         # Honour `# delay <ms>` directives so a recorded session can play
-        # back at its original cadence.
+        # back at its original cadence. The sleep is interruptible so a
+        # close() during a long delay does not leave the thread to resume
+        # and push the old file's lines into the next session.
         for line in text.splitlines(keepends=True):
-            if self._stop.is_set():
+            if stop.is_set():
                 return
             stripped = line.strip()
             if stripped.startswith("# delay "):
                 try:
                     ms = int(stripped.split()[2])
-                    time.sleep(ms / 1000.0)
+                    if stop.wait(ms / 1000.0):
+                        return
                 except (ValueError, IndexError):
                     pass
                 continue
@@ -200,12 +215,18 @@ class SerialReader:
 
     def close(self) -> None:
         self._stop.set()
+        thread = self._thread
         if self._ser is not None:
             try:
                 self._ser.close()
             except OSError:
                 pass
             self._ser = None
+        # The serial read() returns within its 50 ms timeout and the replay
+        # sleep is interruptible, so this is short; a timeout keeps a wedged
+        # driver from freezing the UI.
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=0.5)
         self._thread = None
         self.connected = False
         self._replay_path = None
