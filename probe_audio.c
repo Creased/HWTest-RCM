@@ -160,8 +160,8 @@ void probe_audio(void)
          * side at all. */
         log_color(COL_WARN, "  Codec ID     : no answer at 0x1C after %d ms\n",
                   CODEC_LDO1_SETTLE_MS + CODEC_POLL_MS);
-        LOG("  (bus is up - every other I2C_1 device answers - so this is\n");
-        LOG("   the codec side: not populated, unpowered or faulty)\n");
+        LOG("  (if the charger and gauge answer on the Power page, I2C_1 is\n");
+        LOG("   up and this is the codec: not populated, unpowered, faulty)\n");
         dx_set("audio_codec", DX_WARN, "silent at 0x1C after LDO1_EN + %d ms",
                CODEC_LDO1_SETTLE_MS + CODEC_POLL_MS);
         return;

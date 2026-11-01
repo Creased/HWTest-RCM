@@ -30,7 +30,11 @@ void probe_fuses(void)
         fuse_read_odm(4), fuse_read_dramid(true));
     LOG("  HW state     : %s\n",
         fuse_read_hw_state() == FUSE_NX_HW_STATE_PROD ? "Prod" : "Dev");
-    LOG("  HW type      : %d\n", fuse_read_hw_type());
+    {
+        static const char *kHwType[] = { "Icosa", "Iowa", "Hoag", "Aula" };
+        u32 ht = fuse_read_hw_type();
+        LOG("  HW type      : %d (%s)\n", ht, ht < 4 ? kHwType[ht] : "?");
+    }
     LOG("  Keygen rev   : %d\n", fuse_read_odm_keygen_rev());
 
     bool patched = fuse_check_patched_rcm();

@@ -680,11 +680,8 @@ void probe_uart_b(void)
     } else if (low > 0 && high == 0) {
         log_color(COL_ERR,
             "    Verdict      : line stuck LOW - shifter unpowered or shorted to GND\n");
-    } else {
-        log_color(COL_WARN,
-            "    Verdict      : mixed (%d high / %d low / no edges) - line floating\n",
-            high, low);
     }
+    /* No fourth case: with no edges every sample was the same level. */
 
 }
 #endif  /* !JC_PROBE */

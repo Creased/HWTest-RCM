@@ -41,9 +41,10 @@ char *emmcsn_path_impl(char *path, char *sub_dir, char *filename,
     f_mkdir(path);
 
     /* optional sub-directory, expected to start with '/' if non-empty */
-    strcat(path, sub_dir);
-    if (sub_dir && *sub_dir)
+    if (sub_dir && *sub_dir) {
+        strcat(path, sub_dir);
         f_mkdir(path);
+    }
 
     /* /filename */
     strcat(path, "/");

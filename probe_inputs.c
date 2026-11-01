@@ -72,19 +72,12 @@ void probe_inputs(void)
      * skip the unlatch dance and just sample the GPIOs directly.
      * Active-low because a connected Joy-Con (or chassis adapter that
      * shorts the detect line) pulls PH6/PE6 to GND. */
-    int jc_r = gpio_read(GPIO_PORT_H, GPIO_PIN_6);
-    int jc_l = gpio_read(GPIO_PORT_E, GPIO_PIN_6);
-    log_color(!jc_r ? COL_OK : COL_DEFAULT,
-        "  JC-R rail  : %s    (PH6=%d, IsAttached active-low)\n",
-        !jc_r ? "ATTACHED" : "empty   ", jc_r);
-    log_color(!jc_l ? COL_OK : COL_DEFAULT,
-        "  JC-L rail  : %s    (PE6=%d, IsAttached active-low)\n",
-        !jc_l ? "ATTACHED" : "empty   ", jc_l);
+    /* The Joy-Con rails are on their own page (probe_joycon). */
 
     /* MAX77620 power-button + wake-source configuration. Two registers:
      *   ONOFFCNFG1 (0x41):
      *     bit 7    SFT_RST   - 1=SFT shutdown on long-press / 0=hard reset
-     *     bits 5:3 MRT       - manual reset hold time (encoded 2..16 s)
+     *     bits 5:3 MRT       - manual reset hold time code
      *     bit 2    SLPEN     - SLEEP enable
      *     bit 1    PWR_OFF   - power-off command latch
      *   ONOFFCNFG2 (0x42):
@@ -102,12 +95,12 @@ void probe_inputs(void)
     u8 cnfg1 = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_ONOFFCNFG1);
     u8 cnfg2 = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_ONOFFCNFG2);
     u8 mrt   = (cnfg1 & MAX77620_ONOFFCNFG1_MRT_MASK) >> MAX77620_ONOFFCNFG1_MRT_SHIFT;
-    /* MRT encoding: each tick = 2 s, range 2..16 s. Switch HOS programs
-     * 8 s (mrt code 011) — a held POWER triggers a hard reset after 8 s,
-     * matching the documented "press and hold POWER for 8 seconds to
-     * force-reset" behavior. */
-    LOG("  ONOFFCNFG1 : 0x%02X (MRT=%d -> %d s, %s)\n",
-        cnfg1, mrt, (mrt + 1) * 2,
+    /* MRT is printed as its raw code: the code-to-seconds table is in the
+     * datasheet only, and the one data point in bdk (hw_init writes code 3
+     * "for forced shutdown off to 6s") contradicts the linear 2 s/tick
+     * decode this used to print. HOS and hekate both program code 3. */
+    LOG("  ONOFFCNFG1 : 0x%02X (MRT code %d%s, %s)\n",
+        cnfg1, mrt, mrt == 3 ? " = stock" : "",
         (cnfg1 & MAX77620_ONOFFCNFG1_SFT_RST) ? "long-press = SFT shutdown"
                                               : "long-press = hard reset");
     LOG("  ONOFFCNFG2 : 0x%02X (wake:%s%s%s%s%s%s%s)\n", cnfg2,
@@ -304,21 +297,26 @@ void probe_als(void)
         id_ok ? " (BH1730 verified)" : " (UNEXPECTED, no chip / I2C fault?)");
     dx_set("als_id", id_ok ? DX_PASS : DX_FAIL,
         id_ok ? "" : "ID 0x%02X != BH1730", id);
-    if (!id_ok)
-        return;
+    if (id_ok) {
+        LOG("  Gain / cycle : %dx / %d\n",
+            (int[]){1,2,64,128}[ctxt.gain & 0x3], ctxt.cycle);
 
-    LOG("  Gain / cycle : %dx / %d\n",
-        (int[]){1,2,64,128}[ctxt.gain & 0x3], ctxt.cycle);
+        /* Wait one integration window (~103 ms at default cycle=38) so the
+         * first ADC sample is meaningful. The driver's continuous-conversion
+         * mode will keep updating after this. */
+        msleep_poll(110);
+        get_als_lux(&ctxt);
+        log_color(ctxt.over_limit ? COL_WARN : COL_OK,
+            "  Visible      : %d counts%s\n", ctxt.vi_light,
+            ctxt.over_limit ? " (saturated)" : "");
+        LOG("  IR           : %d counts\n", ctxt.ir_light);
+        LOG("  Lux          : %d\n", ctxt.lux);
+    }
 
-    /* Wait one integration window (~103 ms at default cycle=38) so the
-     * first ADC sample is meaningful. The driver's continuous-conversion
-     * mode will keep updating after this. */
-    msleep_poll(110);
-    get_als_lux(&ctxt);
-    log_color(ctxt.over_limit ? COL_WARN : COL_OK,
-        "  Visible      : %d counts%s\n", ctxt.vi_light,
-        ctxt.over_limit ? " (saturated)" : "");
-    LOG("  IR           : %d counts\n", ctxt.ir_light);
-    LOG("  Lux          : %d\n", ctxt.lux);
+    /* Leave the sensor as found - conversion stopped, LDO6 off - as the
+     * touch probe does for its controller. bdk has no als_power_off, and
+     * this used to walk away with the ALS converting on a live rail. */
+    i2c_send_byte(I2C_2, BH1730_I2C_ADDR, BH1730_ADDR(BH1730_CONTROL_REG), 0);
+    max7762x_regulator_enable(REGULATOR_LDO6, false);
 }
 
