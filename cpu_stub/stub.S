@@ -1,15 +1,15 @@
 /*
  * CPU0 entry, AArch64.
  *
- * ccplex_boot_cpu0() points the secure-boot reset vector here and releases
+ * The supervisor points the secure-boot reset vector here and releases
  * CPU0, so this is the very first instruction the Cortex-A57 executes. State
  * on arrival: EL3, AArch64, MMU off, caches off, interrupts off, SP
- * undefined. With the MMU off every access is Device-nGnRnE, which is
- * exactly what we want - the stub's stores land in DRAM immediately and the
- * BPMP sees them without either side doing cache maintenance on the fly.
+ * undefined. The stub then turns the MMU and caches on (DRAM write-back),
+ * so every store the BPMP must see goes through mbox_w(), which cleans the
+ * line, and the exception handler below cleans its own record.
  *
- * The only jobs here are: give C a stack, zero the BSS the linker gave us,
- * and never return.
+ * The jobs here are: give C a stack, zero the BSS the linker gave us, set
+ * up the one-level page table and the caches, and never return.
  */
 
 #include "../cpu_mbox.h"
@@ -103,7 +103,8 @@ dc_iw2: sub     w6, w6, #1
     /* MAIR_EL3: U-Boot's MEMORY_ATTRIBUTES */
     ldr     x1, =0x000000FF440C0400
     msr     mair_el3, x1
-    /* TCR_EL3: TG0 4 KB, T0SZ = 32, walks IS/WBWA/WBWA (ips = 0) */
+    /* TCR_EL3: TG0 4 KB, T0SZ = 32, walks non-shareable, IRGN WBWA,
+     * ORGN WB-nWA (ips = 0) */
     ldr     x1, =0x00000D20
     msr     tcr_el3, x1
     msr     ttbr0_el3, x0
@@ -196,7 +197,12 @@ exc_common:
     str     w3, [x0, #MBOX_OFF_EXC_ELR]
     ldr     w4, [x0, #MBOX_OFF_STAGE]
     str     w4, [x0, #MBOX_OFF_EXC_STAGE]
+    /* The record sits two cache lines above the mailbox base, all of it in
+     * one 64-byte line; cleaning only the base line left it in L1 and
+     * every fault read as a stall. */
     dc      cvac, x0
+    add     x4, x0, #MBOX_OFF_EXC_TAKEN
+    dc      cvac, x4
     dsb     sy
 5:  wfe
     b       5b

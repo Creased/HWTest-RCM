@@ -142,9 +142,8 @@
 #endif
 
 bool g_wifi_armed = false;
-bool g_wifi_quiet_pass = false;  /* bring-up-only re-entry: skip the handoff */
-/* Set once the SoC-side bring-up has run this boot, so the link page can
- * tell "already done" from "needs doing quietly first". */
+/* Set when the SoC-side bring-up runs to completion; the link page will not
+ * hand off without it. */
 bool g_wifi_brought_up = false;
 
 /* Apertures, from tegra210.dtsi's pcie@1003000 `reg` and `ranges`. All of
@@ -574,12 +573,21 @@ static void pcie_cpu_handoff(void)
             attempt + 1, mb->heartbeat);
         ccplex_powergate_cpu0();
         msleep_poll(50);
-        CLOCK(CLK_RST_CONTROLLER_RST_DEV_U_SET) = BIT(6) | BIT(8) | BIT(10);
+        CLOCK(CLK_RST_CONTROLLER_RST_DEV_U_SET) =
+            BIT(CLK_U_PCIE) | BIT(CLK_U_AFI) | BIT(CLK_U_PCIEXCLK);
         msleep_poll(10);
-        CLOCK(CLK_RST_CONTROLLER_RST_DEV_U_CLR) = BIT(6) | BIT(8) | BIT(10);
+        CLOCK(CLK_RST_CONTROLLER_RST_DEV_U_CLR) =
+            BIT(CLK_U_PCIE) | BIT(CLK_U_AFI) | BIT(CLK_U_PCIEXCLK);
         msleep_poll(10);
-        mb->done = 0;
-        mb->diag_mode = CPU_DIAG_NONE;
+        /* A fresh mailbox for the next attempt, cleaned out of the BPMP's
+         * cache before CPU0 is released. Clearing only done/diag_mode left
+         * the old magic (so "alive" read true before CPU0 had run) and the
+         * old rp_bus/exc_* (so a stall at MSELECT could be reported as
+         * attempt 1's trained link). The stub's PHY dump is cleared with
+         * it. */
+        memset((void *)mb, 0, sizeof(cpu_mbox_t));
+        memset((void *)CPU_PHY_DUMP_ADDR, 0, CPU_PHY_DUMP_SIZE);
+        bpmp_mmu_maintenance(BPMP_MMU_MAINT_CLN_INV_WAY, false);
         continue;
     }
     if (!done) {
@@ -661,7 +669,7 @@ static void pcie_cpu_handoff(void)
              * padctl/UPHY/PLLE/PADS, same set U-Boot's md.l can dump. */
             {
                 const volatile u32 *d =
-                    (const volatile u32 *)0xA0008800u;
+                    (const volatile u32 *)CPU_PHY_DUMP_ADDR;
                 LOG("  (phy 7009F004 : %08X %08X %08X %08X\n",
                     d[0], d[1], d[2], d[3]);
                 LOG("   phy 7009F360 : %08X %08X %08X %08X\n",
@@ -763,8 +771,11 @@ static void pcie_cpu_handoff(void)
         dx_set("wifi_pcie", afi_ok ? DX_WARN : DX_FAIL,
             afi_ok ? "PCIe aperture live, stub returned no link verdict"
                    : "PCIe does not decode even from CPU0");
+        /* break, not return: the cluster still has to be powergated below.
+         * A return here left CPU0 parked with its rail up, and the next
+         * release found a core that was never in reset. */
         if (!afi_ok)
-            return;
+            break;
 
         /* The aperture is live, so the stub went on to train the link. */
         u32 speed = (mb->link_stat >> 16) & 0xF;
@@ -1011,6 +1022,10 @@ void probe_wifi_pcie(void)
         return;
     }
     g_wifi_armed = false;    /* one shot: re-arm deliberately each time */
+    /* Cleared on entry, set only at the end: an early bail (partition,
+     * padctl) used to leave the previous pass's "done" standing, and the
+     * link page then handed off into a block it had just refused. */
+    g_wifi_brought_up = false;
     status_step("Wireless: Wi-Fi PCIe setup");
 
     /* ---- entry state -------------------------------------------------- */
@@ -1383,14 +1398,12 @@ void probe_wifi_link(void)
      * bring-up runs (quietly) before EVERY handoff. */
     bool armed = g_wifi_armed;
     g_wifi_armed = true;
-    g_wifi_quiet_pass = true;
     log_mute(true);
     probe_wifi_pcie();
     log_mute(false);
-    g_wifi_quiet_pass = false;
     g_wifi_armed = armed;
     if (!g_wifi_brought_up) {
-        log_color(COL_WARN, "  Not armed     : nothing to report\n");
+        log_color(COL_WARN, "  No handoff    : bring-up incomplete\n");
         return;
     }
 

@@ -42,6 +42,8 @@
 #define CPU_STUB_MAX    0x00010000u   /* 64 KiB ceiling, asserted at build */
 #define CPU_STACK_TOP   0xA0020000u   /* stub's stack, grows down          */
 #define CPU_MBOX_ADDR   0xA0030000u   /* mailbox, its own page             */
+#define CPU_PHY_DUMP_ADDR  0xA0008800u  /* PHY registers the stub saw      */
+#define CPU_PHY_DUMP_SIZE  128u         /* bytes, cleared between attempts */
 
 #define CPU_MBOX_MAGIC  0x50434945u   /* 'PCIE', written once on entry     */
 #define CPU_MBOX_DONE   0x444F4E45u   /* 'DONE', written last              */

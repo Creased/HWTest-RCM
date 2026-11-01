@@ -678,6 +678,9 @@ void ipl_main(void)
             log_color(COL_HEADER, "\n--- Wireless ---\n");
             g_wifi_armed = true;
             probe_wifi_pcie();
+            /* The verdict comes from the CPU0 half; the bring-up alone
+             * used to be re-run here and the link page left stale. */
+            probe_wifi_link();
             _log_uart_only = prev;
         } else if (c == 'G') {
             /* Group refresh: 'G' followed by an ASCII group name and a

@@ -381,9 +381,12 @@ all of it APB and CAR. Then it hands over:
 
 1. Copies a small **AArch64 stub** (`cpu_stub/`, built with devkitA64, linked
    at `0xA0000000`) into DRAM, and clears a mailbox at `0xA0030000`.
-2. Calls bdk's `ccplex_boot_cpu0()`, which brings up the CPU rail, PLLX, the
-   CPU clock domain and the CRAIL/C0NC/CE0 partitions, and releases CPU0 at
-   the stub — in EL3, AArch64, MMU off.
+2. Runs its own copy of bdk's `ccplex_boot_cpu0()` sequence, which brings
+   up the CPU rail, PLLX, the CPU clock domain and the CRAIL/C0NC/CE0
+   partitions, and releases CPU0 at the stub — in EL3, AArch64, MMU off.
+   Its own copy because bdk's spins on the RAM repair with no timeout, and
+   a console with a dead CPU rail would hang there; this one reads the
+   regulator back and bounds the wait, so the fault is reported instead.
 3. The stub does MSELECT, the AFI translations (byte-identical to U-Boot's
    `tegra_pcie_setup_translations`), the controller enable, root port 1's
    refclk and PERST# (with the CYW4356's own 10 ms and 6 ms waits), link
@@ -401,9 +404,11 @@ UART, the pager and the reset path, so recovery means a manual power cycle.
 Made from CPU0, the same stall costs CPU0 alone: the BPMP sees the heartbeat
 stop, prints the last breadcrumb, powergates the cluster and reboots itself.
 
-The emulator has no CCPLEX model, so there the stub never reports and the
-supervisor's timeout path runs instead — which is worth having exercised on
-every emulator run, since that path is the safety net.
+The emulator models CPU0 (AArch64 at EL3, in lockstep with the BPMP) and
+the PCIe root complex, so the stub runs to completion there and enumerates
+the endpoint; `--fault vdd_cpu` or `--fault max77621_cpu` leaves the rail
+dead and exercises the supervisor's refusal path instead, which is worth
+running since that path is the safety net.
 
 ### Reading the output
 

@@ -248,6 +248,11 @@ static inline void wr32(unsigned long a, unsigned int v)
 #define  XUSBIO_CLK_ENABLE_SWCTL   BIT(2)
 #define  XUSBIO_PADPLL_RESET_SWCTL BIT(0)
 
+/* The PHY bring-up waits add up to 1.75 s worst case with nothing else
+ * moving the heartbeat, against the supervisor's 2 s window: bump it from
+ * every wait so a slow lock is not mistaken for a dead core. */
+static cpu_mbox_t *g_mb;
+
 static int wait_bit(unsigned long reg, unsigned int bit, unsigned int on,
                     unsigned int ms)
 {
@@ -259,6 +264,8 @@ static int wait_bit(unsigned long reg, unsigned int bit, unsigned int on,
         if (!on && !(v & bit))
             return 1;
         udelay(1000);
+        if (g_mb)
+            mbox_w(&g_mb->heartbeat, g_mb->heartbeat + 1);
     } while ((*(volatile unsigned int *)TIMERUS_CNTR_1US - start) < ms * 1000u);
     return 0;
 }
@@ -484,6 +491,7 @@ static unsigned int cfg_wr_verify(cpu_mbox_t *m, unsigned long addr,
 void cpu_stub_main(void)
 {
     cpu_mbox_t *m = (cpu_mbox_t *)(unsigned long)CPU_MBOX_ADDR;
+    g_mb = m;
 
     mbox_w(&m->magic, CPU_MBOX_MAGIC);
     step(m, CPU_STAGE_ENTRY);
@@ -830,7 +838,7 @@ void cpu_stub_main(void)
                  * the failure path. */
             };
             volatile unsigned int *dump =
-                (volatile unsigned int *)0xA0008800u;
+                (volatile unsigned int *)CPU_PHY_DUMP_ADDR;
             for (unsigned int i = 0;
                  i < sizeof(phy_addrs) / sizeof(phy_addrs[0]); i++) {
                 dump[i] = rd32(phy_addrs[i]);
