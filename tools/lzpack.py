@@ -33,7 +33,11 @@ Two rules fall out of the decoder and must be respected when encoding:
 from __future__ import annotations
 
 MIN_MATCH = 4          # shorter matches rarely pay for their encoding
-MAX_CHAIN = 256       # candidate positions examined per hash bucket
+MAX_CHAIN = 2048       # candidate positions examined per hash bucket
+MAX_MATCH = 258        # a candidate this long ends the search, then is
+                       # extended to its full length (zero fill runs 14 KB)
+SPAN_SKIP = 64         # positions inside a match this long are not searched
+SPAN_TAIL = 8          # ...except its last few, where a new match may start
 
 
 def _varint(value: int) -> bytes:
@@ -61,68 +65,105 @@ def _pick_marker(data: bytes) -> int:
 
 
 def compress(data: bytes) -> bytes:
-    """Compress `data` into a stream LZ_Uncompress() decodes back to it."""
+    """Compress `data` into a stream LZ_Uncompress() decodes back to it.
+
+    Optimal parsing: every position's match candidates are gathered first,
+    then a backward pass picks, at each byte, the cheaper of "one literal"
+    and "this match", with the exact stream cost of everything after it
+    already known. Greedy-with-lazy was the previous parse; against the
+    130392-byte injector ceiling the difference (0.5 % of the image, several
+    hundred bytes) is the margin. Takes a couple of seconds, decoder
+    unchanged.
+    """
     if not data:
         return b""
 
     esc = _pick_marker(data)
-    out = bytearray([esc])
     n = len(data)
 
-    # hash chain: 3-byte key -> recent positions (most recent first)
+    # Pass 1: for each position, the match candidates reachable through the
+    # 3-byte hash chain, most recent first so the shortest distance wins
+    # among equal lengths. Only lengths that beat the previous candidate are
+    # kept, so the list is short and strictly increasing in length.
+    #
+    # Inside a long match the search is skipped and the match's own
+    # continuation is the candidate. Searching there is what made long runs
+    # quadratic: near the end of a zero run every one of the MAX_CHAIN
+    # candidates matches to the same length, so none ends the walk early.
     chains: dict[bytes, list[int]] = {}
-
-    def find_match(at: int):
-        """Longest match for `at`, as (length, distance). (0, 0) if none."""
+    cands: list[tuple] = [()] * n
+    span_at = span_len = span_dist = span_end = 0
+    for at in range(n):
         if at + MIN_MATCH > n:
-            return 0, 0
-        best_l = 0
-        best_d = 0
-        limit = n - at
-        for cand in chains.get(data[at:at + 3], ())[:MAX_CHAIN]:
-            dist = at - cand
-            if dist <= 0:
-                continue
+            break
+        key = data[at:at + 3]
+        lst = chains.get(key)
+        if lst is None:
+            lst = chains[key] = []
+        if at < span_end:
+            cands[at] = ((span_len - (at - span_at), span_dist),)
+            lst.append(at)
+            continue
+        res = []
+        best = 0
+        left = n - at
+        limit = min(MAX_MATCH, left)
+        seen = 0
+        for cand in reversed(lst):
+            seen += 1
+            if seen > MAX_CHAIN:
+                break
             # Overlapping matches (dist < length) are legal: the decoder
             # copies byte-by-byte, so they encode runs efficiently.
             length = 0
             while length < limit and data[cand + length] == data[at + length]:
                 length += 1
-            if length > best_l:
-                best_l = length
-                best_d = dist
-                if length >= 258:
+            if length >= MAX_MATCH:
+                while length < left and data[cand + length] == data[at + length]:
+                    length += 1
+            if length > best and length >= MIN_MATCH:
+                best = length
+                res.append((length, at - cand))
+                if length >= MAX_MATCH:
                     break
-        return best_l, best_d
+        cands[at] = tuple(res)
+        lst.append(at)
+        if best >= SPAN_SKIP:
+            span_at, span_len, span_dist = at, best, res[-1][1]
+            span_end = at + best - SPAN_TAIL
 
-    def worth_it(length: int, dist: int, at: int) -> bool:
-        """Is a match cheaper than the literals it replaces?
-        cost(match)    = 1 (ESC) + varint(len) + varint(dist)
-        cost(literals) = len, +1 for every literal that happens to be ESC
-        """
-        if length < MIN_MATCH:
-            return False
-        match_cost = 1 + _varint_len(length) + _varint_len(dist)
-        literal_cost = length + data.count(esc, at, at + length)
-        return match_cost < literal_cost
+    # Pass 2: cost to encode data[pos:], chosen backwards.
+    #   cost(match)   = 1 (ESC) + varint(len) + varint(dist)
+    #   cost(literal) = 1, or 2 for a literal ESC
+    # A candidate is also tried a few bytes shorter: ending a match early
+    # can land on a position with a better continuation.
+    cost = [0] * (n + 1)
+    choice: list = [None] * (n + 1)
+    for pos in range(n - 1, -1, -1):
+        c = (2 if data[pos] == esc else 1) + cost[pos + 1]
+        ch = None
+        for length, dist in cands[pos]:
+            dist_len = _varint_len(dist)
+            for sub in (length, length - 1, length - 2, length - 3):
+                if sub < MIN_MATCH:
+                    break
+                v = 1 + _varint_len(sub) + dist_len + cost[pos + sub]
+                if v < c:
+                    c = v
+                    ch = (sub, dist)
+        cost[pos] = c
+        choice[pos] = ch
 
+    out = bytearray([esc])
     pos = 0
     while pos < n:
-        best_len, best_dist = find_match(pos)
-        emit_match = worth_it(best_len, best_dist, pos)
-
-        # Lazy matching: if starting one byte later yields a longer match,
-        # emit this byte as a literal and take the better match next round.
-        if emit_match and pos + 1 < n:
-            next_len, next_dist = find_match(pos + 1)
-            if next_len > best_len and worth_it(next_len, next_dist, pos + 1):
-                emit_match = False
-
-        if emit_match:
+        ch = choice[pos]
+        if ch:
+            length, dist = ch
             out.append(esc)
-            out += _varint(best_len)
-            out += _varint(best_dist)
-            advance = best_len
+            out += _varint(length)
+            out += _varint(dist)
+            pos += length
         else:
             b = data[pos]
             if b == esc:
@@ -130,12 +171,7 @@ def compress(data: bytes) -> bytes:
                 out.append(0x00)     # literal ESC
             else:
                 out.append(b)
-            advance = 1
-
-        # Index every position we pass over so later matches can find them.
-        for i in range(pos, min(pos + advance, n - 2)):
-            chains.setdefault(data[i:i + 3], []).insert(0, i)
-        pos += advance
+            pos += 1
 
     return bytes(out)
 
