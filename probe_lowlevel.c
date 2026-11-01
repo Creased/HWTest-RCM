@@ -108,9 +108,29 @@ void probe_pmc_scratch(void)
     }
 }
 
+/* The MAX77620's interrupt latches clear on read, and the sweep's active
+ * probes (fan, audio, CPU0, gamecard) can raise the low-battery and thermal
+ * bits themselves. Read them once, before anything active has run (main.c
+ * calls this ahead of the sweep), and report that snapshot on every
+ * re-run; a plain re-read came back clean and silently flipped the PMIC
+ * verdict to pass. */
+static u8   s_nverc, s_intlbt, s_irqsd;
+static bool s_latched;
+
+void probe_reset_snapshot(void)
+{
+    if (s_latched)
+        return;
+    s_nverc  = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_NVERC);
+    s_intlbt = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_INTLBT);
+    s_irqsd  = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_IRQSD);
+    s_latched = true;
+}
+
 void probe_reset(void)
 {
     HEADER("[Reset + PMIC latches + RTC + Hekate intent]");
+    probe_reset_snapshot();
 
     /* 1. Tegra PMC reset status */
     u32 rst = PMC(APBDEV_PMC_RST_STATUS) & PMC_RST_STATUS_MASK;
@@ -130,8 +150,8 @@ void probe_reset(void)
     if (rst == 1 || rst == 2) col = COL_ERR;
     log_color(col, "  PMC RST_STATUS: %d (%s)\n", rst, kRstNames[rst & 7]);
 
-    /* 2. MAX77620 NVERC (non-volatile reset cause) */
-    u8 nverc = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_NVERC);
+    /* 2. MAX77620 NVERC (non-volatile reset cause), from the snapshot */
+    u8 nverc = s_nverc;
     /* Severe latches = real fault evidence: the PMIC watchdog fired, a
      * thermal overload tripped, or the battery rail over-loaded. Battery-
      * depletion events (MBLSD low-battery shutdown, MBU under-voltage)
@@ -155,9 +175,9 @@ void probe_reset(void)
     if (nverc & MAX77620_NVERC_MBU)     log_color(COL_WARN, "                 - MBU   : main-batt under-voltage\n");
     if (nverc & MAX77620_NVERC_RSTIN)   log_color(COL_WARN, "                 - RSTIN : RST input asserted\n");
 
-    /* 3. INTLBT and IRQSD: latched IRQ events */
-    u8 intlbt = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_INTLBT);
-    u8 irqsd  = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_IRQSD);
+    /* 3. INTLBT and IRQSD: latched IRQ events, from the snapshot */
+    u8 intlbt = s_intlbt;
+    u8 irqsd  = s_irqsd;
     dx_set("pmic_intlbt", intlbt ? DX_WARN : DX_PASS,
         intlbt ? "thermal/low-batt latch 0x%02X" : "", intlbt);
     /* IRQSD bits latch on every SD-rail buck transition, including the

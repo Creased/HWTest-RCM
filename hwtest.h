@@ -187,6 +187,7 @@ void probe_inputs(void);
 void probe_gpio_census(void);
 void probe_uart_b(void);
 void probe_reset(void);
+void probe_reset_snapshot(void);   /* before any active probe runs */
 void probe_pmc_scratch(void);
 void probe_verdict(void);
 

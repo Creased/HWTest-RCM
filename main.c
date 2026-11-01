@@ -603,6 +603,9 @@ void ipl_main(void)
      * don't draw over the pager. */
     g_show_status  = true;
     _log_uart_only = true;
+    /* The PMIC's clear-on-read latches are captured before the sweep's
+     * active probes can set or clear them. */
+    probe_reset_snapshot();
     log_color(COL_HEADER, "\n=== hwtest full UART dump ===\n");
     run_probe_mask(ui_sel.probe_mask);
     log_color(COL_HEADER, "\n=== end of dump - pager active on LCD ===\n\n");
