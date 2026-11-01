@@ -118,7 +118,9 @@ void dx_reset(void);
 void dx_set(const char *key, dx_sev_t sev, const char *fmt, ...);
 const dx_finding_t *dx_get(const char *key);
 
-#define DX_CAP 48
+/* Distinct keys in use: count them when adding one, dx_set drops the
+ * overflow silently. */
+#define DX_CAP 64
 
 /* ---- shared helpers ---- */
 

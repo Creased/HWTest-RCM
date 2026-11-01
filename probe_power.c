@@ -4,6 +4,11 @@
  */
 #include "hwtest.h"
 
+/* One literal for every "the chip did not ACK" line on these pages: bdk's
+ * i2c_recv_byte returns 0 on a NAK, and 0 decoded as a healthy reading for
+ * the bucks, the charger and the thermal sensor alike. */
+static const char kNoAckFmt[] = "  %s: no ACK at 0x%02X (dead?)\n";
+static const char kNoAckDx[]  = "no I2C ack at 0x%02X";
 
 void probe_pmic(void)
 {
@@ -54,8 +59,21 @@ void probe_pmic(void)
         };
         const u32 rail_min_uv = 606250;
         const u32 rail_max_uv = 1400000;
+        static const char *bc_keys[] = { "max77621_cpu", "max77621_gpu" };
         for (size_t r = 0; r < sizeof(bc_rails)/sizeof(bc_rails[0]); r++) {
-            u8 vout     = i2c_recv_byte(I2C_5, bc_rails[r].i2c_addr, MAX77621_REG_VOUT);
+            /* The ACK is the presence check: bdk's i2c_recv_byte returns 0
+             * on a NAK, which decoded as a healthy "off 0.606 V", and the
+             * 7-bit VOUT field can only encode the legal range, so the
+             * out-of-range test below can never catch a dead buck. */
+            u8 vout = 0;
+            bool ack = i2c_recv_buf_small(&vout, 1, I2C_5, bc_rails[r].i2c_addr,
+                                          MAX77621_REG_VOUT) == 0;
+            if (!ack) {
+                log_color(COL_ERR, kNoAckFmt, bc_rails[r].name, bc_rails[r].i2c_addr);
+                dx_set(bc_keys[r], DX_FAIL, kNoAckDx, bc_rails[r].i2c_addr);
+                continue;
+            }
+            dx_set(bc_keys[r], DX_PASS, "");
             u8 vout_dvs = i2c_recv_byte(I2C_5, bc_rails[r].i2c_addr, MAX77621_REG_VOUT_DVS);
             bool en     = (vout & MAX77621_VOUT_ENABLE_MASK) != 0;
             bool en_dvs = (vout_dvs & MAX77621_VOUT_ENABLE_MASK) != 0;
@@ -419,6 +437,22 @@ void probe_charger(void)
     int v = 0;
     HEADER("[BQ24193 charger, I2C1 @ 0x6B]");
 
+    /* Presence first. Every read below comes back 0 on a NAK, and 0 decodes
+     * as "no VBUS, no faults" - a dead or missing charger passed. The
+     * VendorPart register (0x0A) reads 0x2F on a genuine BQ24193; a wrong
+     * value on a part that does ACK is a swapped-in replacement. */
+    u8 vendor = 0;
+    if (i2c_recv_buf_small(&vendor, 1, I2C_1, BQ24193_I2C_ADDR, 0x0A) != 0) {
+        log_color(COL_ERR, kNoAckFmt, "BQ24193", BQ24193_I2C_ADDR);
+        dx_set("charger_id", DX_FAIL, kNoAckDx, BQ24193_I2C_ADDR);
+        return;
+    }
+    bool bq_genuine = vendor == 0x2F;
+    log_color(bq_genuine ? COL_OK : COL_WARN, "  Vendor part  : 0x%02X%s\n",
+        vendor, bq_genuine ? "" : " (not BQ24193?)");
+    dx_set("charger_id", bq_genuine ? DX_PASS : DX_WARN,
+        bq_genuine ? "" : "VendorPart 0x%02X", vendor);
+
     u8 stat   = i2c_recv_byte(I2C_1, BQ24193_I2C_ADDR, 0x08); /* status */
     /* BQ24193 FAULT_REG (0x09) is double-read latched: per the datasheet
      * "the first read reports any latched faults since the last read;
@@ -563,19 +597,6 @@ void probe_charger(void)
     bool batfet_off = (reg07 & BQ24193_MISC_BATFET_DI_MASK) != 0;
     LOG("  BATFET       : %s (REG07, informational in RCM)\n",
         batfet_off ? "DISABLED" : "enabled");
-
-    /* Cross-check via Hekate's bq24193_get_version helper, it reads
-     * VendorPart (reg 0x0A) and confirms it equals 0x2F for the genuine
-     * BQ24193 part. A mismatch here on a unit that ACKs at 0x6B means
-     * a non-genuine replacement chip has been swapped in. */
-    u32 bqver = 0;
-    if (bq24193_get_version(&bqver) == 0) {
-        log_color(COL_OK,
-            "  Vendor part  : 0x%02X (BQ24193 verified)\n", bqver);
-    } else {
-        log_color(COL_WARN,
-            "  Vendor part  : 0x%02X (UNEXPECTED, not BQ24193?)\n", bqver);
-    }
 }
 
 void probe_usbpd(void)
@@ -1069,6 +1090,16 @@ void probe_fan(void)
 void probe_thermal(void)
 {
     HEADER("[TMP451 thermal sensor, I2C1 @ 0x4C]");
+    /* Presence first: bdk's tmp451 reads return 0 on a NAK, and 0 C with a
+     * clear status byte passed every check below. The manufacturer ID
+     * register (0xFE) is a harmless register to ask for. */
+    u8 mfg = 0;
+    if (i2c_recv_buf_small(&mfg, 1, I2C_1, TMP451_I2C_ADDR, 0xFE) != 0) {
+        log_color(COL_ERR, kNoAckFmt, "TMP451", TMP451_I2C_ADDR);
+        dx_set("tmp451_id", DX_FAIL, kNoAckDx, TMP451_I2C_ADDR);
+        return;
+    }
+    dx_set("tmp451_id", DX_PASS, "");
     u16 soc = tmp451_get_soc_temp(false);
     u16 pcb = tmp451_get_pcb_temp(false);
     int soc_int = soc >> 8;

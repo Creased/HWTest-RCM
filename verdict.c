@@ -155,13 +155,15 @@ static const char *_k_boot[]    = { "soc_pmic_otp", "fuses_pkg1", NULL };
 static const char *_k_identity[] = { "kfuse", NULL };
 static const char *_k_pmic[]    = { "pmic_rails", "pmic_nverc",
                                     "pmic_irqsd", "pmic_intlbt",
-                                    "max77812", NULL };
-static const char *_k_charger[] = { "charger_pg", "charger_fault",
+                                    "max77812", "max77621_cpu",
+                                    "max77621_gpu", NULL };
+static const char *_k_charger[] = { "charger_id", "charger_pg",
+                                    "charger_fault",
                                     "usb_pd", "xc_vbus_acok", NULL };
 static const char *_k_battery[] = { "batt_health", "batt_ntc",
                                     "fuel_devname",
                                     "xc_charge_dir", NULL };
-static const char *_k_thermal[] = { "soc_die_temp", "pcb_temp",
+static const char *_k_thermal[] = { "tmp451_id", "soc_die_temp", "pcb_temp",
                                     "fan_stalled", NULL };
 static const char *_k_storage[] = { "emmc_health", "emmc_bus", "sd_bus",
                                     "wlan_cal", "cal0_hash", "cal0_panel",
