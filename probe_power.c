@@ -136,13 +136,21 @@ void probe_max77812(void)
         return;
     }
 
-    u8 addr = MAX77812_PHASE211_CPU_I2C_ADDR;
+    /* The variant is fused, not guessed: bdk's _max77812_get_address()
+     * reads FUSE_RESERVED_ODM28_B01 bit 0 (clear = PHASE31, the high-power
+     * GPU part, set = PHASE211). Probe the fused address first; a part that
+     * only answers at the other one is a board/fuse disagreement worth
+     * saying, not a dev kit. */
+    bool fuse_211 = (FUSE(FUSE_RESERVED_ODM28_B01) & 1) != 0;
+    u8 addr = fuse_211 ? MAX77812_PHASE211_CPU_I2C_ADDR
+                       : MAX77812_PHASE31_CPU_I2C_ADDR;
     u8 ver  = _max77812_probe_addr(addr);
-    bool phase211 = true;
+    bool at_fused = true;
     if (ver == 0xFF) {
-        addr = MAX77812_PHASE31_CPU_I2C_ADDR;
+        addr = fuse_211 ? MAX77812_PHASE31_CPU_I2C_ADDR
+                        : MAX77812_PHASE211_CPU_I2C_ADDR;
         ver  = _max77812_probe_addr(addr);
-        phase211 = false;
+        at_fused = false;
     }
     if (ver == 0xFF) {
         log_color(COL_ERR, "  No MAX77812 at either 0x33 or 0x31\n");
@@ -152,10 +160,11 @@ void probe_max77812(void)
     static const char *ver_str[] = {
         [MAX77812_ES2_VERSION] = "ES2", [MAX77812_QS_VERSION] = "QS"
     };
-    log_color(COL_OK,
-        "  Variant      : %s @ 0x%02X (%s silicon)\n",
-        phase211 ? "PHASE211 (retail)" : "PHASE31 (dev kit)",
-        addr, ver_str[ver]);
+    bool phase211 = addr == MAX77812_PHASE211_CPU_I2C_ADDR;
+    log_color(at_fused ? COL_OK : COL_WARN,
+        "  Variant      : %s @ 0x%02X (%s silicon)%s\n",
+        phase211 ? "PHASE211 (retail)" : "PHASE31 (high-power GPU)",
+        addr, ver_str[ver], at_fused ? "" : " - fuse disagrees");
 
     u8 en_ctrl   = i2c_recv_byte(I2C_5, addr, MAX77812_REG_EN_CTRL);
     u8 buck_stat = i2c_recv_byte(I2C_5, addr, MAX77812_REG_BUCK_STAT);
@@ -256,8 +265,11 @@ void probe_battery(void)
         int t10 = v;
         u32 tcol = (t10 < -200 || t10 > 700) ? COL_ERR :
                    (t10 < 0 || t10 >= 450) ? COL_WARN : COL_OK;
-        int frac = t10 < 0 ? (-t10) % 10 : t10 % 10;
-        log_color(tcol, "  Temp         : %d.%d C\n", t10 / 10, frac);
+        /* Sign printed on its own: -5 tenths is 0 whole degrees, so
+         * "%d.%d" of (t10/10, frac) came out as "0.5 C". */
+        int tabs = t10 < 0 ? -t10 : t10;
+        log_color(tcol, "  Temp         : %s%d.%d C\n",
+                  t10 < 0 ? "-" : "", tabs / 10, tabs % 10);
     }
     if (max17050_get_property(MAX17050_AvgCurrent, &v) == 0)
         LOG("  AvgCurrent   : %d mA\n", v / 1000);
@@ -289,13 +301,14 @@ void probe_battery(void)
      * source for warm/cool/cold/hot charge-limit classification. */
     int t10 = 0;
     max17050_get_property(MAX17050_TEMP, &t10);
+    int t10abs = t10 < 0 ? -t10 : t10;
     dx_set("batt_ntc",
         (t10 < -200 || t10 > 700) ? DX_FAIL :
         (t10 < 0 || t10 >= 450) ? DX_WARN : DX_PASS,
-        (t10 < -200 || t10 > 700) ? "%d.%d C implausible" :
-        t10 < 0 ? "%d.%d C cold" :
-        t10 >= 450 ? "%d.%d C warm" : "",
-        t10 / 10, t10 < 0 ? (-t10) % 10 : t10 % 10);
+        (t10 < -200 || t10 > 700) ? "%s%d.%d C implausible" :
+        t10 < 0 ? "%s%d.%d C cold" :
+        t10 >= 450 ? "%s%d.%d C warm" : "",
+        t10 < 0 ? "-" : "", t10abs / 10, t10abs % 10);
 
     if (max17050_get_property(MAX17050_MinVolt, &v) == 0)
         LOG("  Min volt     : %d mV\n", v);
@@ -725,11 +738,10 @@ void probe_pmic_gpios(void)
      * Reading FPS_CFGx surfaces the master config:
      *   bit 0   ENFPS_SW   - SW-controlled enable
      *   bits 2:1 EN_SRC    - which event triggers this FPS master
-     *   bits 5:3 TIME_PERIOD - per-slot dwell time, encoded as
-     *               40 us << N (so 0=40us .. 6=2560us, 7=reserved).
-     * Switch HOS programs FPS0 to a 1280-2560 us slot period; a
-     * mis-configured (very short) period can race rail ramp times
-     * and explain otherwise-mysterious boot stalls. */
+     *   bits 5:3 TIME_PERIOD - per-slot dwell time, 40 us << N (so
+     *               0=40us .. 7=5120us, the MAX77620 range Linux uses).
+     *               bdk's hw_init writes code 7 to all three on every
+     *               Erista boot, so 7 is the stock value there. */
     static const u8 fps_regs[3] = {
         MAX77620_REG_FPS_CFG0, MAX77620_REG_FPS_CFG1, MAX77620_REG_FPS_CFG2
     };
@@ -739,9 +751,8 @@ void probe_pmic_gpios(void)
                      >> MAX77620_FPS_TIME_PERIOD_SHIFT;
         u8 en_src  = (cfg & MAX77620_FPS_EN_SRC_MASK)
                      >> MAX77620_FPS_EN_SRC_SHIFT;
-        u32 tp_us  = tp_code < 7 ? (40u << tp_code) : 0;
         LOG("  FPS%d cfg     : 0x%02X (slot=%d us, src=%d, sw_en=%d)\n",
-            f, cfg, tp_us, en_src, cfg & MAX77620_FPS_ENFPS_SW_MASK);
+            f, cfg, 40u << tp_code, en_src, cfg & MAX77620_FPS_ENFPS_SW_MASK);
     }
 }
 
@@ -930,8 +941,11 @@ void probe_fan(void)
                   : "");
 
     /* If the fan was already commanded before we ran (some launch paths do
-     * this), report what it's doing right now without disturbing it. */
+     * this), report what it's doing right now without disturbing it. The
+     * tach pad has to be configured first: unconfigured it reads a constant
+     * (see _fan_tach_pad_init), and a spinning fan was reported as 0 RPM. */
     if (duty > 0) {
+        _fan_tach_pad_init();
         u32 idle_rpm = _fan_measure_rpm(FAN_SAMPLE_MS, NULL, NULL, NULL);
         log_color(idle_rpm ? COL_OK : COL_ERR,
             "  As found     : ~%d RPM at duty %d\n", idle_rpm, duty);
