@@ -21,8 +21,10 @@ static char  s_report_path[128];
  * sweep would cost 5-10 s of redundant I2C / SDMMC activity on real
  * hardware.
  *
- * 32 KB holds the full report comfortably (~28 KB observed in practice
- * with all probes enabled). Allocated once via heap_alloc in ipl_main. */
+ * REPORT_CAP (128 KB) holds the full report with room to grow (~28 KB was
+ * observed with every probe enabled before the Wi-Fi pages were added, and
+ * the quiet bring-up pass is captured a second time). Allocated once in
+ * ipl_main; log.c plants a marker if it ever fills. */
 char *g_report_body = NULL;
 
 int save_report(void)
@@ -61,16 +63,26 @@ int save_report(void)
      * a technician wants the summary before the 900 lines of detail behind
      * it. The verdict is the final section of the buffer, so writing that
      * tail first and the head after costs nothing and re-runs nothing. */
-    UINT bw = 0, bw2 = 0;
+    UINT bw = 0, bw2 = 0, want;
+    FRESULT wr;
     const char *tail = strstr(g_report_body, "\n--- Diagnostics ---\n");
     if (tail) {
-        f_write(&s_fp, tail + 1, strlen(tail + 1), &bw);
-        f_write(&s_fp, g_report_body, (UINT)(tail - g_report_body), &bw2);
+        UINT n1 = strlen(tail + 1), n2 = (UINT)(tail - g_report_body);
+        want = n1 + n2;
+        wr = f_write(&s_fp, tail + 1, n1, &bw);
+        if (wr == FR_OK)
+            wr = f_write(&s_fp, g_report_body, n2, &bw2);
         bw += bw2;
     } else {
-        f_write(&s_fp, g_report_body, strlen(g_report_body), &bw);
+        want = strlen(g_report_body);
+        wr = f_write(&s_fp, g_report_body, want, &bw);
     }
-    f_close(&s_fp);
+    FRESULT cr = f_close(&s_fp);
+    /* A full card or a failing write used to be reported as a success. */
+    if (wr != FR_OK || cr != FR_OK || bw != want) {
+        log_color(COL_ERR, "[save] write failed (fr %d/%d)\n", wr, cr);
+        return 5;
+    }
     log_color(COL_OK, "[save] %s (%d bytes)\n", s_report_path, bw);
     return 0;
 }

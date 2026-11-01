@@ -23,10 +23,33 @@ char *_log_capture     = NULL;   /* NULL = don't capture */
 u32 _log_capture_pos = 0;
 u32 _log_capture_cap = 0;
 
+static bool _log_capture_full = false;
+
+/* Point the capture sink at buf (NULL detaches it). */
+void log_capture_arm(char *buf, u32 cap)
+{
+    _log_capture      = buf;
+    _log_capture_pos  = 0;
+    _log_capture_cap  = cap;
+    _log_capture_full = false;
+    if (buf && cap)
+        buf[0] = 0;
+}
+
 static void _log_capture_append(const char *s, u32 n)
 {
-    if (!_log_capture || _log_capture_pos + n + 1 > _log_capture_cap)
+    /* A full buffer used to drop lines silently, and the verdict is the
+     * last section written - so a report that ran long lost its summary
+     * with nothing to say so. Keep room for a marker and plant it once. */
+    static const char mark[] = "\n[capture truncated]\n";
+    if (!_log_capture || _log_capture_full)
         return;
+    if (_log_capture_pos + n + sizeof(mark) > _log_capture_cap) {
+        memcpy(_log_capture + _log_capture_pos, mark, sizeof(mark));
+        _log_capture_pos += sizeof(mark) - 1;
+        _log_capture_full = true;
+        return;
+    }
     memcpy(_log_capture + _log_capture_pos, s, n);
     _log_capture_pos += n;
     _log_capture[_log_capture_pos] = 0;

@@ -595,14 +595,9 @@ void ipl_main(void)
      * goes into this buffer via _log_capture_append, so save_report
      * can later just dump the buffer to SD without re-running every
      * probe, which would cost an extra 5-10 s. */
-    const u32 report_cap = 32 * 1024;
-    g_report_body = (char *)malloc(report_cap);
-    if (g_report_body) {
-        g_report_body[0] = 0;
-        _log_capture     = g_report_body;
-        _log_capture_pos = 0;
-        _log_capture_cap = report_cap;
-    }
+    g_report_body = (char *)malloc(REPORT_CAP);
+    if (g_report_body)
+        log_capture_arm(g_report_body, REPORT_CAP);
 
     /* Dump every probe to UART once at boot - the serial log is the
      * primary diagnostic capture. The status spinner is only enabled
@@ -621,7 +616,7 @@ void ipl_main(void)
     g_show_status  = false;
 
     /* Detach the capture sink. The buffer remains for save_report. */
-    _log_capture = NULL;
+    log_capture_arm(NULL, 0);
 
     /* Auto-save the report to SD if we managed to reach the eMMC for
      * the directory name. Re-saving via the 's' UART key just writes
@@ -741,11 +736,16 @@ void ipl_main(void)
              * just like the boot-time sweep. The host viewer uses this to
              * pull a fresh snapshot of every domain in one shot.
              * The pager's currently-shown LCD page is then re-rendered
-             * so the on-console display stays in sync. */
+             * so the on-console display stays in sync. The capture is
+             * re-armed too, so a later 's' saves this sweep rather than
+             * the boot-time one. */
             _log_uart_only = true;
+            if (g_report_body)
+                log_capture_arm(g_report_body, REPORT_CAP);
             log_color(COL_HEADER, "\n=== hwtest full UART dump ===\n");
             run_probe_mask(g_run_mask);
             log_color(COL_HEADER, "\n=== end of dump - pager active on LCD ===\n\n");
+            log_capture_arm(NULL, 0);
             _log_uart_only = false;
             render_page(page);
         } else if (save) {

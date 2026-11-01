@@ -122,6 +122,11 @@ const dx_finding_t *dx_get(const char *key);
  * overflow silently. */
 #define DX_CAP 64
 
+/* SD-report capture buffer. Every line of the boot sweep lands here so
+ * save_report can write it without re-running a probe. */
+#define REPORT_CAP (128u * 1024u)
+void log_capture_arm(char *buf, u32 cap);
+
 /* ---- shared helpers ---- */
 
 #define HEALTH_NONE 0x7FFFFFFE
