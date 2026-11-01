@@ -123,17 +123,21 @@ EXTRA_DEFINES ?=
 DEF_STAMP_D := $(DEFAULT_DIR)/.extra_defines
 $(shell mkdir -p $(DEFAULT_DIR) 2>/dev/null; \
     for f in $(DEF_STAMP_D); do \
-        printf '%s\n' '$(EXTRA_DEFINES)' | cmp -s - $$f || \
-            printf '%s\n' '$(EXTRA_DEFINES)' > $$f; \
+        printf '%s\n' '$(EXTRA_DEFINES) $(OPT)' | cmp -s - $$f || \
+            printf '%s\n' '$(EXTRA_DEFINES) $(OPT)' > $$f; \
     done)
 # The rule below regenerates the stamps when `make clean all` deletes them
 # mid-invocation (the parse-time $(shell) above has already run by then).
 $(DEF_STAMP_D):
 	@mkdir -p $(dir $@)
-	@printf '%s\n' '$(EXTRA_DEFINES)' > $@
+	@printf '%s\n' '$(EXTRA_DEFINES) $(OPT)' > $@
 
+# -MMD -MP: each object leaves a .d listing the headers it pulled in, so a
+# change to hwtest.h or cpu_mbox.h rebuilds what includes it. Without this
+# a mailbox layout change rebuilt the CPU0 stub but not probe_wifi.o, and
+# the two sides disagreed on the struct.
 CFLAGS_BASE := $(ARCH) $(OPT) -g -nostdlib -ffunction-sections -fdata-sections \
-               -fomit-frame-pointer $(INLINE) -std=gnu11 \
+               -fomit-frame-pointer $(INLINE) -std=gnu11 -MMD -MP \
                -I. -I$(BDKDIR) -I$(GFXDIR) \
                -I$(HEKATE)/bootloader/gfx \
                -I$(HEKATE)/bootloader/libs/fatfs \
@@ -262,6 +266,7 @@ $(DEFAULT_DIR)/$(TARGET)_unc.bin: $(DEFAULT_DIR)/$(TARGET).elf
 
 $(DEFAULT_DIR)/payload_lz.h: $(DEFAULT_DIR)/$(TARGET)_unc.bin
 	@python3 tools/mkpayload.py $< $(DEFAULT_DIR)/payload.lz $@
+	@python3 ramtest/check_overlap.py $(DEFAULT_DIR)/payload.lz $<
 
 LDR_CFLAGS := $(ARCH) -Os -g -nostdlib -ffunction-sections -fdata-sections               -fomit-frame-pointer -std=gnu11 -I$(BDKDIR) -I$(DEFAULT_DIR)               -I$(LDRDIR) -DBL_MAGIC=$(IPL_MAGIC)
 LDR_LDFLAGS := $(ARCH) -nostartfiles -Wl,--nmagic,--gc-sections                -Xlinker --defsym=LDR_LOAD_ADDR=$(LDR_LOAD_ADDR) -T $(LDRDIR)/link.ld
@@ -281,7 +286,12 @@ $(DEFAULT_DIR)/loader.elf: $(LDR_OBJS) $(LDRDIR)/link.ld
 $(DEFAULT_BIN): $(DEFAULT_DIR)/loader.elf
 	$(OBJCOPY) -O binary $< $@
 	@printf '   built %s (%s bytes, %s uncompressed)\n' $@ $$(stat -c%s $@) $$(stat -c%s $(DEFAULT_DIR)/$(TARGET)_unc.bin)
-	@if [ $$(stat -c%s $@) -gt 130392 ]; then printf '   WARNING: over the 130392-byte RCM injector limit\n'; fi
+	@if [ $$(stat -c%s $@) -gt 130392 ]; then \
+	    printf '   ERROR: %s bytes is over the 130392-byte RCM injector limit;\n' $$(stat -c%s $@); \
+	    printf '   the injector truncates silently, so this payload must not ship\n'; \
+	    rm -f $@; exit 1; fi
+
+-include $(wildcard $(DEFAULT_DIR)/*.d)
 
 clean:
 	rm -rf $(DEFAULT_DIR) build-jc build-ram
