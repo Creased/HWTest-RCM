@@ -46,6 +46,8 @@ uint32_t ram_mtc_platform(void);
 /* Returns 0 only when memory training reached 1600 MHz with no bounded-wait
  * failure.  On failure, query ram_mtc_errors(). */
 int      ram_mtc_train(void);
+/* Non-zero between a successful ram_mtc_train() and ram_mtc_restore(). */
+int      ram_mtc_is_trained(void);
 void     ram_mtc_periodic(void);
 void     ram_mtc_restore(void);
 uint32_t ram_mtc_errors(void);

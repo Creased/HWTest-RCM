@@ -112,6 +112,11 @@ extern "C" u32 ram_mtc_platform(void)
     return g_platform;
 }
 
+extern "C" int ram_mtc_is_trained(void)
+{
+    return g_trained ? 1 : 0;
+}
+
 extern "C" int ram_mtc_train(void)
 {
     g_trained = false;

@@ -163,16 +163,23 @@ static bool should_abort(void)
     return g_abort;
 }
 
-static bool training_tick(void)
+/* Periodic compensation only, for the menus: the DRAM sits trained at
+ * 1600 MHz between runs. No abort sampling here - VOL- is a menu key. */
+static bool mtc_tick(void)
 {
     u32 now = get_tmr_ms();
     if ((s32)(now - g_next_periodic) >= 0) {
         ram_mtc_periodic();
         g_next_periodic = now + MTC_PERIODIC_MS;
-        if (ram_mtc_errors()) {
-            g_run_failed = true;
-            return false;
-        }
+    }
+    return ram_mtc_errors() == 0;
+}
+
+static bool training_tick(void)
+{
+    if (!mtc_tick()) {
+        g_run_failed = true;
+        return false;
     }
     return !should_abort();
 }
@@ -666,6 +673,7 @@ static bool custom_menu(void)
     draw_custom_menu(selected, g_custom_mask);
 
     for (;;) {
+        mtc_tick();
         u8 btn = btn_read();
         int activated = -1;
 
@@ -719,6 +727,7 @@ static void choose_mode(void)
     for (;;) {
         draw_main_menu(selected);
         for (;;) {
+            mtc_tick();
             u8 btn = btn_read();
             int activated = -1;
 
@@ -854,7 +863,9 @@ static void report_final(u32 elapsed_ms)
     out_aligned("elapsed     : %d s\n", elapsed_ms / 1000u);
     out_aligned("MTC flags   : %08X\n", ram_mtc_errors());
 
-    for (u32 i = 0; i < g_error_log_n && i < 8; ++i) {
+    /* Every logged entry: the loop used to stop at 8 of the 16 kept, and
+     * the "additional" count below did not cover the gap. */
+    for (u32 i = 0; i < g_error_log_n; ++i) {
         const ram_error_t *e = &g_error_log[i];
         out_aligned("bad @ %08X%08X exp %08X got %08X (%s)\n",
             (u32)(e->addr >> 32), (u32)e->addr,
@@ -877,6 +888,9 @@ static void wait_post_test_action(void)
         msleep(20);
 
     for (;;) {
+        /* DRAM stays trained at 1600 MHz between runs (see ipl_main), so
+         * periodic compensation has to keep ticking while we wait here. */
+        mtc_tick();
         u8 b = btn_read();
         if (b & BTN_POWER) {
             while (btn_read() & BTN_POWER)
@@ -938,20 +952,37 @@ void ipl_main(void)
         reset_run_stats();
         choose_mode();
 
+        /* A compensation error raised while idling in the menus means the
+         * trained state is gone. Restore so training is attempted again
+         * below - and, where it cannot be (Erista restarts from 800 MHz),
+         * the failure is reported instead of every run failing silently. */
+        if (ram_mtc_is_trained() && ram_mtc_errors())
+            ram_mtc_restore();
+
         screen_title("Training DRAM");
         out("Platform      : %s\n", g_platform == RAM_MTC_PLATFORM_MARIKO ? "Mariko/T210B01" : "Erista/T210");
         out("DRAM size     : %d MiB\n", g_ram_mb);
-        out("DRAM ID       : %02X\n", (u32)0xFF);
         out("Target        : 1600 MHz\n");
-        out("Training...\n");
 
-        if (ram_mtc_train() != 0) {
-            report_mtc_failure();
-            for (;;) msleep(1000);
+        /* Train once per boot. The Erista restore can only bring the EMC
+         * back to 800 MHz (upstream Atmosphere has no 1600->204 path for
+         * it), and training refuses to start from anything but the 204 MHz
+         * source - so a "run again" that restored and retrained failed on
+         * the entry-clock check every time. The DRAM is left at the trained
+         * rate between runs instead, with periodic compensation ticking in
+         * the menus; power-off needs no restore. */
+        if (ram_mtc_is_trained()) {
+            set_color(COL_OK);
+            out("Training      : kept from the previous run\n");
+        } else {
+            out("Training...\n");
+            if (ram_mtc_train() != 0) {
+                report_mtc_failure();
+                for (;;) msleep(1000);
+            }
+            set_color(COL_OK);
+            out("Training      : PASS\n");
         }
-
-        set_color(COL_OK);
-        out("Training      : PASS\n");
         set_color(COL_TEXT);
         out("DRAM ID       : %02X\n", ram_mtc_dram_id());
 
@@ -990,7 +1021,6 @@ void ipl_main(void)
 
         u32 elapsed = get_tmr_ms() - test_start;
         smmu_teardown();
-        ram_mtc_restore();
         report_final(elapsed);
         wait_post_test_action();
     }
