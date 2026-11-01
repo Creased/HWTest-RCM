@@ -236,9 +236,9 @@ static void _audio_clocks_setup(void)
         CLOCK(CLK_RST_CONTROLLER_PLLA_OUT),
         lock ? "LOCKED -> 120 MHz OUT0" : "NO LOCK");
 
-    /* Re-point AUD_MCLK at PLLP / 17 = 24 MHz = 512 x 46875, the reference
-     * recipe. PLLP is always-on and rock solid; the codec never seemed to
-     * receive the PLLA-sourced MCLK. */
+    /* Re-point AUD_MCLK at PLLP / 17 = 24 MHz (1024 x fs at 23437.5 Hz),
+     * the reference recipe. PLLP is always-on and rock solid; the codec
+     * never seemed to receive the PLLA-sourced MCLK. */
     /* Gate EXTPERIPH1 across the parent switch. The audio-clock probe left
      * it enabled and running off PLLP; changing the source mux of a live
      * peripheral divider can leave the output dead or glitched while every
@@ -325,16 +325,14 @@ static void _i2s_port_setup(const i2s_port_t *p)
      * The working driver soft-resets the receive path before every stream
      * (tegra210_i2s_sw_reset: assert SOFT_RESET_EN in the RX register at
      * +0x04, poll it back to 0). The payload only ever polled the block
-     * reset at +0x84 and never asserted anything - and the capture probe
-     * that now runs before the beeps drives the TX side and leaves the RX
-     * FIFOs and state machine in an arbitrary state. Without this, the port
-     * starts from wherever the last probe left it. */
+     * reset at +0x84 and never asserted anything, so a re-run of this page
+     * started the port from wherever the previous melody left it. */
     APE(p->base + 0x04u) = 1;
     _wait_soft_reset(p->base + 0x04u);
 
     APE(I2S_ENABLE(p->base)) = 1;
     APE(I2S_CTRL(p->base)) = I2S1_CTRL_VAL; /* master, 64-bclk, 16-bit     */
-    APE(I2S_TIMING(p->base)) = I2S1_BITCNT; /* 63 -> 128 bclk/frame, as HOS */
+    APE(I2S_TIMING(p->base)) = I2S1_BITCNT; /* 31 -> 64 bclk/frame          */
     APE(I2S_RX_CTRL(p->base)) = 0x00000100; /* DATA_OFFSET 1 = standard I2S */
     APE(I2S_SLOT_CTRL(p->base)) = 0;   /* TOTAL_SLOTS 0, per TRM Table 118 */
 
@@ -449,9 +447,10 @@ static void _codec_playback_setup(bool use_bclk_pll)
     LOG("  MCLK_DET     : cleared, 0xFA now %04X (was 3E01)\n",
         _codec_r(0xFA));
 
-    /* Keep 0x73 at the table's 64FS value; CODEC_ADDA_CLK equals it. The
-     * write is left here so the frame is set in one obvious place if it ever
-     * changes again. */
+    /* 0x73 carries the I2S pre-divider and the DAC oversampling ratio. HOS's
+     * table above sets 0x8814; CODEC_ADDA_CLK is what this payload has been
+     * shipping on top of it. Which of the two is right for this frame rate
+     * has not been settled on hardware; the override stays until it is. */
     _codec_w(0x73, CODEC_ADDA_CLK);
     LOG("  ADDA_CLK     : 0x73 now %04X (64FS)\n", _codec_r(0x73));
 
@@ -465,20 +464,18 @@ static void _codec_playback_setup(bool use_bclk_pll)
      * cannot happen without a bit clock on the wire.
      *
      * So the codec's PLL can be run off BCLK1 instead and sidestep MCLK
-     * entirely. With BCLK = 128 x fs = 6.000 MHz, N+2 = 16 and M+2 = 2 give
-     * FOUT = 6 x 16 / (2 x 4) = 12.000 MHz = 256 x 46875, the exact ratio
-     * the codec requires. */
+     * entirely: FOUT = FIN x (N+2) / ((M+2) x (K+2)), and with N+2 = 24,
+     * K+2 = 6 and M bypassed that is 4 x BCLK = 256 x fs at 64 bclk/frame,
+     * the ratio the codec requires. */
     if (use_bclk_pll) {
         /* An alternative to MCLK: run the codec's own PLL from BCLK1, a
          * clock it demonstrably receives. Unused by the shipped path, which
          * takes the MCLK-direct leg below.
          *
-         * Driver-exact constants, from mainline rl6231_pll_calc(3072000,
-         * 12288000): FOUT = FIN x (N+2) / ((M+2) x (K+2)) with N+2 = 24,
-         * K+2 = 6, M bypassed -> FVCO = 3.072 x 24 = 73.728 MHz, FOUT =
-         * 73.728 / 6 = 12.288 MHz = 256 x fs. FVCO sits inside the codec's
-         * PLL VCO range. 0x73 keeps the value set above: the OSR and
-         * pre-divider are
+         * The constants are mainline rl6231_pll_calc(3072000, 12288000). At
+         * this payload's 1.5 MHz BCLK the VCO lands at 36 MHz rather than
+         * 73.728, which has not been checked against the codec's VCO range.
+         * 0x73 keeps the value set above: the OSR and pre-divider are
          * relative to fs and do not change with the SYSCLK source. */
         _codec_rmw(0x64, 0xFFFF, 0x0200);  /* Pow_pll - RMW, keep IN1/IN2   */
         _codec_w(0x81, 0x0B04);        /* N_code 22 (bits 15:7), K_code 4  */
@@ -491,13 +488,7 @@ static void _codec_playback_setup(bool use_bclk_pll)
             _codec_r(0x80), _codec_r(0x81), _codec_r(0x82), _codec_r(0x64));
     } else {
         /* SYSCLK straight from MCLK - the codec's reset default, and what
-         * HOS relies on: its init table never writes 0x80.
-         *
-         * 0x73 is deliberately NOT rewritten here. HOS sets it to 0x8814 in
-         * the table above, and that register carries the I2S pre-divider and
-         * the DAC oversampling ratio, i.e. what the DAC's digital section
-         * actually runs on. Overriding it with a hand-computed 0x0114 was
-         * guesswork layered on top of the console's own known-good value. */
+         * HOS relies on: its init table never writes 0x80. */
         _codec_w(0x80, 0x0000);
     }
     /* Everything the digital path needs is already in the table above:
