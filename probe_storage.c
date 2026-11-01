@@ -241,6 +241,17 @@ static int hex_nibble(char c) {
     return -1;
 }
 
+/* Every BOOT0 excursion ends here. A failed switch-back used to go
+ * unnoticed, and everything after it - the GPT walk, the report's mount -
+ * would have read BOOT0 as if it were USER. */
+static void emmc_back_to_user(void)
+{
+    if (sdmmc_storage_set_mmc_partition(&emmc_storage, 0)) {
+        log_color(COL_ERR, "  eMMC         : switch back to USER FAILED\n");
+        dx_set("emmc_bus", DX_FAIL, "USER switch-back failed");
+    }
+}
+
 /* Secret-bearing buffers must not be left in the heap after the PRODINFO
  * helper is done with them. Use volatile stores so an optimizing compiler
  * cannot remove the wipe merely because free() follows. */
@@ -352,8 +363,10 @@ static int load_bis_keys_from_sd(const char **err)
     /* Parse 64 hex chars into 32 bytes. */
     u8 key[32] __attribute__((aligned(4)));
     for (int i = 0; i < 32; i++) {
+        /* hi first: a keyfile truncated inside the key must not read past
+         * its buffer for the low nibble. */
         int hi = hex_nibble(q[i*2]);
-        int lo = hex_nibble(q[i*2 + 1]);
+        int lo = hi < 0 ? -1 : hex_nibble(q[i*2 + 1]);
         if (hi < 0 || lo < 0) {
             wipe_free(body, cap + 1);
             *err = "bad hex in bis_key_00";
@@ -543,15 +556,26 @@ void probe_serial(void)
      * into a malloc size. */
     u32 body_size = *(u32 *)&hdr[0x08];
     u8 *cal0 = NULL;
+    u32 cal0_len = 0;
     if (!hdr_res && body_size >= sizeof(nx_emmc_cal0_t) - 0x40 &&
         body_size <= SZ_64K) {
         u32 total = ((0x40 + body_size) + 511) & ~511u;
         cal0 = malloc(total);
         if (cal0 && nx_emmc_bis_read(0, total / 512, cal0)) {
-            free(cal0);
+            wipe_free(cal0, total);
             cal0 = NULL;
         }
+        if (cal0)
+            cal0_len = total;
     }
+    /* The decrypted CAL0 carries the console's device, SSL and eTicket
+     * keys and certificates; it and the two sector buffers are wiped on
+     * every way out, the same as the prod.keys body. */
+#define CAL0_DONE() do {                       \
+        wipe_free(cal0, cal0_len);             \
+        memset(hdr, 0, sizeof(hdr));           \
+        memset(buf, 0, sizeof(buf));           \
+    } while (0)
     nx_emmc_bis_end();
     /* The BIS layer does not clear its AES keyslots. Once all encrypted reads
      * are complete, remove the console-unique key material immediately. */
@@ -593,7 +617,7 @@ void probe_serial(void)
 
     if (hdr_res || srl_res) {
         log_color(COL_ERR, "  BIS read failed (%d / %d)\n", hdr_res, srl_res);
-        free(cal0);
+        CAL0_DONE();
         return;
     }
 
@@ -613,7 +637,7 @@ void probe_serial(void)
                 ? "skipped (gibberish, prod.keys not for this device)"
                 : "skipped (encrypted, run Lockpick to populate"
                   " sd:/switch/prod.keys)");
-        free(cal0);
+        CAL0_DONE();
         return;
     }
 
@@ -806,7 +830,8 @@ void probe_serial(void)
     log_color(spk_blank ? COL_WARN : COL_OK, "  Speaker cal  : %s\n",
         spk_blank ? "blank (never calibrated)" : "present");
 
-    free(cal0);
+    CAL0_DONE();
+#undef CAL0_DONE
 }
 
 void probe_emmc_health(void)
@@ -939,7 +964,7 @@ void probe_boot0_pkg1(void)
     static u8 buf[0x200] __attribute__((aligned(8)));
     if (sdmmc_storage_read(&emmc_storage, 0x800, 1, buf) != 0) {
         log_color(COL_ERR, "  BOOT0 read failed\n");
-        sdmmc_storage_set_mmc_partition(&emmc_storage, 0);
+        emmc_back_to_user();
         return;
     }
     /* Mariko BOOT0 has a 0x170-byte OEM header (`bl_hdr_t210b01_t`)
@@ -1003,7 +1028,7 @@ void probe_boot0_pkg1(void)
     if (printable == 0) {
         log_color(COL_WARN,
             "  pkg1 build   : (BOOT0 sector 0x800 read all-zero - pkg1 absent)\n");
-        sdmmc_storage_set_mmc_partition(&emmc_storage, 0);
+        emmc_back_to_user();
         return;
     }
     log_color(COL_OK, "  pkg1 build   : %s\n", build);
@@ -1117,7 +1142,7 @@ void probe_boot0_pkg1(void)
             burnt, min_f);
     }
 
-    sdmmc_storage_set_mmc_partition(&emmc_storage, 0);
+    emmc_back_to_user();
 }
 
 void probe_autorcm(void)
@@ -1145,7 +1170,7 @@ void probe_autorcm(void)
      * legitimate modulus has it as 0xF7 for prod silicon, 0x37 for dev.) */
     static u8 buf[0x200] __attribute__((aligned(8)));
     int rd = sdmmc_storage_read(&emmc_storage, 1, 1, buf);
-    sdmmc_storage_set_mmc_partition(&emmc_storage, 0);
+    emmc_back_to_user();
     if (rd != 0) {
         log_color(COL_ERR, "  sector 1 read failed\n");
         return;
@@ -1243,12 +1268,18 @@ void probe_gpt(void)
 
             /* Entry array CRC: spans num_parts * entry_sz bytes starting
              * at sector part_ent_lba (= our buf + (part_ent_lba-1)*512).
-             * Cap at what fits in the 5-sector read window. */
-            u32 ent_total = num_parts * entry_sz;
-            u32 ent_off   = (u32)((part_ent_lba - 1) * 512);
-            u32 buf_left  = (5 * 512) - ent_off;
+             * Cap at what fits in the 5-sector read window - and bound the
+             * fields first, they come off the disk: a corrupt part_ent_lba
+             * used to underflow buf_left and send the CRC past the buffer
+             * (a wild read the BPMP may not come back from), and a large
+             * count * size could wrap to something that fit. */
             bool ent_ok = true;  /* assume pass if we can't compute */
-            if (ent_total <= buf_left) {
+            bool ent_in_window = part_ent_lba >= 1 && part_ent_lba <= 4 &&
+                                 num_parts <= 128 && entry_sz <= 512;
+            u32 ent_total = ent_in_window ? num_parts * entry_sz : 0;
+            u32 ent_off   = ent_in_window ? (u32)((part_ent_lba - 1) * 512) : 0;
+            u32 buf_left  = (5 * 512) - ent_off;
+            if (ent_in_window && ent_total <= buf_left) {
                 u32 calc_ent = gpt_crc32(buf + ent_off, ent_total);
                 log_color(calc_ent == ent_crc ? COL_OK : COL_ERR,
                     "  ent CRC32    : 0x%08X (stored 0x%08X) %s\n",
@@ -1256,9 +1287,9 @@ void probe_gpt(void)
                     calc_ent == ent_crc ? "OK" : "MISMATCH");
                 ent_ok = (calc_ent == ent_crc);
             } else {
-                log_color(COL_DEFAULT,
+                log_color(ent_in_window ? COL_DEFAULT : COL_WARN,
                     "  ent CRC32    : skipped (entries span %d bytes, only %d in read window)\n",
-                    ent_total, buf_left);
+                    ent_in_window ? ent_total : num_parts * entry_sz, buf_left);
             }
             dx_set("gpt", (hdr_ok && ent_ok) ? DX_PASS : DX_FAIL,
                 hdr_ok && ent_ok ? "" :
