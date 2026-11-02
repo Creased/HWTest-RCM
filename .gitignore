@@ -1,7 +1,10 @@
 build/
 build-jc/
 build-ram/
+build-gui/
 *.bin
+# ...except the GUI's rasterised fonts, generated once by tools/mkfont.py.
+!gui/res/fonts.bin
 *.elf
 *.o
 *.d

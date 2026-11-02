@@ -32,6 +32,7 @@ git submodule update --init --recursive
 export DEVKITARM=/opt/devkitpro/devkitARM   # or wherever yours lives
 make                                        # normal launcher / hardware diagnostic
 make ram                                    # dedicated full-memory DRAM diagnostic
+make gui                                    # touch / Joy-Con front end, for the SD card
 ```
 
 Hekate provides the BDK/SoC support. The RAM build takes the MTC sources,
@@ -46,6 +47,12 @@ compiler is available, the normal build can still complete without that stub and
 the Wi-Fi probe reports `CPU0 handoff : not built`. Release builds use
 `REQUIRE_A64=1`, so a missing CPU0 stub is a hard failure rather than a silently
 degraded release.
+
+`make gui` produces `build-gui/gui.bin`, the [GUI](#gui) that `hwtest.bin`
+starts from the SD card, and `build-gui/libsys_minerva.bso`, hekate's DRAM
+training module built from the submodule, which the GUI loads to draw faster.
+The GUI is built from the same probes with bdk's LVGL, and is far larger than
+an RCM payload may be, so it never ships as one.
 
 Plain `make` produces `build/hwtest.bin`. `make ram` additionally produces
 `build-ram/hwtest_ram.bin`; it is a separate DRAM service payload and is not part
@@ -103,6 +110,83 @@ skipped and the LCD/UART results remain usable.
 | `s` / `S` | Re-write the SD report file |
 | `R` | Reboot (PMIC power cycle, so a modchip re-injects) |
 | `q` / POWER | Power off the console |
+
+## GUI
+
+For people who are not technicians, `hwtest.bin` has a second face: a
+touch and Joy-Con interface that looks like hekate's Nyx (the same theme,
+colours, fonts and layout), runs the same checks, and explains the results
+in plain words. It is too large to be injected, so it lives on the SD card
+and `hwtest.bin` hands over to it, the way hekate hands over to Nyx:
+
+```
+SD card
+|-- bootloader/payloads/
+|   |-- hwtest.bin           build/hwtest.bin (the payload itself, for hekate's
+|   |                        Payloads menu; inject it over RCM as usual otherwise)
+|   `-- hwtest_ram.bin       build-ram/hwtest_ram.bin (only for the RAM test)
+`-- hwtest/
+    |-- gui.bin              build-gui/gui.bin
+    `-- libsys_minerva.bso   build-gui/libsys_minerva.bso (optional, faster drawing;
+                             hekate's bootloader/sys/libsys_minerva.bso is used when absent)
+```
+
+`make sdzip` packs exactly that as `build/hwtest-sd.zip`, to be unzipped at
+the root of the card. Every CI run uploads it as the `hwtest-sd` artifact and
+every release carries it as `hwtest-sd.zip`.
+
+With `hwtest/gui.bin` on the card, injecting `hwtest.bin` opens the GUI. Without
+it - no card, an unreadable card, or a file that is not a GUI stage for this
+build's layout - the text launcher above runs exactly as before, so a console
+whose SD slot is the fault can still be diagnosed. Hold **VOL-** while the
+payload starts to skip the GUI on purpose.
+
+Every screen works with any one of:
+
+| Input | Move | Select | Back |
+|---|---|---|---|
+| Touchscreen | - | tap | Close |
+| Joy-Con | stick or D-pad | A | B |
+| Console buttons | VOL+ / VOL- | POWER | Close |
+
+The console buttons are enough on their own, for a console with a broken
+touchscreen and no Joy-Con. In a message box they pick between its buttons.
+
+| Screen | What it does |
+|---|---|
+| **Home** | Nyx's Home tab: Health Check, Joy-Con, Touchscreen and RAM Test, and Reboot / Power Off (each asks first). The first tab has what hwtest checks and the credits. |
+| **Health Check** | The full sweep, with a progress bar and the steps ticked off. Then one row per part of the console (battery, charging, power, temperature and fan, storage, Wi-Fi and Bluetooth, processor and memory, sound, screen, touch, system) saying in a few words whether it is fine; each opens to what was checked, what a problem means and what to try, and from there to the report pages behind it. The report is saved to the SD card as in the text flow. |
+| **Joy-Con** | Both Joy-Cons (or a Lite's built-in controls): every button that can be reached on the rail lights up when pressed and stays marked once it has been, with a count of how many are done, and each stick is drawn live and judged. Let go of it for a second, then roll it all the way around: the stick's own resting point and travel are learnt from that (a Joy-Con's factory calibration is only in its own flash, and sticks rest up to a tenth of their travel from the nominal centre), each direction is judged against the stick's own furthest one (wear comes up short on one side, not evenly), and drift is how far it rests from the middle of its travel. A connection that drops and comes back is counted, which is what a worn rail looks like. |
+| **Touchscreen** | A grid over the whole panel that turns green under a finger; what never turns green does not respond. The instructions panel steps out of the way while a finger is down and returns a moment after; tap its Finish button or press POWER for the verdict. |
+| **RAM Test** | Starts `hwtest_ram.bin` from the card, as the text launcher's RAM test does. |
+
+The status bar along the bottom shows the console's serial number when
+`sd:/switch/prod.keys` (from Lockpick_RCM) is on the card - the serial is in
+the encrypted PRODINFO - and the battery as Nyx shows it: the current going
+in (green) or out (red), the cell voltage, the level to a tenth, and a bolt
+while it charges.
+
+The GUI draws where Nyx does: the BPMP at hekate's boost clock, and the DRAM
+trained up by hekate's Minerva module (1600 MHz on Erista, 408 MHz on Mariko,
+which has no table). The module is read from `hwtest/libsys_minerva.bso`,
+or failing that from hekate's own `bootloader/sys/libsys_minerva.bso`; a
+copy whose interface does not match (hekate changes a magic word with it)
+is passed over. Without any it runs at the 204 MHz boot clock, only slower.
+Both go back to the payload's clocks for the health check, so its readings
+match the text payload's, and before the RAM test starts. `make gui` builds
+the module from the hekate submodule. The debug UART reports the DRAM clock
+and which module it took at start-up and, every couple of seconds while
+anything is drawn, what a frame costs.
+
+UART-B stays the debug console while the GUI runs, with the `R` reboot, until a
+Joy-Con is attached to the right rail: that rail is UART-B, so the debug output
+stops there and the Joy-Con takes the port. The bench's UART adapter does not
+pull the rail's detect line, so it is never mistaken for one.
+
+The GUI's fonts (Inter at Nyx's sizes, Source Code Pro, Font Awesome 4.7
+symbols) are rasterised by `tools/mkfont.py` into `gui/res/fonts.bin` and
+`gui/gui_fonts.c`; only that output is in the tree, with the faces' licence in
+`gui/res/LICENSE-fonts.txt`.
 
 ## What's reported
 
@@ -564,7 +648,8 @@ Joy-Con right rail as a UART tap, see this gbatemp guide:
 
 ```
 hwtest.h             - shared header: logging + finding APIs, probe prototypes
-main.c               - boot flow, page table, pager + UART command loop
+core.c               - page table, the sweep, step breadcrumbs, UART reboot hook
+main.c               - boot flow, text launcher hand-off, pager + UART command loop
 log.c                - three-sink logging (LCD + UART_B + report capture)
 dx.c                 - diagnostic-finding registry consumed by the verdict
 report.c             - SD report writer (backup/<emmc_serial>/hwtest.txt)
@@ -585,13 +670,16 @@ cpu_stub/            - AArch64 stub that does the PCIe half on CPU0
 emmcsn.c             - Hekate-style backup/<emmc_serial>/<sub>/<file> path
 diskio.c, ffconf.h   - FatFS glue + config (vendored from the Hekate bootloader)
 exception_handlers.S - boot exception/relocation entry (vendored from Hekate)
-ui_menu.c/.h         - physical-key launcher, custom probe selection, RAM payload loader
+ui_menu.c/.h         - physical-key launcher, custom probe selection, GUI and RAM payload loaders
 ui_theme.h           - shared LCD colors and menu geometry used by hwtest and RAM UI
 chain_reloc.S        - tiny upper-IRAM relocator used for the hwtest -> RAM handoff
 gfx/                 - LCD driver (vendored from the Hekate bootloader)
 stubs.c              - minerva_deinit no-op
 link.ld              - link script; also keeps .bss off BDK's SDRAM scratch
-Makefile             - devkitARM normal payload + `make ram`, AArch64 CPU0-stub build support
+gui/                 - LVGL front end (`make gui`): screens, theme, plain-language texts, fonts
+tools/mkfont.py      - rasterises the GUI's fonts into LVGL's format
+tools/mksdzip.py     - packs the SD card zip (`make sdzip`)
+Makefile             - devkitARM normal payload, `make ram`, `make gui`, AArch64 CPU0-stub build support
 third_party/hekate/  - pinned Hekate BDK git submodule
 third_party/Atmosphere/ - pinned Atmosphere MTC/timing-table git submodule
 ramtest/             - universal Erista/Mariko DRAM diagnostic + Atmosphere MTC adaptation patch

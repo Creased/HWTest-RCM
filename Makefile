@@ -35,7 +35,7 @@ DEFAULT_BIN := $(DEFAULT_DIR)/$(TARGET).bin
 
 # Object list for the normal launcher payload.
 COMMON_OBJS = \
-    start.o exception_handlers.o chain_reloc.o main.o ui_menu.o stubs.o emmcsn.o \
+    start.o exception_handlers.o chain_reloc.o main.o core.o ui_menu.o stubs.o emmcsn.o \
     log.o dx.o report.o verdict.o \
     probe_soc.o probe_power.o probe_memclk.o probe_inputs.o probe_bt.o probe_audio.o probe_audio_beep.o \
     probe_wifi.o probe_display.o probe_storage.o probe_gamecard.o probe_lowlevel.o \
@@ -148,12 +148,19 @@ LDFLAGS := $(ARCH) -nostartfiles -lgcc -Wl,--nmagic,--gc-sections \
 CC      := arm-none-eabi-gcc
 OBJCOPY := arm-none-eabi-objcopy
 
-.PHONY: all default ram clean
+.PHONY: all default ram gui sdzip clean
 
 # `make` (no args) builds the normal launcher payload.
 all: default
 
 default: $(DEFAULT_BIN)
+
+# Everything that goes on the SD card, in one zip laid out as it goes there
+# (tools/mksdzip.py lists the files): unzip it at the root of the card.
+SD_ZIP := $(DEFAULT_DIR)/hwtest-sd.zip
+
+sdzip: default ram gui
+	@python3 tools/mksdzip.py $(SD_ZIP)
 
 # Dedicated full-memory DRAM diagnostic. Kept out of `all` because the build
 # embeds both public Atmosphere MTC engines/tables and is intentionally a
@@ -291,7 +298,117 @@ $(DEFAULT_BIN): $(DEFAULT_DIR)/loader.elf
 	    printf '   the injector truncates silently, so this payload must not ship\n'; \
 	    rm -f $@; exit 1; fi
 
+# ---- GUI stage ------------------------------------------------------------
+#
+# The touch / Joy-Con front end, built with bdk's LVGL as Nyx is. It is far
+# past the RCM ceiling, so it does not ship as a payload: it goes on the SD
+# card as hwtest/gui.bin, and hwtest.bin loads it into DRAM and jumps to it
+# (ui_boot_gui). Same probes as the payload; no hw_init of its own, since
+# hwtest.bin has already done it by then.
+#
+# No DEBUG_UART_PORT here: with it set, bdk's Joy-Con driver compiles to
+# nothing. UART-B debug output stays, under the GUI's own control
+# (UART_DEBUG_ON), until a Joy-Con takes the right rail.
+#
+# Not size-limited, so -O2 for drawing speed. LVGL's sources pick up the
+# GUI's lv_conf.h ahead of bdk's (same include guard).
+GUI_DIR := build-gui
+GUI_BIN := $(GUI_DIR)/gui.bin
+GUI_OPT ?= -O2
+# Shown in the main screen's first tab, as Nyx shows hekate's version.
+GUI_VERSION ?= $(shell git describe --tags --always 2>/dev/null)
+LVGLDIR := $(BDKDIR)/libs/lvgl
+
+VPATH += gui $(LVGLDIR)/lv_core $(LVGLDIR)/lv_draw $(LVGLDIR)/lv_fonts \
+         $(LVGLDIR)/lv_hal $(LVGLDIR)/lv_misc $(LVGLDIR)/lv_objx \
+         $(LVGLDIR)/lv_themes $(BDKDIR)/ianos $(BDKDIR)/ianos/elfload
+
+GUI_OBJS = \
+    gui_start.o exception_handlers.o chain_reloc.o core.o ui_menu.o stubs.o emmcsn.o \
+    log.o dx.o report.o verdict.o \
+    probe_soc.o probe_power.o probe_memclk.o probe_inputs.o probe_bt.o probe_audio.o probe_audio_beep.o \
+    probe_wifi.o probe_display.o probe_storage.o probe_gamecard.o probe_lowlevel.o \
+    gfx.o \
+    heap.o sprintf.o util.o btn.o dirlist.o \
+    bpmp.o ccplex.o clock.o di.o vic.o i2c.o irq.o timer.o \
+    mc.o sdram.o gpio.o pinmux.o pmc.o se.o tsec.o uart.o \
+    fuse.o kfuse.o \
+    sdmmc.o sdmmc_driver.o sd.o emmc.o nx_emmc_bis.o \
+    bq24193.o max17050.o max7762x.o max77620-rtc.o bm92t36.o regulator_5v.o \
+    tmp451.o fan.o \
+    touch.o als.o joycon.o \
+    hw_init.o \
+    ff.o ffsystem.o ffunicode.o diskio.o \
+    ianos.o elfload.o elfreloc_arm.o \
+    lv_group.o lv_indev.o lv_obj.o lv_refr.o lv_style.o lv_vdb.o \
+    lv_draw.o lv_draw_rbasic.o lv_draw_vbasic.o lv_draw_arc.o lv_draw_img.o \
+    lv_draw_label.o lv_draw_line.o lv_draw_rect.o lv_draw_triangle.o \
+    lv_hal_disp.o lv_hal_indev.o lv_hal_tick.o lv_font_builtin.o \
+    lv_anim.o lv_area.o lv_circ.o lv_color.o lv_font.o lv_ll.o lv_math.o \
+    lv_mem.o lv_task.o lv_txt.o lv_gc.o lv_log.o \
+    lv_arc.o lv_bar.o lv_btn.o lv_btnm.o lv_cont.o lv_ddlist.o lv_img.o \
+    lv_label.o lv_line.o lv_list.o lv_mbox.o lv_page.o lv_roller.o \
+    lv_slider.o lv_sw.o lv_tabview.o lv_ta.o lv_win.o lv_imgbtn.o \
+    lv_theme.o lv_theme_hekate.o \
+    gui_main.o gui_theme.o gui_home.o gui_tests.o gui_stick.o gui_ram.o \
+    gui_run.o gui_results.o gui_text.o gui_clock.o \
+    gui_fonts.o gui_fonts_blob.o
+
+GUI_OBJS := $(addprefix $(GUI_DIR)/,$(GUI_OBJS))
+
+GUI_ASFLAGS := $(ARCH) $(GUI_OPT) -g -nostdlib -ffunction-sections -fdata-sections \
+               -fomit-frame-pointer -std=gnu11 -MMD -MP \
+               -Igui -I. -I$(BDKDIR) -I$(GFXDIR) \
+               -I$(HEKATE)/bootloader/gfx \
+               -I$(HEKATE)/bootloader/libs/fatfs \
+               $(BASE_DEFINES) -DHWTEST_GUI -DDEBUG_UART_BAUDRATE=115200 \
+               $(EXTRA_DEFINES)
+GUI_CFLAGS  := $(GUI_ASFLAGS) -DLV_CONF_INCLUDE_SIMPLE -include gui/lv_conf.h \
+               -DGUI_VERSION='"$(GUI_VERSION)"'
+GUI_LDFLAGS := $(ARCH) -nostartfiles -lgcc -Wl,--nmagic,--gc-sections -T gui/link.ld
+
+# hekate's DRAM training module, which the GUI loads from
+# hwtest/libsys_minerva.bso - or, when that is not on the card, from hekate's
+# own bootloader/sys/libsys_minerva.bso - to run the DRAM at Nyx's clocks
+# (gui_clock.c). Built from the submodule as hekate builds it, with the
+# objects and the output kept here.
+GUI_MINERVA := $(GUI_DIR)/libsys_minerva.bso
+
+gui: $(GUI_BIN) $(GUI_MINERVA)
+
+$(GUI_MINERVA): | $(GUI_DIR)
+	$(MAKE) --no-print-directory -C $(HEKATE)/modules/hekate_libsys_minerva \
+	    BUILDDIR=$(CURDIR)/$(GUI_DIR)/minerva OUTPUTDIR=$(CURDIR)/$(GUI_DIR)
+	@printf '   built %s - copy to SD as hwtest/libsys_minerva.bso (or leave it to hekate'"'"'s bootloader/sys copy)\n' $@
+
+$(GUI_DIR):
+	@mkdir -p $@
+
+$(GUI_DIR)/%.o: %.c gui/lv_conf.h $(DEF_STAMP_D) | $(GUI_DIR)
+	$(CC) $(GUI_CFLAGS) -c -o $@ $<
+$(GUI_DIR)/%.o: %.S $(DEF_STAMP_D) | $(GUI_DIR)
+	$(CC) $(GUI_ASFLAGS) -c -o $@ $<
+$(GUI_DIR)/gui_start.o: gui/start.S | $(GUI_DIR)
+	$(CC) $(GUI_ASFLAGS) -c -o $@ $<
+$(GUI_DIR)/gui_fonts_blob.o: gui/fonts_blob.S gui/res/fonts.bin | $(GUI_DIR)
+	$(CC) $(GUI_ASFLAGS) -c -o $@ $<
+
+ifneq ($(HAVE_A64),)
+GUI_CFLAGS += -DHAVE_CPU_STUB=1
+GUI_OBJS += $(GUI_DIR)/cpu_stub_bin.o
+$(GUI_DIR)/cpu_stub_bin.o: $(DEFAULT_DIR)/cpu_stub_bin.c | $(GUI_DIR)
+	$(CC) $(GUI_CFLAGS) -c -o $@ $<
+endif
+
+$(GUI_DIR)/gui.elf: $(GUI_OBJS) gui/link.ld
+	$(CC) $(GUI_LDFLAGS) -o $@ $(GUI_OBJS) -lgcc
+
+$(GUI_BIN): $(GUI_DIR)/gui.elf
+	$(OBJCOPY) -O binary $< $@
+	@printf '   built %s (%s bytes) - copy to SD as hwtest/gui.bin\n' $@ $$(stat -c%s $@)
+
 -include $(wildcard $(DEFAULT_DIR)/*.d)
+-include $(wildcard $(GUI_DIR)/*.d)
 
 clean:
-	rm -rf $(DEFAULT_DIR) build-jc build-ram
+	rm -rf $(DEFAULT_DIR) $(GUI_DIR) build-jc build-ram

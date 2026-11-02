@@ -22,6 +22,9 @@ bool _log_no_uart   = false;    /* used by save_report to avoid duplicating */
 char *_log_capture     = NULL;   /* NULL = don't capture */
 u32 _log_capture_pos = 0;
 u32 _log_capture_cap = 0;
+#ifdef HWTEST_GUI
+bool g_uart_debug = true;
+#endif
 
 static bool _log_capture_full = false;
 
@@ -106,6 +109,9 @@ void _log_emit(u32 color)
     if (!_log_no_uart)
         uart_send_crlf(UART_B, (u8 *)_log_buf, n);
     _log_capture_append(_log_buf, n);
+#ifdef HWTEST_GUI
+    gui_log_capture(color, _log_buf, n);
+#endif
 }
 
 /* Translate \n to \r\n on the way to UART so terminals don't stair-step
@@ -114,6 +120,8 @@ void uart_send_crlf(u32 idx, const u8 *buf, u32 n)
 {
     static const u8 cr = '\r';
     u32 start = 0;
+    if (!UART_DEBUG_ON)
+        return;
     for (u32 i = 0; i < n; i++) {
         if (buf[i] == '\n') {
             if (i > start)

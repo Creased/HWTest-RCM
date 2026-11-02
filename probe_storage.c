@@ -291,19 +291,15 @@ static int load_bis_keys_from_sd(const char **err)
         return 7;
     }
 
-    /* Mount the SD if no other probe has done it yet. probe_serial runs
-     * early in the storage page so the SD-content scan and save_report
-     * mounts haven't fired yet. f_mount with a fresh FATFS replaces any
-     * prior binding cleanly. */
+    /* Mount the SD on every call. f_mount with a fresh FATFS replaces any
+     * prior binding cleanly, and remembering an earlier mount is not safe:
+     * the GUI reads the serial again on later sweeps, and the volume may
+     * have been unmounted in between (sd_unmount/sd_end). */
     static FATFS s_bis_fs;
-    static bool  s_bis_mounted = false;
-    if (!s_bis_mounted) {
-        FRESULT mfr = f_mount(&s_bis_fs, "0:", 1);
-        if (mfr != FR_OK) {
-            *err = "SD f_mount failed";
-            return 8;
-        }
-        s_bis_mounted = true;
+    FRESULT mfr = f_mount(&s_bis_fs, "0:", 1);
+    if (mfr != FR_OK) {
+        *err = "SD f_mount failed";
+        return 8;
     }
 
     FIL fp;
@@ -480,6 +476,34 @@ static void gpt_free_bounded(link_t *gpt)
         it = next;
     }
     list_init(gpt);
+}
+
+/* Just the serial, read the way probe_serial reads it, for the GUI's
+ * header: no logging, no findings, and nothing decrypted is kept. Needs
+ * the eMMC and SD up and sd:/switch/prod.keys; false without any of them. */
+bool console_serial(char out[25])
+{
+    out[0] = 0;
+    const char *key_err;
+    if (!g_emmc_ok || load_bis_keys_from_sd(&key_err))
+        return false;
+
+    LIST_INIT(gpt);
+    emmc_gpt_parse(&gpt);
+    emmc_part_t *part = emmc_part_find(&gpt, "PRODINFO");
+    u32 sec_cnt = emmc_storage.sec_cnt;
+    if (part && part->lba_start && part->lba_end >= part->lba_start &&
+        (!sec_cnt || part->lba_end < sec_cnt)) {
+        static u8 cal0[1024] __attribute__((aligned(8)));
+        nx_emmc_bis_init(part, false, 0);
+        if (!nx_emmc_bis_read(0, 2, cal0) && !memcmp(cal0, "CAL0", 4))
+            cal0_str(out, (const char *)&cal0[0x250], 24);
+        nx_emmc_bis_end();
+        memset(cal0, 0, sizeof(cal0));
+    }
+    gpt_free_bounded(&gpt);
+    clear_loaded_bis_keyslots(true);
+    return out[0] != 0;
 }
 
 void probe_serial(void)

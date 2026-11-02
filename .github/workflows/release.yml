@@ -46,6 +46,7 @@ jobs:
         run: |
           make all REQUIRE_A64=1 A64_CC=aarch64-linux-gnu-gcc A64_OC=aarch64-linux-gnu-objcopy
           make ram
+          make gui REQUIRE_A64=1 A64_CC=aarch64-linux-gnu-gcc A64_OC=aarch64-linux-gnu-objcopy
 
       # Grep the uncompressed images: the shipped .bin is the self-extracting
       # stub plus an LZ blob, so no string from the payload survives in it as
@@ -79,6 +80,19 @@ jobs:
       # 192 KiB without saying so, so anything past this ceiling reaches the
       # console as a partial image that hangs. That shipped unnoticed from v0.6
       # to v0.10; refuse to publish it again.
+      # hwtest.bin only hands over to a file whose header (gui/start.S) has
+      # the magic and the load address it expects; check the build has both.
+      - name: Verify the GUI stage header
+        run: |
+          python3 - <<'EOF'
+          import struct, sys
+          b = open('build-gui/gui.bin', 'rb').read()
+          magic, end, start = struct.unpack_from('<III', b, 4)
+          ok = magic == 0x55475748 and start == 0x81000000 and end - start <= len(b)
+          print('gui.bin: %d bytes, magic %08X, load %08X, end %08X' % (len(b), magic, start, end))
+          sys.exit(0 if ok else 'FAIL: gui.bin header does not match what hwtest.bin checks')
+          EOF
+
       - name: Check the payloads fit the RCM injection ceiling
         run: |
           limit=130392
@@ -90,6 +104,13 @@ jobs:
             echo "ok: $f is $size bytes ($((limit - size)) to spare)"
           done
 
+      # Everything for the SD card in one zip, laid out as it goes there
+      # (tools/mksdzip.py): unzip it at the root of the card. The payloads
+      # are already built, so this only packs; the flags are repeated so
+      # that nothing could be rebuilt without the CPU0 stub.
+      - name: Pack the SD card zip
+        run: make sdzip REQUIRE_A64=1 A64_CC=aarch64-linux-gnu-gcc A64_OC=aarch64-linux-gnu-objcopy
+
       - name: Upload workflow artifact (always)
         uses: actions/upload-artifact@v7
         with:
@@ -97,6 +118,7 @@ jobs:
           path: |
             build/hwtest.bin
             build-ram/hwtest_ram.bin
+            build/hwtest-sd.zip
           if-no-files-found: error
 
       - name: Attach to GitHub Release
@@ -106,6 +128,7 @@ jobs:
           files: |
             build/hwtest.bin
             build-ram/hwtest_ram.bin
+            build/hwtest-sd.zip
           fail_on_unmatched_files: true
           generate_release_notes: true
 

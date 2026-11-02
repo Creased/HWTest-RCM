@@ -136,20 +136,19 @@ void probe_joycon(void)
 }
 
 
-void probe_touch(void)
+/* Do not call BDK touch_power_on() instead. That helper contains Hekate's
+ * maintenance shortcut: if VOL+ and VOL- are both held it runs the ITO
+ * production test and, when that passes, executes autotune followed by
+ * FTS4_CMD_SAVE_CX_TUNING. The save command writes compensation data to
+ * the touch controller's EEPROM, which is not an acceptable implicit side
+ * effect for a repair sweep - nor for the GUI, which powers the panel the
+ * same way.
+ *
+ * Reproduce only the public BDK power/reset/sense sequence and omit the
+ * button-triggered calibration branch. touch_sys_reset() is global in BDK
+ * touch.c but not part of the public header, so declare it locally. */
+int touch_power_on_safe(void)
 {
-    HEADER("[Touch panel (FTS4, I2C3 @ 0x49)]");
-
-    /* Do not call BDK touch_power_on() here. That helper contains Hekate's
-     * maintenance shortcut: if VOL+ and VOL- are both held it runs the ITO
-     * production test and, when that passes, executes autotune followed by
-     * FTS4_CMD_SAVE_CX_TUNING. The save command writes compensation data to
-     * the touch controller's EEPROM, which is not an acceptable implicit
-     * side effect for a repair sweep.
-     *
-     * Reproduce only the public BDK power/reset/sense sequence and omit the
-     * button-triggered calibration branch. touch_sys_reset() is global in
-     * BDK touch.c but not part of the public header, so declare it locally. */
     extern int touch_sys_reset(void);
     PINMUX_AUX(PINMUX_AUX_DAP4_SCLK) = PINMUX_PULL_DOWN | 1;
     gpio_direction_output(GPIO_PORT_J, GPIO_PIN_7, GPIO_LOW);
@@ -163,9 +162,17 @@ void probe_touch(void)
     gpio_write(GPIO_PORT_J, GPIO_PIN_7, GPIO_HIGH);
     msleep(10);
 
-    int power_rc = touch_sys_reset();
-    if (!power_rc)
-        power_rc = touch_sense_enable();
+    int rc = touch_sys_reset();
+    if (!rc)
+        rc = touch_sense_enable();
+    return rc;
+}
+
+void probe_touch(void)
+{
+    HEADER("[Touch panel (FTS4, I2C3 @ 0x49)]");
+
+    int power_rc = touch_power_on_safe();
     log_color(power_rc ? COL_ERR : COL_OK,
         "  power-on     : %s\n", power_rc ? "FAILED (panel cable / IC fault?)" : "OK");
     if (power_rc) {

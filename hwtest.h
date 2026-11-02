@@ -2,8 +2,9 @@
  * hwtest - one-shot Switch hardware probe / repair report.
  *
  * Shared declarations: includes, logging + finding APIs, and the prototype
- * of every probe. Each probe domain lives in its own .c file; main.c keeps
- * the boot flow, the page table, the pager and the UART command loop.
+ * of every probe. Each probe domain lives in its own .c file; core.c keeps
+ * the page table and the sweep, main.c the text launcher, pager and UART
+ * command loop, and gui/ the LVGL front end.
  */
 #ifndef HWTEST_H
 #define HWTEST_H
@@ -118,6 +119,17 @@ void dx_reset(void);
 void dx_set(const char *key, dx_sev_t sev, const char *fmt, ...);
 const dx_finding_t *dx_get(const char *key);
 
+/* The verdict's rows (verdict.c): each names the keys it aggregates. The
+ * GUI's results are built from the same table. */
+struct dx_macro {
+    const char *name;          /* pre-padded to 15 cols for column-align */
+    const char *const *keys;   /* NULL-terminated */
+    u32 group_mask;            /* launcher domain(s) that make this meaningful */
+    bool require_all_groups;   /* true when keys span independent domains */
+};
+extern const struct dx_macro g_dx_macros[];
+extern const u32 g_dx_macro_n;
+
 /* Distinct keys in use: count them when adding one, dx_set drops the
  * overflow silently. */
 #define DX_CAP 64
@@ -169,6 +181,7 @@ void probe_dram(void);
 void probe_clocks(void);
 void probe_storage(void);
 void probe_serial(void);
+bool console_serial(char out[25]);  /* PRODINFO serial, needs prod.keys */
 void probe_partitions(void);
 void probe_emmc_health(void);
 void probe_gpt(void);
@@ -186,6 +199,7 @@ void probe_wifi_link(void);
 void probe_display(void);
 void probe_backlight(void);
 void probe_touch(void);
+int  touch_power_on_safe(void);    /* without bdk's EEPROM-writing shortcut */
 void probe_als(void);
 void probe_joycon(void);
 void probe_inputs(void);
@@ -198,5 +212,33 @@ void probe_verdict(void);
 
 void run_all_probes(void);
 void run_probe_mask(u32 mask);
+
+/* ---- page table and UART command plumbing (core.c) ---- */
+
+typedef void (*probe_fn_t)(void);
+struct page_entry {
+    probe_fn_t  fn;
+    const char *name;
+};
+#define N_PAGES 42
+extern const struct page_entry g_pages[N_PAGES];
+extern const u32 g_page_groups[N_PAGES];
+bool page_enabled(int idx);
+
+int  uart_getc(void);
+void uart_ungetc(u8 c);
+void do_reboot(void);
+
+/* UART-B is also the right Joy-Con's rail. The GUI stage drives Joy-Cons, so
+ * once one is attached there the debug console has to let go of the port:
+ * nothing more is sent, and nothing read that the Joy-Con driver needs.
+ * The text payload never drives a Joy-Con, so it keeps the port for good. */
+#ifdef HWTEST_GUI
+extern bool g_uart_debug;
+#define UART_DEBUG_ON g_uart_debug
+void gui_log_capture(u32 color, const char *s, u32 n);
+#else
+#define UART_DEBUG_ON 1
+#endif
 
 #endif /* HWTEST_H */

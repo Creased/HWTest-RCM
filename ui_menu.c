@@ -248,7 +248,54 @@ void ui_launcher(ui_selection_t *selection)
     }
 }
 
-int ui_chainload_ram(void)
+/* Hand over to the GUI stage when the SD card carries one.
+ *
+ * The GUI (gui/, built by `make gui`) is far too large for an RCM payload,
+ * so it lives on the SD card and runs from DRAM, the way hekate hands over
+ * to Nyx. Its header (gui/start.S) carries a magic, its size and its load
+ * address; anything that does not match is ignored and the text launcher
+ * runs as before, as it does with no SD card at all. Holding VOL- while
+ * the payload starts skips the GUI on purpose. Does not return when the
+ * GUI starts. */
+#define GUI_MAGIC 0x55475748u   /* "HWGU" */
+
+void ui_boot_gui(void)
+{
+    u32 size = 0;
+    if (btn_read() & BTN_VOL_DOWN) {
+        /* Let go first, or the launcher takes the held key as a step up
+         * and opens on "Power off". */
+        while (btn_read() & BTN_VOL_DOWN)
+            msleep(20);
+        return;
+    }
+    /* Card detect first, set up as bdk's SDMMC1 bring-up does: with no card,
+     * sd_mount() would print its errors over the splash before the launcher
+     * replaces it. */
+    PINMUX_AUX(PINMUX_AUX_GPIO_PZ1) = PINMUX_INPUT_ENABLE | PINMUX_PULL_UP | 2;
+    gpio_direction_input(GPIO_PORT_Z, GPIO_PIN_1);
+    usleep(100);
+    if (!sdmmc_get_sd_inserted() || sd_mount())
+        return;
+    u32 *img = sd_file_read("hwtest/gui.bin", &size);
+    sd_end();
+    if (!img)
+        return;
+    u32 dst = img[3];
+    if (size < 16 || img[1] != GUI_MAGIC || dst != NYX_LOAD_ADDR ||
+        img[2] - dst > size) {
+        free(img);
+        return;
+    }
+    memcpy((void *)dst, img, size);
+    bpmp_mmu_disable();
+    ((void (*)(void))dst)();
+}
+
+/* The RAM test's payload, read off the SD card. NULL when it cannot be, with
+ * *err saying why: 1 no SD card, 2 no file, 3 a file of the wrong size. The
+ * SD card is unmounted again on every failure. */
+void *ram_payload_load(const char **used, u32 *size, int *err)
 {
     static const char *paths[] = {
         "bootloader/payloads/hwtest_ram.bin",
@@ -256,39 +303,32 @@ int ui_chainload_ram(void)
         "/hwtest_ram.bin",
     };
     void *buf = NULL;
-    u32 size = 0;
-    const char *used = NULL;
 
-    gfx_clear_grey(0x1B);
-    _title("RAM test launcher");
-    gfx_con.fntsz = 16;
-    gfx_con_setcol(COL_DEFAULT, 0, COL_BG);
-    gfx_con_setpos(70, 180);
-    gfx_printf("Loading dedicated RAM diagnostic from SD...");
-
+    *err = 1;
     if (sd_mount())
-        goto fail_sd;
+        return NULL;
 
     for (u32 i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
-        buf = sd_file_read(paths[i], &size);
+        buf = sd_file_read(paths[i], size);
         if (buf) {
-            used = paths[i];
+            *used = paths[i];
             break;
         }
     }
+    *err = 2;
+    if (buf && (*size < 0x100u || ALIGN(*size, 0x10) > RAM_MAX_PAYLOAD_SIZE)) {
+        free(buf);
+        buf = NULL;
+        *err = 3;
+    }
     if (!buf)
-        goto fail_missing;
-    if (size < 0x100u || ALIGN(size, 0x10) > RAM_MAX_PAYLOAD_SIZE)
-        goto fail_size;
+        sd_end();
+    return buf;
+}
 
-    gfx_con_setcol(COL_OK, 0, COL_BG);
-    gfx_con_setpos(70, 230);
-    gfx_printf("Loaded %s (%d bytes)", used, size);
-    gfx_con_setcol(COL_INFO, 1, COL_BG);
-    gfx_con_setpos(70, 275);
-    gfx_printf("Starting RAM test...");
-    msleep(350);
-
+/* Run a payload ram_payload_load() returned. Does not return. */
+void ram_payload_run(void *buf, u32 size)
+{
     /* Match the safe ordering used by Hekate payload launching: shut down SD
      * before touching the fixed DRAM staging area. Keep the file buffer alive
      * until after staging; this path never returns on success. */
@@ -308,29 +348,47 @@ int ui_chainload_ram(void)
     bpmp_mmu_disable();
     ((chain_reloc_fn_t)CHAIN_RELOC_ADDR)(RAM_STAGE_ADDR, RAM_ENTRY_ADDR,
                                          staged_size, RAM_ENTRY_ADDR);
-    return 1;
+    while (1)
+        ;
+}
 
-fail_size:
-    free(buf);
-    sd_end();
-    gfx_con_setcol(COL_ERR, 0, COL_BG);
-    gfx_con_setpos(70, 240);
-    gfx_printf("RAM payload has invalid size: %d bytes", size);
-    goto fail_wait;
-fail_missing:
-    sd_end();
-    gfx_con_setcol(COL_ERR, 0, COL_BG);
-    gfx_con_setpos(70, 240);
-    gfx_printf("RAM payload not found.");
+int ui_chainload_ram(void)
+{
+    u32 size = 0;
+    const char *used = NULL;
+    int err;
+
+    gfx_clear_grey(0x1B);
+    _title("RAM test launcher");
+    gfx_con.fntsz = 16;
     gfx_con_setcol(COL_DEFAULT, 0, COL_BG);
-    gfx_con_setpos(70, 280);
-    gfx_printf("Copy hwtest_ram.bin to SD root or bootloader/payloads/.");
-    goto fail_wait;
-fail_sd:
+    gfx_con_setpos(70, 180);
+    gfx_printf("Loading dedicated RAM diagnostic from SD...");
+
+    void *buf = ram_payload_load(&used, &size, &err);
+    if (buf) {
+        gfx_con_setcol(COL_OK, 0, COL_BG);
+        gfx_con_setpos(70, 230);
+        gfx_printf("Loaded %s (%d bytes)", used, size);
+        gfx_con_setcol(COL_INFO, 1, COL_BG);
+        gfx_con_setpos(70, 275);
+        gfx_printf("Starting RAM test...");
+        msleep(350);
+        ram_payload_run(buf, size);
+    }
+
     gfx_con_setcol(COL_ERR, 0, COL_BG);
     gfx_con_setpos(70, 240);
-    gfx_printf("SD card could not be mounted.");
-fail_wait:
+    if (err == 1) {
+        gfx_printf("SD card could not be mounted.");
+    } else if (err == 2) {
+        gfx_printf("RAM payload not found.");
+        gfx_con_setcol(COL_DEFAULT, 0, COL_BG);
+        gfx_con_setpos(70, 280);
+        gfx_printf("Copy hwtest_ram.bin to SD root or bootloader/payloads/.");
+    } else {
+        gfx_printf("RAM payload has invalid size: %d bytes", size);
+    }
     gfx_con_setcol(COL_DEFAULT, 0, COL_BG);
     gfx_con_setpos(70, 360);
     gfx_printf("Press POWER to return to the hwtest menu.");

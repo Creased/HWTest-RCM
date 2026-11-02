@@ -166,12 +166,6 @@ static void _emit_xchecks(void)
  * below names the keys it cares about; we look each up, take the worst
  * severity, and emit one summary line. Adding a new sub-check is a
  * single dx_set() in the relevant probe + the key here. */
-struct dx_macro {
-    const char *name;          /* pre-padded to 15 cols for column-align */
-    const char *const *keys;   /* NULL-terminated */
-    u32 group_mask;            /* launcher domain(s) that make this meaningful */
-    bool require_all_groups;   /* true when keys span independent domains */
-};
 
 static const char *_k_boot[]    = { "soc_pmic_otp", "fuses_pkg1", NULL };
 /* KFUSE CRC is set by probe_kfuse(), which is an Identity-group page, so it
@@ -207,7 +201,7 @@ static const char *_k_display[] = { "dsi_id", "backlight", NULL };
 static const char *_k_inputs[]  = { "touch_id", "touch_ito", "als_id", NULL };
 static const char *_k_memory[]  = { "dram_sym", "plls", NULL };
 
-static const struct dx_macro _macros[] = {
+const struct dx_macro g_dx_macros[] = {
     /* Boot integrity spans two independent probes: PMIC OTP lives in Power,
      * while burnt-fuse/pkg1 compatibility lives in Storage. Do not call the
      * aggregate complete unless both domains ran. */
@@ -230,6 +224,7 @@ static const struct dx_macro _macros[] = {
     { "Inputs        ", _k_inputs,   PROBE_G_INPUTS,                    false },
     { "Memory        ", _k_memory,   PROBE_G_MEMORY,                    false },
 };
+const u32 g_dx_macro_n = sizeof(g_dx_macros) / sizeof(g_dx_macros[0]);
 
 void probe_verdict(void)
 {
@@ -247,8 +242,8 @@ void probe_verdict(void)
     HEADER("[Verdict]");
     int pass = 0, warn = 0, fail = 0;
 
-    for (size_t m = 0; m < sizeof(_macros)/sizeof(_macros[0]); m++) {
-        const struct dx_macro *mc = &_macros[m];
+    for (size_t m = 0; m < sizeof(g_dx_macros)/sizeof(g_dx_macros[0]); m++) {
+        const struct dx_macro *mc = &g_dx_macros[m];
         u32 selected_groups = mc->group_mask & g_run_mask;
         if (mc->require_all_groups ? selected_groups != mc->group_mask
                                    : selected_groups == 0)

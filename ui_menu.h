@@ -14,7 +14,10 @@ typedef struct {
     u32 probe_mask;
 } ui_selection_t;
 
+void ui_boot_gui(void);
 void ui_launcher(ui_selection_t *selection);
 int ui_chainload_ram(void);
+void *ram_payload_load(const char **used, u32 *size, int *err);
+void ram_payload_run(void *buf, u32 size);
 
 #endif
