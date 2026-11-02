@@ -113,6 +113,8 @@ skipped and the LCD/UART results remain usable.
 
 ## GUI
 
+![The GUI: home, the health check running, results, a category, the technical report, the Joy-Con and touchscreen tests, a prompt](img/gui.png)
+
 For people who are not technicians, `hwtest.bin` has a second face: a
 touch and Joy-Con interface that looks like hekate's Nyx (the same theme,
 colours, fonts and layout), runs the same checks, and explains the results
