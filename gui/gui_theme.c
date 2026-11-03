@@ -359,22 +359,23 @@ lv_obj_t *gui_win_btn(lv_obj_t *win, const char *text, lv_action_t action)
 /* Nyx's home screen button: 256 px square, a 120 px symbol, the caption
  * under it, both in the theme colour. */
 lv_obj_t *gui_big_button(lv_obj_t *parent, lv_coord_t x, lv_coord_t y,
-                         const char *icon, const char *caption,
+                         lv_coord_t w, const char *icon, const char *caption,
                          lv_action_t action)
 {
     lv_obj_t *b = lv_btn_create(parent, NULL);
     lv_btn_set_layout(b, LV_LAYOUT_OFF);
-    lv_obj_set_size(b, 256, 256);
+    lv_obj_set_size(b, w, w);
     lv_obj_set_pos(b, x, y);
     lv_btn_set_action(b, LV_BTN_ACTION_CLICK, action);
 
+    /* Nyx's proportions at 256 px, kept when the square is smaller. */
     char buf[48];
     s_printf(buf, "#" GUI_HEX_ACCENT " %s#", icon);
     lv_obj_t *ic = gui_label(b, &gui_icons_120, GUI_COL_TEXT, buf);
-    lv_obj_align(ic, NULL, LV_ALIGN_CENTER, 0, -28);
+    lv_obj_align(ic, NULL, LV_ALIGN_CENTER, 0, -(w * 28 / 256));
     s_printf(buf, "#" GUI_HEX_ACCENT " %s#", caption);
     lv_obj_t *cap = gui_label(b, &gui_font_30, GUI_COL_TEXT, buf);
-    lv_obj_align(cap, NULL, LV_ALIGN_IN_TOP_MID, 0, 174);
+    lv_obj_align(cap, NULL, LV_ALIGN_IN_TOP_MID, 0, w * 174 / 256);
 
     lv_group_add_obj(s_group, b);
     return b;

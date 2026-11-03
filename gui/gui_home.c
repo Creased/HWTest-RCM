@@ -20,6 +20,7 @@ static lv_res_t _act_check(lv_obj_t *b)
 static lv_res_t _act_custom(lv_obj_t *b)  { gui_show(gui_custom); return LV_RES_OK; }
 static lv_res_t _act_joycon(lv_obj_t *b)  { gui_show(gui_joycon_test); return LV_RES_OK; }
 static lv_res_t _act_touch(lv_obj_t *b)   { gui_show(gui_touch_test); return LV_RES_OK; }
+static lv_res_t _act_screen(lv_obj_t *b)  { gui_show(gui_screen_test); return LV_RES_OK; }
 static lv_res_t _act_ram(lv_obj_t *b)     { gui_show(gui_ram_test); return LV_RES_OK; }
 static lv_res_t _act_results(lv_obj_t *b) { gui_show(gui_results); return LV_RES_OK; }
 
@@ -64,17 +65,18 @@ void gui_home(void)
     lv_obj_t *tag = gui_hint(tab, 0, "HARDWARE HEALTH CHECK FOR THE NINTENDO SWITCH");
     lv_obj_set_pos(tag, GUI_MARGIN, TAB_Y(148));
 
-    /* Nyx's row: 256 px buttons 35 px apart from the left margin, the
-     * divider, and the last one ending on the right margin. */
+    /* Nyx's row of square buttons, five across: from the left margin 16 px
+     * apart, the divider in a wider gap before the last, which ends on the
+     * right margin and leaves for its own payload. */
+    const lv_coord_t bw = 216, step = bw + 16;
     lv_coord_t y = TAB_Y(240);
-    lv_obj_t *check = gui_big_button(tab, GUI_MARGIN, y, ICON_HEALTH,
+    lv_obj_t *check = gui_big_button(tab, GUI_MARGIN, y, bw, ICON_HEALTH,
                                      "Health Check", _act_check);
-    gui_big_button(tab, GUI_MARGIN + 256 + GUI_GAP, y, ICON_GAMEPAD,
-                   "Joy-Con", _act_joycon);
-    gui_big_button(tab, GUI_MARGIN + 2 * (256 + GUI_GAP), y, ICON_TOUCH,
-                   "Touchscreen", _act_touch);
-    gui_divider(tab, GUI_MARGIN + 3 * (256 + GUI_GAP) - 1, TAB_Y(218), 300);
-    gui_big_button(tab, GUI_RIGHT - 256, y, ICON_RAM, "RAM Test", _act_ram);
+    gui_big_button(tab, GUI_MARGIN + step, y, bw, ICON_GAMEPAD, "Joy-Con", _act_joycon);
+    gui_big_button(tab, GUI_MARGIN + 2 * step, y, bw, ICON_TOUCH, "Touchscreen", _act_touch);
+    gui_big_button(tab, GUI_MARGIN + 3 * step, y, bw, ICON_SCREEN, "Screen", _act_screen);
+    gui_divider(tab, GUI_RIGHT - bw - 19, TAB_Y(220), bw + 40);
+    gui_big_button(tab, GUI_RIGHT - bw, y, bw, ICON_RAM, "RAM Test", _act_ram);
 
     /* The bottom row: the flat buttons' text lines up with the margins and
      * their boxes end where every window's content ends (the tab page runs

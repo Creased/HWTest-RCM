@@ -351,7 +351,7 @@ GUI_OBJS = \
     lv_slider.o lv_sw.o lv_tabview.o lv_ta.o lv_win.o lv_imgbtn.o \
     lv_theme.o lv_theme_hekate.o \
     gui_main.o gui_theme.o gui_home.o gui_custom.o gui_tests.o gui_stick.o \
-    gui_jcwire.o gui_jcmotion.o gui_jcir.o gui_ram.o \
+    gui_jcwire.o gui_jcmotion.o gui_jcir.o gui_screen.o gui_shot.o gui_ram.o \
     gui_run.o gui_results.o gui_text.o gui_clock.o \
     gui_fonts.o gui_fonts_blob.o
 

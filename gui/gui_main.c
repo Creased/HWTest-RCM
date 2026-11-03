@@ -196,6 +196,12 @@ static bool _touch_read(lv_indev_data_t *data)
         return false;
     }
     touch_poll(&s_touch);
+    /* A second finger takes a screenshot, as a third does in Nyx. */
+    if (s_touch.finger >= 2) {
+        gui_screenshot();
+        data->state = LV_INDEV_STATE_REL;
+        return false;
+    }
     /* A test screen can take the samples for itself; LVGL then sees none. */
     if (s_touch_sink && s_touch_sink(&s_touch)) {
         data->state = LV_INDEV_STATE_REL;

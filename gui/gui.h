@@ -63,6 +63,7 @@
 #define GUI_CONTENT_H     (GUI_BOTTOM - GUI_TOP)    /* 552                  */
 #define GUI_TEXT_PAD      20    /* a flat button's box past its text        */
 #define GUI_PAGE_SB_W     16    /* a list's rows stop here before its edge  */
+#define GUI_BACKLIGHT     100   /* the level main.c set before the GUI      */
 
 /* Two columns: a narrow one on the left, the divider centred in the gap,
  * and the wide one from GUI_COL2_X to the right margin. */
@@ -95,7 +96,7 @@ lv_obj_t *gui_label_wrap(lv_obj_t *parent, const lv_font_t *font,
                          lv_color_t col, lv_coord_t w, const char *text);
 lv_obj_t *gui_hint(lv_obj_t *parent, lv_coord_t w, const char *text);
 lv_obj_t *gui_big_button(lv_obj_t *parent, lv_coord_t x, lv_coord_t y,
-                         const char *icon, const char *caption,
+                         lv_coord_t w, const char *icon, const char *caption,
                          lv_action_t action);
 lv_obj_t *gui_text_button(lv_obj_t *parent, const char *text, lv_action_t action);
 lv_obj_t *gui_button(lv_obj_t *parent, const char *text, lv_action_t action);
@@ -175,7 +176,9 @@ void gui_jc_motion(void);                /* from the Joy-Con test        */
 void gui_jc_ir(void);
 void gui_jc_test_resumed(void);          /* a sensor screen gave the rails back */
 void gui_touch_test(void);
+void gui_screen_test(void);
 void gui_ram_test(void);
+void gui_screenshot(void);               /* two fingers, from gui_main.c */
 void gui_results(void);
 void gui_cat_detail(void);
 void gui_tech_report(void);
