@@ -33,7 +33,7 @@ void probe_pmic(void)
 
     /* MAX77621 is the Erista CPU/GPU buck regulator (two single-phase
      * chips on I2C5 at 0x1B/0x1C). Mariko / OLED / Lite replace it with
-     * the multi-phase MAX77812 — handled by probe_max77812 below.
+     * the multi-phase MAX77812, handled by probe_max77812 below.
      * Trying to read MAX77621 on Mariko returns NACK -> 0xFF on most
      * lines and prints garbage. Gate by SoC chip-major. */
     if (chip_major == 1) {
@@ -94,7 +94,7 @@ void probe_pmic(void)
     }
 }
 
-/* MAX77812 — Mariko / OLED / Lite multi-phase buck regulator that
+/* MAX77812: the Mariko / OLED / Lite multi-phase buck regulator that
  * replaces the dual MAX77621 setup found on Erista. Two retail
  * variants exist:
  *   PHASE211 @ I2C5 0x33 : 2-phase M1 (GPU) + 1-phase M3 (DRAM) +
@@ -102,7 +102,7 @@ void probe_pmic(void)
  *                          consumer Switch ships with.
  *   PHASE31  @ I2C5 0x31 : 3-phase M1 + 1-phase M4. Dev-kit / high-power
  *                          GPU variant; M3 is unused.
- * Both probe with no harm — only one ACKs on a real board. We try
+ * Both probe with no harm; only one ACKs on a real board. We try
  * 0x33 first (retail likelihood) and fall back to 0x31. If neither
  * answers we mark the probe FAIL and skip; on Erista we don't run
  * this probe at all.
@@ -1177,7 +1177,7 @@ void probe_thermal(void)
      * used for thresholding on Switch). HOS / Hekate program these
      * to bracket the operating range; a unit with WRONG limits (or
      * default 0/85 from POR) is interesting because it means
-     * software hasn't configured the sensor — we'd see a missing
+     * software hasn't configured the sensor: we'd see a missing
      * thermal-management init somewhere. */
     LOG("  PCB limits   : low %d C / high %d C\n", (s8)llow, (s8)lhigh);
     LOG("  SoC limits   : low %d C / high %d C\n", (s8)rlow, (s8)rhigh);

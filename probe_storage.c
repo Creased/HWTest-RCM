@@ -1155,7 +1155,7 @@ void probe_boot0_pkg1(void)
      *                        at boot (the kernel reaches secure-monitor
      *                        init, sees the fuse mismatch, halts). CFW
      *                        like Atmosphère patches this check and
-     *                        still boots — this is the classic
+     *                        still boots: this is the classic
      *                        "OFW dead, CFW only" Switch state.
      *                        FAIL with diagnostic so the tech knows
      *                        the symptom comes from an over-burn.

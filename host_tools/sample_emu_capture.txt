@@ -331,7 +331,8 @@
   VENDOR_STAT  : 0x00000000 (RX_FIFO=0 byte(s))
 [raw PG1 sample (10 ms via GPIO)]
     samples      : 0 high, 2632 low, 0 edges
-    Verdict      : line stuck LOW - shifter unpowered or shorted to GND
+    Verdict      : line LOW - nothing is driving it. No adapter on the rail,
+                   as on most consoles, or one with no power. Not a problem.
 --- Raw state ---
 [Reset + PMIC latches + RTC + Hekate intent]
   PMC RST_STATUS: 0 (POR (cold boot - power-on reset))

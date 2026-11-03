@@ -156,7 +156,8 @@ touchscreen and no Joy-Con. In a message box they pick between its buttons.
 
 | Screen | What it does |
 |---|---|
-| **Home** | Nyx's Home tab: Health Check, Joy-Con, Touchscreen and RAM Test, and Reboot / Power Off (each asks first). The first tab has what hwtest checks and the credits. |
+| **Home** | Nyx's Home tab: Health Check, Joy-Con, Touchscreen and RAM Test, and along the bottom Custom Check, Last Results, and Reboot / Power Off (each asks first). The first tab has what hwtest checks and the credits. |
+| **Custom Check** | The text launcher's Custom test: one checkbox per group of checks (identity, power, memory, storage, wireless, sound chip, sound output, screen, inputs, system details), then Run. The check's step list greys out what was not picked and the results say "not checked" for it. Check Again on the results repeats the same selection; Health Check on the home screen always runs everything. |
 | **Health Check** | The full sweep, with a progress bar and the steps ticked off. Then one row per part of the console (battery, charging, power, temperature and fan, storage, Wi-Fi and Bluetooth, processor and memory, sound, screen, touch, system) saying in a few words whether it is fine; each opens to what was checked, what a problem means and what to try, and from there to the report pages behind it. The report is saved to the SD card as in the text flow. |
 | **Joy-Con** | Both Joy-Cons (or a Lite's built-in controls): every button that can be reached on the rail lights up when pressed and stays marked once it has been, with a count of how many are done, and each stick is drawn live and judged. Let go of it for a second, then roll it all the way around: the stick's own resting point and travel are learnt from that (a Joy-Con's factory calibration is only in its own flash, and sticks rest up to a tenth of their travel from the nominal centre), each direction is judged against the stick's own furthest one (wear comes up short on one side, not evenly), and drift is how far it rests from the middle of its travel. A connection that drops and comes back is counted, which is what a worn rail looks like. |
 | **Touchscreen** | A grid over the whole panel that turns green under a finger; what never turns green does not respond. The instructions panel steps out of the way while a finger is down and returns a moment after; tap its Finish button or press POWER for the verdict. |
@@ -204,8 +205,8 @@ the detail when something needs chasing:
 | Power & charging | MAX77620 + GPIOs + regulators + 5V + battery + charger + USB-PD + thermal + fan |
 | Memory & clocks | LPDDR4 mode regs + CLK_RST raw + decoded rates |
 | Storage | SD + eMMC + partitions + health + GPT + BOOT0/pkg1 + AutoRCM + SD content scan, plus PRODINFO: serial, CAL0 body SHA-256, config ID, product model vs SoC, LCD vendor vs fitted panel, WLAN/BD MACs, battery lot, USB-C PD rev, touch IC, IMU, sticks, region, speaker calibration |
-| Wireless | Bluetooth radio: full CYW4356 power-up, then HCI over UART-D. Reports whether the radio answers and identifies itself. Then the WLAN half: a complete T210 PCIe bring-up, link training and endpoint enumeration (`14E4:43EC`) — enumeration is the verdict, the die-level ChipID is firmware-gated and left to the OS. The PCIe half runs on CPU0, so this is also the only page that powers the A57 cluster: its bring-up reads the CPU regulator back and bounds the RAM repair, and a dead CPU rail is reported on the Verdict's own **CPU complex** row rather than hanging the console |
-| Audio | ALC5639 codec identity over I2C-1 + an I2C-1 census + APE/AHUB power and clocks + AUD_MCLK, then a melody clocked out of I2S1: first phrase on the left speaker, second on the right, tail on the headphone jack — so a dead or weak output is obvious by ear, one output at a time |
+| Wireless | Bluetooth radio: full CYW4356 power-up, then HCI over UART-D. Reports whether the radio answers and identifies itself. Then the WLAN half: a complete T210 PCIe bring-up, link training and endpoint enumeration (`14E4:43EC`): enumeration is the verdict, the die-level ChipID is firmware-gated and left to the OS. The PCIe half runs on CPU0, so this is also the only page that powers the A57 cluster: its bring-up reads the CPU regulator back and bounds the RAM repair, and a dead CPU rail is reported on the Verdict's own **CPU complex** row rather than hanging the console |
+| Audio | ALC5639 codec identity over I2C-1 + an I2C-1 census + APE/AHUB power and clocks + AUD_MCLK, then a melody clocked out of I2S1: first phrase on the left speaker, second on the right, tail on the headphone jack, so a dead or weak output is obvious by ear, one output at a time |
 | Display | DSI panel ID + backlight PWM + GPIO state |
 | Inputs | FTS touch FW + electrical ITO open/short test + ALS + Joy-Con rails + buttons + AC adapter |
 | Raw state | GPIO pin census + UART debug port + reset reason + PMC scratch |
@@ -312,25 +313,25 @@ The Tegra X1 TRM chapter 19 (AHB) describes the BPMP-Lite crossbar as "the
 path to IRAM from AHB devices, and also the BPMP-Lite and CPU path to AHB
 devices", and lists the AHB slaves: XBAR, DRAM, USB-OTG/USB2 and TZRAM. PCIe
 is not among them. The PCIe aperture hangs off MSELECT instead, and MSELECT
-is documented in chapter 16, *CPU Complex* — `MSELECT_CONFIG_0`, reset value
+is documented in chapter 16, *CPU Complex*: `MSELECT_CONFIG_0`, reset value
 `0x07ff4020`, carrying the `ENABLE_PCIE_APERTURE` bit. The block diagram says
 the same thing: MSELECT's master is CCPLEX/CPUCIF, and its 32-bit
 `AXI>ARM7 (APC)` port is a bridge *into* the ARM7 world, not out of it. The
 BPMP-Lite is an AHB master; PCIe lives on the CPU's AXI, behind MSELECT.
 
 What that looks like from a payload, with every precondition it controls
-already satisfied — PCIE and AFI clocked and out of reset, the PCIE power
-partition ungated, PLLE and PLLREFE locked, MSELECT's own reset released:
+already satisfied (PCIE and AFI clocked and out of reset, the PCIE power
+partition ungated, PLLE and PLLREFE locked, MSELECT's own reset released):
 
 | Access | From the BPMP | From CPU0 |
 | --- | --- | --- |
 | AFI window `0x01003800` | all-ones, and writes do not stick | decodes, writes stick |
 | `MSELECT_CONFIG_0` `0x50060000` | `0xEAFFFFFE`, and the same word at every other MSELECT offset | `0x07FF4020`, the TRM's reset value |
-| Display controller `0x54200000`, TSEC `0x54500000` | read fine | — |
+| Display controller `0x54200000`, TSEC `0x54500000` | read fine | n/a |
 
 The third row is the control: this is not a general MMIO fault on the way to
 some fix, it is PCIe and MSELECT specifically. So the probe splits, and the
-PCIe-side accesses run on CPU0 — see
+PCIe-side accesses run on CPU0; see
 [Running part of the probe on CPU0](#running-part-of-the-probe-on-cpu0).
 
 (Aside if you cross-reference hekate: its `MSELECT_CFG_WRAP_TO_INCR_BPMP` for
@@ -353,8 +354,8 @@ sweep is not, not because it endangers the payload: with the PCIe half on
 CPU0, an access that never completes takes out CPU0 alone, and the BPMP sees
 the mailbox heartbeat stop, prints the last breadcrumb the stub wrote,
 powergates the cluster and carries on. What it does do is boot the CPU
-cluster — CPU rail up through the MAX77621/MAX77812, PLLX, the CRAIL/C0NC/CE0
-partitions — and cold-cycle `WL_REG_ON`, resetting the WLAN section. hwtest
+cluster (CPU rail up through the MAX77621/MAX77812, PLLX, the CRAIL/C0NC/CE0
+partitions) and cold-cycle `WL_REG_ON`, resetting the WLAN section. hwtest
 is otherwise a read-only pass you can point at an unknown console, and this
 costs 3-4 seconds on top.
 
@@ -363,7 +364,7 @@ so if it does stall, the last line received names the access that did it.
 
 ### The bring-up sequence
 
-BDK has no PCIe support at all — no AFI (Address Framing Interface, the
+BDK has no PCIe support at all: no AFI (Address Framing Interface, the
 controller's register window), no PLLE (the PCIe phase-locked loop), no UPHY
 (Universal PHY) lane initialisation, not even a base address. So this probe
 carries its own T210 root-complex bring-up, ported from U-Boot's
@@ -372,8 +373,8 @@ code, and cross-checked against Linux's `pci-tegra.c` and
 `phy/tegra/xusb-tegra210.c`. In order:
 
 0. **MSELECT out of reset.** The step with nothing to do with PCIe that stops
-   everything without it. MSELECT is the fabric between every master — the
-   CPU cluster *and the BPMP* — and the AXI slaves. `hw_init()` enables its
+   everything without it. MSELECT is the fabric between every master, the
+   CPU cluster *and the BPMP*, and the AXI slaves. `hw_init()` enables its
    clock but never clears its reset; the only BDK code that does is the path
    that boots the A57s, which this payload never takes. Setting
    `MSELECT_CFG_ERR_RESP_EN_PCIE` at the same time is what makes the rest of
@@ -393,7 +394,7 @@ code, and cross-checked against Linux's `pci-tegra.c` and
    tree hangs off `pcie@1003000`. Enabling is not enough: LDO7 feeds
    `avdd-pll-uerefe`, the UPHY reference PLL's own analog supply, and a
    Mariko in RCM is still on its 1.000 V cold OTP default because HOS's
-   `pcv` — which would program the 1.05 V the board specifies — never runs
+   `pcv`, which would program the 1.05 V the board specifies, never runs
    here. (Erista boots at 1.05 V, so this is Mariko-specific.)
 2. **`WL_REG_ON` cold cycle** on PH1, which starts the endpoint's own
    power-on reset. `BT_REG_ON` is left alone, so this resets the WLAN
@@ -413,11 +414,11 @@ code, and cross-checked against Linux's `pci-tegra.c` and
    and L4T enables `uphy_mgmt` inside `tegra210_pcie_pad_probe()` behind
    `if (t210b01_compatible(padctl) == 1)`, ahead of every UPHY access. It
    clocks the calibration state machine, so with it gated `CAL_EN` latches
-   and `CAL_DONE` stays 0 for ever — while ELPG, the lane mux and CTL1/2/4
+   and `CAL_DONE` stays 0 for ever, while ELPG, the lane mux and CTL1/2/4
    all read and write perfectly, because those are ordinary APB registers.
    Two CAR registers BDK never touches: `PLLP_MISC1` (0x680) carries the
-   `pll_p_out_xusb` branch gate, and `PEX_SATA_USB_RX_BYP` (0x6D0) — which
-   means something else entirely on Erista — is repurposed on B01 as this
+   `pll_p_out_xusb` branch gate, and `PEX_SATA_USB_RX_BYP` (0x6D0), which
+   means something else entirely on Erista, is repurposed on B01 as this
    clock's 7.1 divider plus enable gate. 408 MHz over a divider value of 6
    gives the 102 MHz NVIDIA's init table asks for. This is exactly the class
    of difference that lets the U-Boot sequence work on a Jetson TX1 and fail
@@ -430,13 +431,13 @@ code, and cross-checked against Linux's `pci-tegra.c` and
    (`usb3_pll_g1_init_data`), plus a per-lane table through each lane's
    `CTL8`. It is an either/or, not an addition. Take the T210 branch on a
    Mariko and the PLL is never configured: `CAL_EN` latches, `CAL_CTRL` reads
-   back `0x136`, and `CAL_DONE` stays 0 for ever — which looks exactly like
+   back `0x136`, and `CAL_DONE` stays 0 for ever, which looks exactly like
    dead silicon and sends you hunting on the PCIe side, where nothing is
    wrong. Only L4T shows this; mainline has no B01 support at all.
 4. **Link training** on root port 1, honouring the CYW4356's own ordering:
    reference clock stable for 10 ms *before* PERST# is released, then 6 ms
    before the first configuration access (datasheet Table 62, p147). Neither
-   upstream driver waits for either — they drive add-in cards whose rails
+   upstream driver waits for either; they drive add-in cards whose rails
    came up long before the driver loaded.
 5. **Enumeration.** The root port's own identity, then the endpoint's:
    `14E4:43EC` is the CYW4356's WLAN function, class `0x028000` (network
@@ -446,7 +447,7 @@ code, and cross-checked against Linux's `pci-tegra.c` and
    bus. The die-level ChipID would need a firmware download (the backplane
    is firmware-gated in ROM phase), which is the OS's job, not the probe's.
 
-The BT and WLAN halves each have their own verdict — a radio that answers
+The BT and WLAN halves each have their own verdict: a radio that answers
 HCI and a WLAN function that enumerates means the module is powered,
 clocked and on its busses; one that does neither has nothing on the bus at
 all. Both are reported distinctly, and both feed the `Wireless` verdict
@@ -460,7 +461,7 @@ which console you are testing against.
 ### Running part of the probe on CPU0
 
 The PCIe apertures answer a CPU-complex master and nobody else, so the probe
-splits in two. The BPMP does everything it can legitimately reach — rails,
+splits in two. The BPMP does everything it can legitimately reach: rails,
 `WL_REG_ON`, the PEX I/O pads, the PCIE partition, PCIE/AFI clocks and
 resets, PLLREFE and PLLE, the pad controller, the lane mux and UPHY PLL P0,
 all of it APB and CAR. Then it hands over:
@@ -469,7 +470,7 @@ all of it APB and CAR. Then it hands over:
    at `0xA0000000`) into DRAM, and clears a mailbox at `0xA0030000`.
 2. Runs its own copy of bdk's `ccplex_boot_cpu0()` sequence, which brings
    up the CPU rail, PLLX, the CPU clock domain and the CRAIL/C0NC/CE0
-   partitions, and releases CPU0 at the stub — in EL3, AArch64, MMU off.
+   partitions, and releases CPU0 at the stub, in EL3, AArch64, MMU off.
    Its own copy because bdk's spins on the RAM repair with no timeout, and
    a console with a dead CPU rail would hang there; this one reads the
    regulator back and bounds the wait, so the fault is reported instead.
@@ -484,7 +485,7 @@ all of it APB and CAR. Then it hands over:
 
 **This is the safer arrangement, which is the real argument for it.** An
 aperture that does not decode, or a block held in reset, does not error a
-transaction on this SoC — it never completes one. Such an access from the
+transaction on this SoC; it never completes one. Such an access from the
 BPMP takes the whole console down, because the BPMP is also what runs the
 UART, the pager and the reset path, so recovery means a manual power cycle.
 Made from CPU0, the same stall costs CPU0 alone: the BPMP sees the heartbeat
@@ -561,7 +562,7 @@ what stalled.
 Three pages. The first identifies the ALC5639 codec on I2C-1 (`0x1C`) and
 walks the bus; the second brings up the APE/AHUB power and clock domain plus
 `AUD_MCLK`. The second plays a melody: the first phrase on the left speaker,
-the second on the right, then a tail on the headphone jack — split that way so
+the second on the right, then a tail on the headphone jack, split that way so
 one weak or dead output can be picked out by ear without needing a meter.
 
 Samples reach the codec by PIO, not DMA: the CPU writes straight into the
@@ -577,11 +578,11 @@ be spotted by reading registers back, which is what made this slow to find:
 | ADMAIF CIF `FIFO_THRESHOLD` = 3, not 0 | A zero threshold forwards to the crossbar before real data is held, so the port clocks out stale words: DC clicks, never a waveform |
 | DAS routing (`DAS_DAP_CTRL_SEL`, `DAS_DAC_INPUT_DATA_CLK_SEL`) | The Digital Audio Switch is what connects the DAP1 pin group to I2S1. Miss it and everything upstream looks perfect |
 | PMC `PWR_DET` latch for the AUDIO_HV rail | Pads on a rail whose voltage is never latched drive at the wrong level |
-| One 32-bit FIFO word per stereo *frame* | Under the CIF's `UNPACK16`, low half is left and high half is right. Writing one 16-bit sample per push leaves the right DAC on DC and emits two frames per sample — silent right channel, an octave low, half speed |
+| One 32-bit FIFO word per stereo *frame* | Under the CIF's `UNPACK16`, low half is left and high half is right. Writing one 16-bit sample per push leaves the right DAC on DC and emits two frames per sample: silent right channel, an octave low, half speed |
 | The jack is the codec's own capless HPO | Reached through the HPVOL leg (`HPO_MIXER` = `0xC000`), not a DAC1-direct tap |
 
-The clock recipe — `AUD_MCLK` from PLLP/17 = 24 MHz, BCLK 1.5 MHz from
-PLLA_OUT0, `TIMING` = 31 — gives fs = 23437.5 Hz. That is the *actual* sample
+The clock recipe (`AUD_MCLK` from PLLP/17 = 24 MHz, BCLK 1.5 MHz from
+PLLA_OUT0, `TIMING` = 31) gives fs = 23437.5 Hz. That is the *actual* sample
 rate, and the note pitches and durations are computed from it; using a nominal
 48 kHz instead just detunes and slows the melody.
 
@@ -589,13 +590,13 @@ Three keys feed the `Audio` verdict, and they mean different strengths of
 thing. `audio_codec` passes when the part answers with a Realtek identity
 after the probe asserts LDO1_EN on **PZ4** itself; silence is only a WARN,
 never a fail, because nothing here separates a faulty codec from a board that
-was never fitted with one — HOS treats it as optional too.
+was never fitted with one; HOS treats it as optional too.
 `audio_clocks` fails if the AUD power partition
 will not ungate or APE stays in reset, and passes when the island is up.
 
 `audio_beep` is the one to read carefully: it is a **completion marker, not
 an acoustic measurement**. Nothing in the payload can hear the console, so it
-passes as soon as the sequence has been clocked out end to end — a console
+passes as soon as the sequence has been clocked out end to end: a console
 whose speakers are dead, disconnected or swapped still reports PASS. The
 verdict says the SoC side did its job; your ears are the instrument for the
 rest, which is exactly why the melody is split one output at a time.
@@ -606,7 +607,7 @@ BDK hands out a few fixed IRAM addresses no section knows about, and
 `SDRAM_PARAMS_ADDR` (`memory_map.h`) is one of them: `sdram_init()`, reached
 from `hw_init()` on the first line of `ipl_main`, decompresses the DRAM
 parameter blob there and writes `0x838` bytes, unconditionally, on every
-boot. Any static that lands in that window is destroyed during `hw_init` —
+boot. Any static that lands in that window is destroyed during `hw_init`,
 after `start.S` zeroes `.bss`, before any probe runs.
 
 Nothing in the payload can defend against that, so the link script stays out
@@ -645,6 +646,11 @@ The Switch UART runs at 1.8 V. Use a level-shifter between the Tegra rail
 and any USB-TTL cable that doesn't natively support 1.8 V. For wiring the
 Joy-Con right rail as a UART tap, see this gbatemp guide:
 <https://gbatemp.net/threads/how-to-make-a-joycon-rail-uart-to-capture-boot-log.625784/>.
+
+Without an adapter on the rail, the Raw state page's UART debug port section
+reads the RX line LOW. That only means nothing is driving it, which is the
+normal state of a console with nothing plugged into the rail; it is not a
+fault.
 
 ## Layout
 
@@ -693,9 +699,9 @@ host_tools/          - ImGui + pyserial UART viewer (parser, GUI, replay)
 Heavy reliance on the work of:
 
 - [Hekate / BDK](https://github.com/CTCaer/hekate)
-- [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere) — public Erista/Mariko MTC code and timing tables used by the dedicated RAM diagnostic
+- [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere): public Erista/Mariko MTC code and timing tables used by the dedicated RAM diagnostic
 - [Lockpick_RCM](https://github.com/shchmue/Lockpick_RCM)
 - [switchbrew.org](https://switchbrew.org/wiki/)
-- [shinyquagsire23's hekate audio branch](https://github.com/shinyquagsire23/hekate/tree/audio)
-  — the only known bare-metal Switch audio implementation, and what the audio
+- [shinyquagsire23's hekate audio branch](https://github.com/shinyquagsire23/hekate/tree/audio):
+  the only known bare-metal Switch audio implementation, and what the audio
   probe's clock recipe and ADMAIF configuration were recovered from

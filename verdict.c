@@ -69,10 +69,10 @@ static void _xchecks_power(void)
      * charging-in, - means discharging-out, ~0 means idle/done. If the
      * charger says "fast charging" but the gauge reads negative current,
      * the sense resistor or its trace is broken (charger pumps but gauge
-     * doesn't see it) — repair-relevant because the unit will appear to
+     * doesn't see it), repair-relevant because the unit will appear to
      * "not charge" in HOS even though the charger is working. */
     /* max17050_get_property(MAX17050_Current) returns microamps (raw
-     * register * 156.25 µA per LSB, with integer math giving µA), not
+     * register * 156.25 uA per LSB, with integer math giving uA), not
      * milliamps. probe_battery divides by 1000 before printing as mA;
      * we do the same for the cross-check. */
     int current_ua = 0;

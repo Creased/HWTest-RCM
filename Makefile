@@ -346,11 +346,11 @@ GUI_OBJS = \
     lv_hal_disp.o lv_hal_indev.o lv_hal_tick.o lv_font_builtin.o \
     lv_anim.o lv_area.o lv_circ.o lv_color.o lv_font.o lv_ll.o lv_math.o \
     lv_mem.o lv_task.o lv_txt.o lv_gc.o lv_log.o \
-    lv_arc.o lv_bar.o lv_btn.o lv_btnm.o lv_cont.o lv_ddlist.o lv_img.o \
+    lv_arc.o lv_bar.o lv_btn.o lv_btnm.o lv_cb.o lv_cont.o lv_ddlist.o lv_img.o \
     lv_label.o lv_line.o lv_list.o lv_mbox.o lv_page.o lv_roller.o \
     lv_slider.o lv_sw.o lv_tabview.o lv_ta.o lv_win.o lv_imgbtn.o \
     lv_theme.o lv_theme_hekate.o \
-    gui_main.o gui_theme.o gui_home.o gui_tests.o gui_stick.o gui_ram.o \
+    gui_main.o gui_theme.o gui_home.o gui_custom.o gui_tests.o gui_stick.o gui_ram.o \
     gui_run.o gui_results.o gui_text.o gui_clock.o \
     gui_fonts.o gui_fonts_blob.o
 

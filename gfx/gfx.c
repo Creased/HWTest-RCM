@@ -35,7 +35,7 @@ gfx_con_t gfx_con;
  * (stride is unchanged: it's still the physical row stride, but the
  * landscape-aware pixel writes ignore it and use the rotation formula).
  *
- * Glyph rendering goes through _gfx_set_lpixel for clarity — slower than
+ * Glyph rendering goes through _gfx_set_lpixel for clarity: slower than
  * the original pointer-incrementing loop but bandwidth is fine for a
  * console used for diagnostic text. */
 #define GFX_PHYS_W 720u
@@ -211,7 +211,7 @@ void gfx_putc(char c)
 	/* Landscape variant: glyphs render via _gfx_set_lpixel which applies
 	 * the 90 deg CW rotation. We keep the 16 / 8 size split for parity
 	 * with the upstream gfx but use a generic pixel writer rather than
-	 * pointer-arithmetic optimisations — performance is plenty for the
+	 * pointer-arithmetic optimisations; performance is plenty for the
 	 * couple of KB of diagnostic text we paint per page redraw. */
 	switch (gfx_con.fntsz)
 	{

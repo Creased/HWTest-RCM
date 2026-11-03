@@ -14,7 +14,9 @@
 #include "gui.h"
 #include "gui_text.h"
 
-typedef enum { ST_UNTESTED, ST_OK, ST_SOFT, ST_WARN, ST_FAIL } st_t;
+/* Worst last. ST_PARTIAL: what ran passed, but some of the category's
+ * checks were not picked for this run (gui_custom). */
+typedef enum { ST_UNTESTED, ST_OK, ST_SOFT, ST_PARTIAL, ST_WARN, ST_FAIL } st_t;
 
 static u32 s_cat_sel;
 static const char *s_tech_pages[PAGE_LIST_MAX];
@@ -59,15 +61,25 @@ static st_t _finding_state(const char *key, const dx_finding_t **out)
     return ST_OK;
 }
 
-/* Calls fn for every check behind a category; returns its worst state. */
+/* Calls fn for every check behind a category; returns its worst state.
+ * The checks of a row that was not picked for this run are passed to fn
+ * as untested, so a category's page still lists them. */
 static st_t _cat_walk(const gui_cat_t *c,
                       void (*fn)(const char *key, st_t st, void *ctx), void *ctx)
 {
     st_t worst = ST_UNTESTED;
+    bool skipped = false;
     for (u32 r = 0; r < ARRAY_SIZE(c->rows) && c->rows[r]; r++) {
         const struct dx_macro *mc = _row(c->rows[r]);
-        if (!mc || !_row_ran(mc))
+        if (!mc)
             continue;
+        if (!_row_ran(mc)) {
+            skipped = true;
+            if (fn)
+                for (const char *const *k = mc->keys; *k; k++)
+                    fn(*k, ST_UNTESTED, ctx);
+            continue;
+        }
         for (const char *const *k = mc->keys; *k; k++) {
             st_t st = _finding_state(*k, NULL);
             if (st == ST_UNTESTED)
@@ -78,6 +90,9 @@ static st_t _cat_walk(const gui_cat_t *c,
                 worst = st;
         }
     }
+    /* Passed as far as it went is not the same as passed. */
+    if (skipped && (worst == ST_OK || worst == ST_SOFT))
+        return ST_PARTIAL;
     return worst;
 }
 
@@ -215,6 +230,7 @@ static const char *_status(st_t st)
     switch (st) {
     case ST_FAIL: return "#" GUI_HEX_FAIL " Problem found#";
     case ST_WARN: return "#" GUI_HEX_WARN " Worth a look#";
+    case ST_PARTIAL: return "#" GUI_HEX_HINT " Partly checked#";
     case ST_OK:
     case ST_SOFT: return "#" GUI_HEX_OK " Working normally#";
     default:      return "#" GUI_HEX_HINT " Not checked#";
@@ -226,7 +242,8 @@ static const char *_mark(st_t st)
     switch (st) {
     case ST_FAIL: return "#" GUI_HEX_FAIL " " ICON_FAIL "#";
     case ST_WARN: return "#" GUI_HEX_WARN " " ICON_WARN "#";
-    case ST_SOFT: return "#" GUI_HEX_HINT " " ICON_UNKNOWN "#";
+    case ST_SOFT:
+    case ST_PARTIAL: return "#" GUI_HEX_HINT " " ICON_UNKNOWN "#";
     case ST_OK:   return "#" GUI_HEX_OK " " ICON_OK "#";
     default:      return "#" GUI_HEX_HINT " " ICON_UNKNOWN "#";
     }
@@ -300,6 +317,12 @@ void gui_results(void)
         "The full report is saved on the SD card, in the backup folder." :
         "#" GUI_HEX_WARN " The report could not be saved to the SD card.#");
     lv_obj_set_pos(saved, GUI_MARGIN, GUI_TOP + 184 + lv_obj_get_height(sl) + 24);
+    if (g_run_mask != PROBE_G_ALL) {
+        lv_obj_t *part = gui_hint(win, GUI_COL1_W,
+            "A custom check: what was not picked shows as not checked.");
+        lv_obj_set_pos(part, GUI_MARGIN,
+                       lv_obj_get_y(saved) + lv_obj_get_height(saved) + 24);
+    }
 
     gui_divider(win, GUI_DIVIDER_X, GUI_TOP, GUI_CONTENT_H);
 
@@ -370,6 +393,8 @@ static void _detail_row(const char *key, st_t st, void *vctx)
         why = t && t->warn ? t->warn : "This check gave a warning.";
     else if (st == ST_SOFT)
         why = "Not checked on this console.";
+    else if (st == ST_UNTESTED)
+        why = "Not picked for this check.";
     if (why) {
         lv_obj_t *wl = gui_label_wrap(row, &gui_font_20, GUI_COL_TEXT,
                                       ctx->w - 72, why);
@@ -419,6 +444,8 @@ void gui_cat_detail(void)
     lv_obj_t *say = gui_hint(win, GUI_COL1_W,
         st == ST_OK || st == ST_SOFT ? c->ok :
         st == ST_UNTESTED ? "These checks did not run." :
+        st == ST_PARTIAL ? "What ran passed; the checks marked on the right "
+                           "were not picked for this run." :
         "What was found and what to try is on the right.");
     lv_obj_set_pos(say, GUI_MARGIN, GUI_TOP + 46);
     _facts(win, c->facts, GUI_MARGIN, GUI_TOP + 46 + lv_obj_get_height(say) + 24,

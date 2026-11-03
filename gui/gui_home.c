@@ -11,7 +11,13 @@
 /* The tab's page starts under the tab bar. */
 #define TAB_Y(y) ((y) - GUI_BAR_H)
 
-static lv_res_t _act_check(lv_obj_t *b)   { gui_show(gui_run); return LV_RES_OK; }
+static lv_res_t _act_check(lv_obj_t *b)
+{
+    gui_run_mask(PROBE_G_ALL);    /* the whole check, whatever was picked before */
+    gui_show(gui_run);
+    return LV_RES_OK;
+}
+static lv_res_t _act_custom(lv_obj_t *b)  { gui_show(gui_custom); return LV_RES_OK; }
 static lv_res_t _act_joycon(lv_obj_t *b)  { gui_show(gui_joycon_test); return LV_RES_OK; }
 static lv_res_t _act_touch(lv_obj_t *b)   { gui_show(gui_touch_test); return LV_RES_OK; }
 static lv_res_t _act_ram(lv_obj_t *b)     { gui_show(gui_ram_test); return LV_RES_OK; }
@@ -74,9 +80,11 @@ void gui_home(void)
      * their boxes end where every window's content ends (the tab page runs
      * on under the status bar, so the offset is taken from the screen edge). */
     const lv_coord_t dy = -(GUI_H - GUI_BOTTOM);
+    lv_obj_t *custom = gui_text_button(tab, ICON_SLIDERS " Custom Check", _act_custom);
+    lv_obj_align(custom, NULL, LV_ALIGN_IN_BOTTOM_LEFT, GUI_MARGIN - GUI_TEXT_PAD, dy);
     if (gui_report_ready()) {
         lv_obj_t *res = gui_text_button(tab, ICON_LIST " Last Results", _act_results);
-        lv_obj_align(res, NULL, LV_ALIGN_IN_BOTTOM_LEFT, GUI_MARGIN - GUI_TEXT_PAD, dy);
+        lv_obj_align(res, custom, LV_ALIGN_OUT_RIGHT_MID, GUI_TEXT_PAD, 0);
     }
 
     lv_obj_t *off = gui_text_button(tab, ICON_POWER " Power Off", _act_poweroff);

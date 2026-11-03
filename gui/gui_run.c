@@ -168,6 +168,13 @@ static int s_step = -1;
 static u32 s_started, s_total;
 static u32 s_last_draw;
 static bool s_running, s_hw_ready, s_saved;
+static u32 s_mask = PROBE_G_ALL;   /* what the next run checks (gui_custom) */
+
+void gui_run_mask(u32 mask)
+{
+    s_mask = (mask & PROBE_G_ALL) ? (mask & PROBE_G_ALL) : PROBE_G_ALL;
+}
+
 bool gui_report_saved(void)
 {
     return s_saved;
@@ -192,12 +199,15 @@ static int _step_of(const char *page)
     return -1;
 }
 
-static void _row_state(int i, int state)   /* 0 waiting, 1 running, 2 done */
+static void _row_state(int i, int state)   /* 0 waiting, 1 running, 2 done, 3 not picked */
 {
     if (!s_row_text[i])
         return;
     char buf[64];
-    if (state == 2) {
+    if (state == 3) {
+        lv_label_set_text(s_row_icon[i], "#" GUI_HEX_HINT " " ICON_CIRCLE "#");
+        s_printf(buf, "#" GUI_HEX_HINT " %s  -  not picked#", s_steps[i].label);
+    } else if (state == 2) {
         lv_label_set_text(s_row_icon[i], "#" GUI_HEX_OK " " ICON_CHECK "#");
         s_printf(buf, "%s", s_steps[i].label);
     } else if (state == 1) {
@@ -304,7 +314,12 @@ static void _build(void)
         lv_obj_set_pos(s_row_icon[i], RUN_COL2_X, y);
         s_row_text[i] = gui_label(win, &gui_font_20, GUI_COL_TEXT, "");
         lv_obj_set_pos(s_row_text[i], RUN_COL2_X + 40, y);
-        _row_state(i, 0);
+        /* A step none of whose pages were picked (gui_custom) is shown
+         * for what it is, so the list still reads as the whole check. */
+        bool picked = false;
+        for (u32 p = 0; p < N_PAGES && !picked; p++)
+            picked = _step_of(g_pages[p].name) == (int)i && page_enabled((int)p);
+        _row_state(i, picked ? 0 : 3);
         y += 42;
     }
 }
@@ -324,15 +339,14 @@ void gui_hw_prepare(void)
 
 void gui_run(void)
 {
+    g_run_mask = s_mask;     /* page_enabled() reads it: the step list too */
     _build();
     s_step = -1;
     s_started = 0;
     s_total = 0;
-    for (u32 i = 0; i < N_PAGES; i++) {
-        g_run_mask = PROBE_G_ALL;
+    for (u32 i = 0; i < N_PAGES; i++)
         if (page_enabled(i))
             s_total++;
-    }
     _draw(true);
 
     gui_input_hold(true);
@@ -352,7 +366,7 @@ void gui_run(void)
     s_capture = true;
 
     log_color(COL_HEADER, "\n=== hwtest full UART dump ===\n");
-    run_probe_mask(PROBE_G_ALL);
+    run_probe_mask(s_mask);
     log_color(COL_HEADER, "\n=== end of dump ===\n\n");
 
     s_running = false;

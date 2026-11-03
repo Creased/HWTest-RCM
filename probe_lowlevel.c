@@ -477,8 +477,10 @@ void probe_gpio_census(void)
 /* enables driving the level-shifter rail, the UART controller registers,   */
 /* and a 10 ms sample of the line via GPIO so:                              */
 /*                                                                          */
-/*   line stuck LOW   = level shifter unpowered or shorted to GND           */
-/*   line idle HIGH    = shifter alive, host quiet                          */
+/*   line LOW          = nothing drives it: no adapter on the rail (the     */
+/*                       usual case) or one with no power on its console    */
+/*                       side. Says nothing about the console itself.      */
+/*   line idle HIGH    = something holds it up and is quiet                 */
 /*   line transitions  = host adapter is sending; if no bytes land in FIFO  */
 /*                       check baud / framing                               */
 /*                                                                          */
@@ -583,10 +585,10 @@ void probe_uart_b(void)
         lcr, (lcr >> 7) & 1, (lcr & 3) + 5);
     LOG("  UART_MCR     : 0x%02X\n", mcr);
 
-    /* Baud-rate divisor (DLL / DLM) — shadowed at offsets 0x00 / 0x04
+    /* Baud-rate divisor (DLL / DLM), shadowed at offsets 0x00 / 0x04
      * when LCR.DLAB=1. We flip DLAB, snapshot the divisor latches,
      * then restore the original LCR. The whole sequence completes in
-     * microseconds — no in-flight TX bytes are lost (THR continues to
+     * microseconds; no in-flight TX bytes are lost (THR continues to
      * empty since the shift register is independent of the latch
      * mux). A divisor of 0 means the UART was never initialised.
      *
@@ -594,7 +596,7 @@ void probe_uart_b(void)
      * CLK_SOURCE_UARTB (CLOCK 0x17C):
      *   bits 31:30 = source: 00=PLLP_OUT0 (408 MHz fixed),
      *                01=PLLC2_OUT0, 10=PLLC_OUT0, 11=CLK_M (= OSC).
-     *   bit   24   = UART_SRC_CLK_DIV_EN — when 0 the source-side
+     *   bit   24   = UART_SRC_CLK_DIV_EN: when 0 the source-side
      *                divisor is BYPASSED (clock passes straight
      *                through); when 1 it's applied. Hekate only sets
      *                bit 24 for the 1 M / 3 M baud paths; for 115 200
@@ -602,9 +604,9 @@ void probe_uart_b(void)
      *                is bypassed, so UART_B input = 408 MHz directly.
      *   bits  7:0  = N (encodes 1+N/2 fractional division when bit 24
      *                is set; ignored when not).
-     * Canonical 115 200 baud: src=0, bit 24=0, divisor latch=221 →
+     * Canonical 115 200 baud: src=0, bit 24=0, divisor latch=221, so
      * effective baud = 408_000_000 / (16 * 221) = 115_345 (0.13 %
-     * fast — well within UART tolerance). */
+     * fast, well within UART tolerance). */
     uart[3] = (lcr | 0x80);          /* set DLAB */
     u8 dll = uart[0] & 0xFF;
     u8 dlm = uart[1] & 0xFF;
@@ -654,9 +656,10 @@ void probe_uart_b(void)
     LOG("  VENDOR_STAT  : 0x%08X (RX_FIFO=%d byte(s))\n", vstat, rx_count);
 
     /* 5. Sample PG1 as a raw GPIO for ~10 ms. UART idle state is HIGH
-     *    (mark = 1). If the line is dead, we'll see it stuck LOW or
-     *    floating. If the host adapter is currently transmitting, we
-     *    should see edges. We restore SPIO before returning. */
+     *    (mark = 1). With nothing on the rail driving it we see it LOW,
+     *    which most consoles do, since most have no adapter. If the host
+     *    adapter is currently transmitting, we should see edges. We
+     *    restore SPIO before returning. */
     /* Section header so the line sample shows up as its own
      * collapsible table in the host viewer instead of a stray note. */
     log_color(COL_INFO, "[raw PG1 sample (10 ms via GPIO)]\n");
@@ -673,13 +676,16 @@ void probe_uart_b(void)
     LOG("    samples      : %d high, %d low, %d edges\n", high, low, edges);
     if (edges > 0) {
         log_color(COL_OK,
-            "    Verdict      : line ACTIVE (%d transitions) - host IS sending\n", edges);
+            "    Verdict      : line ACTIVE (%d transitions) - the host is sending\n", edges);
     } else if (high > 0 && low == 0) {
         log_color(COL_OK,
-            "    Verdict      : line idle HIGH - shifter alive, host quiet\n");
+            "    Verdict      : line idle HIGH - alive and quiet, ready to receive\n");
     } else if (low > 0 && high == 0) {
-        log_color(COL_ERR,
-            "    Verdict      : line stuck LOW - shifter unpowered or shorted to GND\n");
+        /* The usual reading on a console with no adapter: not a fault, so
+         * no colour. Someone with an adapter learns from it that its
+         * console side has no power. */
+        LOG("    Verdict      : line LOW - nothing is driving it. No adapter on the rail,\n");
+        LOG("                   as on most consoles, or one with no power. Not a problem.\n");
     }
     /* No fourth case: with no edges every sample was the same level. */
 

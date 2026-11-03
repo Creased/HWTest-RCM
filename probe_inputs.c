@@ -284,7 +284,7 @@ void probe_touch(void)
 void probe_als(void)
 {
     HEADER("[BH1730 ambient light sensor, I2C2 @ 0x29]");
-    /* Switch Lite (HOAG) ships without the BH1730 — Nintendo omitted
+    /* Switch Lite (HOAG) ships without the BH1730: Nintendo omitted
      * the ambient-light sensor on Lite (which is why auto-brightness
      * is absent from Lite settings). Reading the I2C bus there gets
      * NACK -> 0x00, which would otherwise false-FAIL the Inputs

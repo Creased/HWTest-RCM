@@ -160,7 +160,9 @@ void gui_on_leave(void (*fn)(void));
 /* ---- screens ---- */
 
 void gui_home(void);
+void gui_custom(void);                   /* pick the groups, then gui_run */
 void gui_run(void);
+void gui_run_mask(u32 mask);             /* what gui_run checks from now on */
 void gui_joycon_test(void);
 void gui_touch_test(void);
 void gui_ram_test(void);
