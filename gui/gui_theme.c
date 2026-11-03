@@ -422,6 +422,30 @@ lv_obj_t *gui_panel(lv_obj_t *parent, lv_coord_t x, lv_coord_t y,
     return c;
 }
 
+lv_style_t *gui_box_style(lv_style_t *st, lv_color_t bg, lv_color_t border,
+                          lv_coord_t radius, lv_coord_t border_w)
+{
+    lv_style_copy(st, &lv_style_plain);
+    st->body.main_color = bg;
+    st->body.grad_color = bg;
+    st->body.radius = radius;
+    st->body.border.color = border;
+    st->body.border.width = border_w;
+    st->body.border.opa = LV_OPA_COVER;
+    return st;
+}
+
+lv_obj_t *gui_box(lv_obj_t *parent, lv_style_t *st, lv_coord_t x,
+                  lv_coord_t y, lv_coord_t w, lv_coord_t h)
+{
+    lv_obj_t *o = lv_obj_create(parent, NULL);
+    lv_obj_set_style(o, st);
+    lv_obj_set_click(o, false);
+    lv_obj_set_pos(o, x, y);
+    lv_obj_set_size(o, w, h);
+    return o;
+}
+
 /* The grey line Nyx draws between two columns. The points have to outlive
  * the line, and there is one such line on a screen at a time. */
 lv_obj_t *gui_divider(lv_obj_t *parent, lv_coord_t x, lv_coord_t y, lv_coord_t h)

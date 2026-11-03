@@ -106,6 +106,12 @@ lv_obj_t *gui_list_row(lv_obj_t *page, lv_coord_t y, lv_coord_t w,
 lv_obj_t *gui_focus_row(lv_obj_t *page, lv_coord_t y, lv_coord_t w);
 lv_obj_t *gui_panel(lv_obj_t *parent, lv_coord_t x, lv_coord_t y,
                     lv_coord_t w, lv_coord_t h);
+/* A plain shape: a filled, bordered box the tests draw rings and bars
+ * with. The style is the caller's to keep. */
+lv_style_t *gui_box_style(lv_style_t *st, lv_color_t bg, lv_color_t border,
+                          lv_coord_t radius, lv_coord_t border_w);
+lv_obj_t *gui_box(lv_obj_t *parent, lv_style_t *st, lv_coord_t x,
+                  lv_coord_t y, lv_coord_t w, lv_coord_t h);
 lv_obj_t *gui_divider(lv_obj_t *parent, lv_coord_t x, lv_coord_t y,
                       lv_coord_t h);
 
@@ -137,6 +143,7 @@ void gui_sentinel_raise(void);           /* after creating on the screen */
 
 bool gui_touch_ok(void);
 bool gui_jc_ok(void);
+bool gui_is_lite(void);                  /* built-in controls, no rails  */
 jc_gamepad_rpt_t *gui_jc_state(void);
 void gui_input_hold(bool hold);          /* test screens own the input */
 void gui_input_resume(void);             /* power touch back up         */
@@ -164,6 +171,9 @@ void gui_custom(void);                   /* pick the groups, then gui_run */
 void gui_run(void);
 void gui_run_mask(u32 mask);             /* what gui_run checks from now on */
 void gui_joycon_test(void);
+void gui_jc_motion(void);                /* from the Joy-Con test        */
+void gui_jc_ir(void);
+void gui_jc_test_resumed(void);          /* a sensor screen gave the rails back */
 void gui_touch_test(void);
 void gui_ram_test(void);
 void gui_results(void);

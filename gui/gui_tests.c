@@ -9,30 +9,7 @@
  */
 #include "gui.h"
 #include "gui_stick.h"
-
-static lv_style_t *_box_style(lv_style_t *st, lv_color_t bg, lv_color_t border,
-                              lv_coord_t radius, lv_coord_t border_w)
-{
-    lv_style_copy(st, &lv_style_plain);
-    st->body.main_color = bg;
-    st->body.grad_color = bg;
-    st->body.radius = radius;
-    st->body.border.color = border;
-    st->body.border.width = border_w;
-    st->body.border.opa = LV_OPA_COVER;
-    return st;
-}
-
-static lv_obj_t *_box(lv_obj_t *parent, lv_style_t *st, lv_coord_t x,
-                      lv_coord_t y, lv_coord_t w, lv_coord_t h)
-{
-    lv_obj_t *o = lv_obj_create(parent, NULL);
-    lv_obj_set_style(o, st);
-    lv_obj_set_click(o, false);
-    lv_obj_set_pos(o, x, y);
-    lv_obj_set_size(o, w, h);
-    return o;
-}
+#include "gui_jcwire.h"
 
 /* ======================================================================= */
 /* Joy-Con                                                                 */
@@ -76,12 +53,31 @@ typedef struct {
     bool ever;               /* connected at some point                   */
     u32 drops;               /* times the connection went since then      */
     u8 batt;
+    bool buzz;               /* the rumble test has it buzzing            */
     gui_stick_t stick;
+    jc_cal_t cal;            /* from its flash, when cal_ok               */
+    bool cal_ok;
 } jc_side_t;
 
 static jc_side_t s_jc[2];
 static lv_task_t *s_jc_task;
 static lv_style_t st_ring, st_dead, st_dot, st_pill, st_pill_on, st_pill_done;
+
+/* The rumble test: the left Joy-Con buzzes for half a second, then the
+ * right, so a dead motor is told from a working one by feel. */
+#define RUMBLE_ON_MS   500
+#define RUMBLE_GAP_MS  250
+static u32 s_rumble_at;
+
+/* The sensor screens take the rails over; the driver takes a few seconds
+ * to find the Joy-Cons again once they are closed. */
+#define JC_RESUME_MS   8000
+static u32 s_jc_resume_at;
+
+void gui_jc_test_resumed(void)
+{
+    s_jc_resume_at = get_tmr_ms();
+}
 
 /* How many of the buttons have been pressed so far, on the title line,
  * against the panel's right inset. */
@@ -112,13 +108,15 @@ static void _jc_side_build(lv_obj_t *win, int side, lv_coord_t x0)
     lv_obj_set_pos(t, JC_IN, 26);
     s->count = gui_hint(panel, 0, "");
     _jc_count(s);
-    s->status = gui_hint(panel, 0, "Not attached  -  slide it onto the rail");
+    s->status = gui_hint(panel, 0, s_jc_resume_at
+        ? "Reconnecting  -  a few seconds, after a sensor test"
+        : "Not attached  -  slide it onto the rail");
     lv_obj_set_pos(s->status, JC_IN, 68);
 
-    lv_obj_t *ring = _box(panel, &st_ring, JC_IN, 108, STICK_RING, STICK_RING);
-    _box(ring, &st_dead, (STICK_RING - STICK_DEAD) / 2, (STICK_RING - STICK_DEAD) / 2,
+    lv_obj_t *ring = gui_box(panel, &st_ring, JC_IN, 108, STICK_RING, STICK_RING);
+    gui_box(ring, &st_dead, (STICK_RING - STICK_DEAD) / 2, (STICK_RING - STICK_DEAD) / 2,
          STICK_DEAD, STICK_DEAD);
-    s->dot = _box(ring, &st_dot, (STICK_RING - STICK_DOT) / 2,
+    s->dot = gui_box(ring, &st_dot, (STICK_RING - STICK_DOT) / 2,
                   (STICK_RING - STICK_DOT) / 2, STICK_DOT, STICK_DOT);
 
     lv_coord_t tw = JC_PANEL_W - JC_TEXT_X - JC_IN;
@@ -160,6 +158,8 @@ static void _jc_status(jc_side_t *s)
     if (s->drops)
         s_printf(buf + strlen(buf), "  -  #" GUI_HEX_WARN " %d drop%s#",
                  s->drops, s->drops > 1 ? "s" : "");
+    if (s->buzz)
+        s_printf(buf + strlen(buf), "  -  #" GUI_HEX_ACCENT " buzzing#");
     lv_label_set_text(s->status, buf);
 }
 
@@ -187,18 +187,22 @@ static void _jc_range(jc_side_t *s, int side)
                  side ? 'R' : 'L', s->stick.rest_x, s->stick.rest_y,
                  reach[0], reach[1], reach[2], reach[3]);
         gui_uart_puts(raw);
-        /* Measured from the resting point, so a stick that drifts reaches
-         * less one way: that is the drift's doing, said above. */
-        if (gui_stick_drift(&s->stick) > 15)
+        /* Without a calibration the reach is measured from the resting
+         * point, so a stick that drifts reaches less one way: that is the
+         * drift's doing, said above. With one it is measured from the
+         * calibrated centre, as the firmware measures it. */
+        if (!s->cal_ok && gui_stick_drift(&s->stick) > 15)
             s_printf(buf, "Range %d-100%% from where it rests", pct[lo]);
         else if (reach[hi] < STICK_SHORT)
             s_printf(buf, "#" GUI_HEX_WARN " " ICON_WARN "  Short travel all round#  -  "
                      "worn, or not pushed to the edge");
         else if (pct[lo] >= 85)
-            s_printf(buf, "#" GUI_HEX_OK " " ICON_OK "  Reaches the edge all round#");
+            s_printf(buf, "#" GUI_HEX_OK " " ICON_OK "  Reaches the edge all round#%s",
+                     s->cal_ok ? "  -  by its calibration" : "");
         else
             s_printf(buf, "#" GUI_HEX_WARN " " ICON_WARN "  Short to the %s: %d%% of "
-                     "its travel#  -  worn, or not pushed to the edge", dir[lo], pct[lo]);
+                     "its %stravel#  -  worn, or not pushed to the edge", dir[lo], pct[lo],
+                     s->cal_ok ? "calibrated " : "");
     }
     lv_label_set_text(s->range, buf);
 }
@@ -234,19 +238,40 @@ static void _jc_side_update(int side, bool conn, u16 sx, u16 sy, u32 buttons,
     if (conn != s->seen) {
         s->seen = conn;
         if (conn) {
-            if (s->ever)
+            /* Not the comings and goings of the driver bringing it up again
+             * after a sensor screen: those are not the rail's doing. */
+            if (s->ever && !s_jc_resume_at)
                 s->drops++;
             s->ever = true;
             s->batt = batt;
             _jc_status(s);
+            /* Its calibration, from its flash, so the stick is judged as
+             * the firmware judges it. A Lite's controls and third-party
+             * pads have none; they are judged on their own travel. */
+            if (!inv_y && !s->cal_ok)
+                s->cal_ok = gui_jc_cal_read(side, &s->cal);
+            if (s->cal_ok) {
+                gui_stick_set_cal(&s->stick, s->cal.cx, s->cal.cy,
+                                  s->cal.xmin, s->cal.xmax, s->cal.ymax, s->cal.ymin);
+                char raw[96];
+                s_printf(raw, "gui: jc %c cal %s centre %d,%d travel l%d r%d u%d d%d\n",
+                         side ? 'R' : 'L', s->cal.user ? "user" : "factory",
+                         s->cal.cx, s->cal.cy, s->cal.xmin, s->cal.xmax,
+                         s->cal.ymax, s->cal.ymin);
+                gui_uart_puts(raw);
+            } else {
+                gui_uart_puts(side ? "gui: jc R cal: none read\n"
+                                   : "gui: jc L cal: none read\n");
+            }
         } else {
             /* bdk's driver drops a Joy-Con it got no report from for 1.8 s
              * or whose rail says it is gone, and brings it up again; what
              * was learnt about the stick is kept across that. */
-            lv_label_set_text(s->status, s->ever ?
-                "#" GUI_HEX_WARN " " ICON_WARN "  Connection lost#  -  "
-                "reseat it on the rail" :
-                "Not attached  -  slide it onto the rail");
+            lv_label_set_text(s->status,
+                s_jc_resume_at ? "Reconnecting  -  a few seconds, after a sensor test" :
+                s->ever ? "#" GUI_HEX_WARN " " ICON_WARN "  Connection lost#  -  "
+                          "reseat it on the rail" :
+                          "Not attached  -  slide it onto the rail");
         }
     }
     if (!conn)
@@ -283,6 +308,25 @@ static void _jc_side_update(int side, bool conn, u16 sx, u16 sy, u32 buttons,
     }
 }
 
+static void _jc_buzz(int side, bool on)
+{
+    jc_side_t *s = &s_jc[side];
+    if (!s->seen)
+        on = false;
+    /* Enabled afresh at each burst: a Joy-Con the driver brought up again
+     * after a sensor screen or a drop has lost it. Kept up while on: the
+     * driver's own reports could mute it. */
+    if (on && !s->buzz)
+        gui_jc_rumble_enable(side);
+    if (on || s->buzz)
+        gui_jc_rumble(side, on);
+    if (on != s->buzz) {
+        s->buzz = on;
+        if (s->seen)
+            _jc_status(s);
+    }
+}
+
 static void _jc_tick(void *param)
 {
     jc_gamepad_rpt_t *jc = gui_jc_state();
@@ -300,13 +344,46 @@ static void _jc_tick(void *param)
                     jc->batt_info_l, false);
     _jc_side_update(1, jc->conn_r, jc->rstick_x, jc->rstick_y, jc->buttons,
                     jc->batt_info_r, false);
+
+    u32 now = get_tmr_ms();
+    if (s_rumble_at) {
+        u32 t = now - s_rumble_at;
+        _jc_buzz(0, t < RUMBLE_ON_MS);
+        _jc_buzz(1, t >= RUMBLE_ON_MS + RUMBLE_GAP_MS
+                    && t < 2 * RUMBLE_ON_MS + RUMBLE_GAP_MS);
+        if (t >= 2 * RUMBLE_ON_MS + RUMBLE_GAP_MS)
+            s_rumble_at = 0;
+    }
+    /* A Joy-Con that has not come back by now is not coming. */
+    if (s_jc_resume_at && now - s_jc_resume_at >= JC_RESUME_MS) {
+        s_jc_resume_at = 0;
+        for (int side = 0; side < 2; side++)
+            if (!s_jc[side].ever)
+                lv_label_set_text(s_jc[side].status,
+                                  "Not attached  -  slide it onto the rail");
+    }
 }
+
+static lv_res_t _act_rumble(lv_obj_t *b)
+{
+    if (!s_rumble_at)
+        s_rumble_at = get_tmr_ms();
+    return LV_RES_OK;
+}
+static lv_res_t _act_motion(lv_obj_t *b) { gui_show(gui_jc_motion); return LV_RES_OK; }
+static lv_res_t _act_ir(lv_obj_t *b)     { gui_show(gui_jc_ir); return LV_RES_OK; }
 
 static void _jc_leave(void)
 {
     if (s_jc_task)
         lv_task_del(s_jc_task);
     s_jc_task = NULL;
+    if (s_rumble_at) {
+        s_rumble_at = 0;
+        for (int side = 0; side < 2; side++)
+            if (s_jc[side].buzz)
+                gui_jc_rumble(side, false);
+    }
 }
 
 void gui_joycon_test(void)
@@ -314,11 +391,18 @@ void gui_joycon_test(void)
     lv_obj_t *win = gui_win_new(ICON_GAMEPAD " Joy-Con Test");
     gui_jc_nav(false);
     gui_on_leave(_jc_leave);
+    /* The deeper tests, right to left after Close. A Lite's controls do
+     * not speak the protocol they need. */
+    if (!gui_is_lite()) {
+        gui_win_btn(win, ICON_SUN " IR Camera", _act_ir);
+        gui_win_btn(win, ICON_CROSSHAIR " Motion", _act_motion);
+        gui_win_btn(win, ICON_BOLT " Rumble", _act_rumble);
+    }
 
     lv_theme_t *th = gui_th();
-    _box_style(&st_ring, GUI_COL_BG_DARK, GUI_COL_LINE, LV_RADIUS_CIRCLE, 3);
-    _box_style(&st_dead, GUI_COL_BG_LIGHT, GUI_COL_LINE, LV_RADIUS_CIRCLE, 2);
-    _box_style(&st_dot, GUI_COL_ACCENT, GUI_COL_ACCENT, LV_RADIUS_CIRCLE, 0);
+    gui_box_style(&st_ring, GUI_COL_BG_DARK, GUI_COL_LINE, LV_RADIUS_CIRCLE, 3);
+    gui_box_style(&st_dead, GUI_COL_BG_LIGHT, GUI_COL_LINE, LV_RADIUS_CIRCLE, 2);
+    gui_box_style(&st_dot, GUI_COL_ACCENT, GUI_COL_ACCENT, LV_RADIUS_CIRCLE, 0);
     lv_style_copy(&st_pill, th->btn.rel);
     st_pill.text.font = &gui_font_20;
     lv_style_copy(&st_pill_on, th->btn.pr);
@@ -513,10 +597,10 @@ void gui_touch_test(void)
     gui_touch_sink(_tt_sink);
     gui_on_leave(_tt_leave);
 
-    _box_style(&st_cell, GUI_COL_BG_DARK, GUI_COL_BG_LIGHT, 0, 1);
-    _box_style(&st_cell_hit, LV_COLOR_HEX(0x00775C), GUI_COL_ACCENT, 0, 1);
-    _box_style(&st_cell_miss, LV_COLOR_HEX(0x8F2016), GUI_COL_FAIL, 0, 1);
-    _box_style(&st_finger, GUI_COL_ACCENT, LV_COLOR_WHITE, LV_RADIUS_CIRCLE, 4);
+    gui_box_style(&st_cell, GUI_COL_BG_DARK, GUI_COL_BG_LIGHT, 0, 1);
+    gui_box_style(&st_cell_hit, LV_COLOR_HEX(0x00775C), GUI_COL_ACCENT, 0, 1);
+    gui_box_style(&st_cell_miss, LV_COLOR_HEX(0x8F2016), GUI_COL_FAIL, 0, 1);
+    gui_box_style(&st_finger, GUI_COL_ACCENT, LV_COLOR_WHITE, LV_RADIUS_CIRCLE, 4);
     st_finger.body.opa = LV_OPA_60;
 
     /* The grid covers the whole panel: dead spots are often along an
@@ -531,7 +615,7 @@ void gui_touch_test(void)
     s_tt_task = lv_task_create(_tt_tick, 50, LV_TASK_PRIO_MID, NULL);
     for (int r = 0; r < TT_ROWS; r++)
         for (int c = 0; c < TT_COLS; c++)
-            s_cell[r][c] = _box(root, &st_cell, c * TT_CELL, r * TT_CELL,
+            s_cell[r][c] = gui_box(root, &st_cell, c * TT_CELL, r * TT_CELL,
                                 TT_CELL, TT_CELL);
 
     /* One line taller when the touchscreen failed, so its warning gets a
@@ -567,6 +651,6 @@ void gui_touch_test(void)
         lv_obj_set_pos(w, TT_IN, y + 72);
     }
 
-    s_tt_finger = _box(root, &st_finger, 0, 0, 60, 60);
+    s_tt_finger = gui_box(root, &st_finger, 0, 0, 60, 60);
     lv_obj_set_hidden(s_tt_finger, true);
 }

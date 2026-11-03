@@ -184,6 +184,7 @@ static bool s_lite;
 
 bool gui_touch_ok(void) { return s_touch_ok; }
 bool gui_jc_ok(void)    { return s_jc_ok; }
+bool gui_is_lite(void)  { return s_lite; }
 void gui_input_hold(bool hold) { s_input_hold = hold; }
 void gui_jc_nav(bool on) { s_jc_nav = on; }
 void gui_touch_sink(gui_touch_sink_t sink) { s_touch_sink = sink; }
