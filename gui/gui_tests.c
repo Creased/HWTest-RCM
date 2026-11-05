@@ -109,8 +109,8 @@ static void _jc_side_build(lv_obj_t *win, int side, lv_coord_t x0)
     s->count = gui_hint(panel, 0, "");
     _jc_count(s);
     s->status = gui_hint(panel, 0, s_jc_resume_at
-        ? "Reconnecting  -  a few seconds, after a sensor test"
-        : "Not attached  -  slide it onto the rail");
+        ? "Reconnecting after a sensor test (a few seconds)"
+        : "Not attached: slide it onto the rail");
     lv_obj_set_pos(s->status, JC_IN, 68);
 
     lv_obj_t *ring = gui_box(panel, &st_ring, JC_IN, 108, STICK_RING, STICK_RING);
@@ -151,15 +151,15 @@ static void _jc_status(jc_side_t *s)
     static const char *batt_name[] = { "empty", "very low", "low", "half", "full" };
     u8 lvl = s->batt >> 1;
     char buf[128];
-    s_printf(buf, "#" GUI_HEX_OK "Connected#  -  battery %s",
+    s_printf(buf, "#" GUI_HEX_OK " Connected#, battery %s",
              lvl < 5 ? batt_name[lvl] : "unknown");
-    /* One line only, the stick ring sits right under it: "battery very low
-     * - 12 drops" is the longest this gets, and it fits the panel. */
+    /* One line only, the stick ring sits right under it: "battery very low,
+     * 12 drops" is the longest this gets, and it fits the panel. */
     if (s->drops)
-        s_printf(buf + strlen(buf), "  -  #" GUI_HEX_WARN " %d drop%s#",
+        s_printf(buf + strlen(buf), ", #" GUI_HEX_WARN " %d drop%s#",
                  s->drops, s->drops > 1 ? "s" : "");
     if (s->buzz)
-        s_printf(buf + strlen(buf), "  -  #" GUI_HEX_ACCENT " buzzing#");
+        s_printf(buf + strlen(buf), ", #" GUI_HEX_ACCENT " buzzing#");
     lv_label_set_text(s->status, buf);
 }
 
@@ -172,7 +172,7 @@ static void _jc_range(jc_side_t *s, int side)
     char buf[128];
     u32 covered = gui_stick_range(&s->stick, reach, pct);
     if (covered < 4) {
-        s_printf(buf, "Roll it all the way around  -  %d of 4 directions so far",
+        s_printf(buf, "Roll it all the way around: %d of 4 directions so far",
                  covered);
     } else {
         u32 lo = 0, hi = 0;
@@ -194,14 +194,14 @@ static void _jc_range(jc_side_t *s, int side)
         if (!s->cal_ok && gui_stick_drift(&s->stick) > 15)
             s_printf(buf, "Range %d-100%% from where it rests", pct[lo]);
         else if (reach[hi] < STICK_SHORT)
-            s_printf(buf, "#" GUI_HEX_WARN " " ICON_WARN "  Short travel all round#  -  "
-                     "worn, or not pushed to the edge");
+            s_printf(buf, "#" GUI_HEX_WARN " " ICON_WARN "  Short travel all round#, "
+                     "worn or not pushed to the edge");
         else if (pct[lo] >= 85)
             s_printf(buf, "#" GUI_HEX_OK " " ICON_OK "  Reaches the edge all round#%s",
-                     s->cal_ok ? "  -  by its calibration" : "");
+                     s->cal_ok ? " (by its calibration)" : "");
         else
             s_printf(buf, "#" GUI_HEX_WARN " " ICON_WARN "  Short to the %s: %d%% of "
-                     "its %stravel#  -  worn, or not pushed to the edge", dir[lo], pct[lo],
+                     "its %stravel#, worn or not pushed to the edge", dir[lo], pct[lo],
                      s->cal_ok ? "calibrated " : "");
     }
     lv_label_set_text(s->range, buf);
@@ -214,7 +214,7 @@ static void _jc_judge(jc_side_t *s)
     u32 reach[4], pct[4];
     char buf[128];
     if (gui_stick_range(&s->stick, reach, pct) < 4) {
-        lv_label_set_text(s->centre, "Resting point noted  -  now roll it all "
+        lv_label_set_text(s->centre, "Resting point noted. Now roll it all "
                                      "the way around.");
         return;
     }
@@ -222,10 +222,10 @@ static void _jc_judge(jc_side_t *s)
     if (off <= 8)
         s_printf(buf, "#" GUI_HEX_OK " " ICON_OK "  Centred when let go#");
     else if (off <= 15)
-        s_printf(buf, "#" GUI_HEX_WARN " " ICON_WARN "  Rests %d%% off centre - "
+        s_printf(buf, "#" GUI_HEX_WARN " " ICON_WARN "  Rests %d%% off centre, "
                  "slight drift possible#", off);
     else
-        s_printf(buf, "#" GUI_HEX_FAIL " " ICON_FAIL "  Rests %d%% off centre - "
+        s_printf(buf, "#" GUI_HEX_FAIL " " ICON_FAIL "  Rests %d%% off centre: "
                  "the stick drifts#", off);
     lv_label_set_text(s->centre, buf);
 }
@@ -268,10 +268,10 @@ static void _jc_side_update(int side, bool conn, u16 sx, u16 sy, u32 buttons,
              * or whose rail says it is gone, and brings it up again; what
              * was learnt about the stick is kept across that. */
             lv_label_set_text(s->status,
-                s_jc_resume_at ? "Reconnecting  -  a few seconds, after a sensor test" :
-                s->ever ? "#" GUI_HEX_WARN " " ICON_WARN "  Connection lost#  -  "
+                s_jc_resume_at ? "Reconnecting after a sensor test (a few seconds)" :
+                s->ever ? "#" GUI_HEX_WARN " " ICON_WARN "  Connection lost:# "
                           "reseat it on the rail" :
-                          "Not attached  -  slide it onto the rail");
+                          "Not attached: slide it onto the rail");
         }
     }
     if (!conn)
@@ -360,7 +360,7 @@ static void _jc_tick(void *param)
         for (int side = 0; side < 2; side++)
             if (!s_jc[side].ever)
                 lv_label_set_text(s_jc[side].status,
-                                  "Not attached  -  slide it onto the rail");
+                                  "Not attached: slide it onto the rail");
     }
 }
 

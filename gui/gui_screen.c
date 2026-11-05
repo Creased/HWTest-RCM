@@ -51,8 +51,8 @@ static void _sc_apply(void)
     lv_obj_invalidate(s_field);
 
     char buf[96];
-    s_printf(buf, "%s  -  %d of %d%s", p->name, s_page + 1, SC_PAGES,
-             s_page == SC_BL_PAGE ? "  -  the backlight dims and brightens" : "");
+    s_printf(buf, "%s (%d of %d)%s", p->name, s_page + 1, SC_PAGES,
+             s_page == SC_BL_PAGE ? ": the backlight dims and brightens" : "");
     if (s_cap)
         lv_obj_del(s_cap);
     s_cap = gui_label(s_root, &gui_font_20, LV_COLOR_HEX(p->text), buf);

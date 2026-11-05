@@ -206,7 +206,7 @@ static void _row_state(int i, int state)   /* 0 waiting, 1 running, 2 done, 3 no
     char buf[64];
     if (state == 3) {
         lv_label_set_text(s_row_icon[i], "#" GUI_HEX_HINT " " ICON_CIRCLE "#");
-        s_printf(buf, "#" GUI_HEX_HINT " %s  -  not picked#", s_steps[i].label);
+        s_printf(buf, "#" GUI_HEX_HINT " %s (not picked)#", s_steps[i].label);
     } else if (state == 2) {
         lv_label_set_text(s_row_icon[i], "#" GUI_HEX_OK " " ICON_CHECK "#");
         s_printf(buf, "%s", s_steps[i].label);

@@ -67,7 +67,7 @@ void gui_screenshot(void)
     bpmp_mmu_maintenance(BPMP_MMU_MAINT_INVALID_WAY, false);
     u8 *bmp = malloc(SHOT_HDR + SHOT_SZ);
     if (!bmp) {
-        _note(ICON_WARN "  Screenshot not taken  -  out of memory");
+        _note(ICON_WARN "  Screenshot not taken: out of memory");
         return;
     }
     const u32 *fb = (const u32 *)NYX_FB2_ADDRESS;
@@ -105,8 +105,8 @@ void gui_screenshot(void)
     }
     free(bmp);
     if (ok)
-        s_printf(text, ICON_SAVE "  Screenshot saved  -  %s", path);
+        s_printf(text, ICON_SAVE "  Screenshot saved as %s", path);
     else
-        strcpy(text, ICON_WARN "  Screenshot not saved  -  no SD card");
+        strcpy(text, ICON_WARN "  Screenshot not saved: no SD card");
     _note(text);
 }

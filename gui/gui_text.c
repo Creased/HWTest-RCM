@@ -35,7 +35,7 @@ static const gui_check_text_t s_checks[] = {
 
     /* Charging */
     { "charger_id", "Charging chip",
-      "The charging chip is not the original part - most likely replaced "
+      "The charging chip is not the original part, most likely replaced "
       "during a repair.",
       "The charging chip does not respond. The console will most likely "
       "not charge. This needs a repair on the board.", NULL },
@@ -68,7 +68,7 @@ static const gui_check_text_t s_checks[] = {
     { "pmic_nverc", "Last shutdown",
       "The console last shut down because of a battery or power event, "
       "such as an empty battery.",
-      "The power chip recorded a serious event - overheating, an "
+      "The power chip recorded a serious event: overheating, an "
       "over-current or a watchdog reset. This points to a hardware fault.",
       NULL },
     { "pmic_irqsd", "Power warnings",
@@ -175,7 +175,7 @@ static const gui_check_text_t s_checks[] = {
     { "dram_sym", "Memory",
       NULL,
       "The two halves of the memory do not match. This points to a memory "
-      "fault - run the Memory test.", NULL },
+      "fault. Run the RAM Test.", NULL },
     { "plls", "System clocks",
       NULL,
       "Some internal clocks did not start. The console may be unstable.",
@@ -217,7 +217,7 @@ static const gui_check_text_t s_checks[] = {
     /* System and security */
     { "soc_pmic_otp", "Power chip model",
       NULL,
-      "The main power chip is not the right model for this console - most "
+      "The main power chip is not the right model for this console, most "
       "likely a wrong replacement part.", NULL },
     { "fuses_pkg1", "System version fuses",
       "The system software is newer than the console's fuses. This is "

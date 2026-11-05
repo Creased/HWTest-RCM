@@ -48,7 +48,7 @@ void gui_ram_test(void)
 
     lv_obj_t *d = gui_hint(win, w,
         "Writes and reads back every part of the console's memory at full "
-        "speed, to find faults the health check cannot see - the kind that "
+        "speed, to find faults the health check cannot see, the kind that "
         "cause random crashes. It takes several minutes.\n\n"
         "It runs as a separate tool from the SD card (hwtest_ram.bin), with "
         "its own screens. When it is finished, power the console off or "

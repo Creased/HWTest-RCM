@@ -249,33 +249,33 @@ static void _text(void)
     char buf[200];
     const ir_size_t *z = &s_sizes[s.size];
     if (s.state < IR_STREAM) {
-        s_printf(buf, "Starting  -  step %d of %d, %s", s.state + 1, IR_STEPS,
+        s_printf(buf, "Starting: step %d of %d, %s", s.state + 1, IR_STEPS,
                  s_step_name[s.state]);
         lv_label_set_text(s_status, buf);
         lv_label_set_text(s_detail, "");
         lv_label_set_text(s_verdict, "");
     } else if (s.state == IR_STREAM) {
         if (!s.frames)
-            s_printf(buf, "Started  -  waiting for the first %s frame", z->name);
+            s_printf(buf, "Started, waiting for the first %s frame", z->name);
         else if (!s.fps10)
-            s_printf(buf, "#" GUI_HEX_OK "Streaming#  -  %s, measuring the rate", z->name);
+            s_printf(buf, "#" GUI_HEX_OK " Streaming %s#, measuring the rate", z->name);
         else
-            s_printf(buf, "#" GUI_HEX_OK "Streaming#  -  %s at %d.%d frames a second",
+            s_printf(buf, "#" GUI_HEX_OK " Streaming %s# at %d.%d frames a second",
                      z->name, s.fps10 / 10, s.fps10 % 10);
         lv_label_set_text(s_status, buf);
-        s_printf(buf, "Brightness %d%%  -  %d frame%s so far", s.avg * 100 / 255,
+        s_printf(buf, "Brightness %d%%, %d frame%s so far", s.avg * 100 / 255,
                  s.frames, s.frames == 1 ? "" : "s");
         lv_label_set_text(s_detail, buf);
         if (s.stalled)
             lv_label_set_text(s_verdict, "#" GUI_HEX_WARN " " ICON_WARN
-                "  No frames are coming#  -  is it still on the rail?");
+                "  No frames are coming.# Is it still on the rail?");
         else if (s.lit)
-            lv_label_set_text(s_verdict, "#" GUI_HEX_OK " " ICON_OK "  The camera sees#  -  "
-                "wave a hand in front of it and watch it move");
+            lv_label_set_text(s_verdict, "#" GUI_HEX_OK " " ICON_OK "  The camera sees.# "
+                "Wave a hand in front of it and watch it move.");
         else if (s.frames >= 10)
             lv_label_set_text(s_verdict, "#" GUI_HEX_WARN " " ICON_WARN
-                "  Frames come, but black#  -  the lights or the sensor may be dead, "
-                "or the window is covered");
+                "  Frames come, but black.# The lights or the sensor may be dead, "
+                "or the window is covered.");
     } else if (s.state == IR_FAILED) {
         s_printf(buf, "#" GUI_HEX_FAIL " " ICON_FAIL "  Could not start: step %d of %d, %s#",
                  s.failed + 1, IR_STEPS, s_step_name[s.failed]);
@@ -290,7 +290,7 @@ static void _text(void)
         lv_label_set_text(s_verdict, "A Joy-Con whose controller does not answer at all "
             "may have an older firmware, or no camera.");
     }
-    s_printf(buf, "What the camera sees, enlarged  -  %s", z->name);
+    s_printf(buf, "What the camera sees, enlarged (%s)", z->name);
     lv_label_set_text(s_caption, buf);
 }
 

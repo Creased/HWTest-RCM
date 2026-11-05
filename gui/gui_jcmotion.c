@@ -137,7 +137,7 @@ static void _mo_judge(mo_side_t *s, u32 now)
     if (!s->data_at) {
         if (now - s->first_at > MO_SILENT_MS)
             _mo_say(s, V_SILENT, now, "#" GUI_HEX_FAIL " " ICON_FAIL
-                    "  No readings#  -  the sensor sends nothing");
+                    "  No readings.# The sensor sends nothing.");
         return;
     }
     s32 mg[3] = { _mg(s->acc[0]), _mg(s->acc[1]), _mg(s->acc[2]) };
@@ -159,14 +159,14 @@ static void _mo_judge(mo_side_t *s, u32 now)
         s->ok = true;
 
     if (s->ok) {
-        s_printf(buf, "#" GUI_HEX_OK " " ICON_OK "  The sensor works#  -  at rest it reads "
-                 "%d.%02d g%s", g / 1000, g % 1000 / 10,
+        s_printf(buf, "#" GUI_HEX_OK " " ICON_OK "  The sensor works.# At rest it reads "
+                 "%d.%02d g%s.", g / 1000, g % 1000 / 10,
                  s->moved ? ", and it felt the turn" : "");
         _mo_say(s, V_OK, now, buf);
     } else if (now - s->data_at > MO_SILENT_MS) {
         _mo_say(s, V_STOPPED, now, "#" GUI_HEX_WARN " " ICON_WARN "  Readings stopped#");
     } else {
-        _mo_say(s, V_READING, now, "Reading  -  hold it still a moment");
+        _mo_say(s, V_READING, now, "Reading: hold it still a moment");
     }
 }
 
@@ -268,7 +268,7 @@ static void _mo_side_build(lv_obj_t *win, int side, lv_coord_t x0, bool conn)
 
     /* One line: the ring sits right under it. */
     if (!conn) {
-        lv_label_set_text(s->status, "Not attached  -  attach it and come back");
+        lv_label_set_text(s->status, "Not attached: attach it and come back");
         return;
     }
     gui_jc_own(side);
@@ -277,7 +277,7 @@ static void _mo_side_build(lv_obj_t *win, int side, lv_coord_t x0, bool conn)
     static const u8 on = 1;
     bool answered = gui_jc_subcmd(side, SUBCMD_IMU, &on, 1, NULL);
     if (answered) {
-        lv_label_set_text(s->status, "#" GUI_HEX_OK "Connected#  -  sensor on");
+        lv_label_set_text(s->status, "#" GUI_HEX_OK " Connected#, sensor on");
     } else {
         lv_label_set_text(s->status, "#" GUI_HEX_WARN " " ICON_WARN
             "  The sensor did not answer#");
