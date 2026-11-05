@@ -231,7 +231,7 @@ static void _jc_judge(jc_side_t *s)
 }
 
 static void _jc_side_update(int side, bool conn, u16 sx, u16 sy, u32 buttons,
-                            u8 batt, bool inv_y)
+                            u8 batt, bool lite)
 {
     jc_side_t *s = &s_jc[side];
 
@@ -248,7 +248,7 @@ static void _jc_side_update(int side, bool conn, u16 sx, u16 sy, u32 buttons,
             /* Its calibration, from its flash, so the stick is judged as
              * the firmware judges it. A Lite's controls and third-party
              * pads have none; they are judged on their own travel. */
-            if (!inv_y && !s->cal_ok)
+            if (!lite && !s->cal_ok)
                 s->cal_ok = gui_jc_cal_read(side, &s->cal);
             if (s->cal_ok) {
                 gui_stick_set_cal(&s->stick, s->cal.cx, s->cal.cy,
@@ -276,7 +276,12 @@ static void _jc_side_update(int side, bool conn, u16 sx, u16 sy, u32 buttons,
     }
     if (!conn)
         return;
-    if (inv_y)
+    /* The Lite's two sticks sit half a turn apart: against a Joy-Con's,
+     * the left one reads Y upside down and the right one X backwards, as
+     * switchroot's joycon-serdev driver maps them. */
+    if (lite && side)
+        sx = 0xFFF - sx;
+    else if (lite)
         sy = 0xFFF - sy;
 
     u32 ev = gui_stick_feed(&s->stick, sx, sy, get_tmr_ms());

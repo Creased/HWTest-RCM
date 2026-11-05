@@ -314,8 +314,8 @@ jc_gamepad_rpt_t *gui_jc_state(void)
 /* One stick (or the D-pad) as a direction: down/right move forward. The
  * stick is read from where it sat when its Joy-Con was first seen, as Nyx
  * does: Joy-Con sticks rest up to a tenth of their travel away from the
- * nominal centre, each unit its own way. The Lite's built-in controls
- * report Y inverted. */
+ * nominal centre, each unit its own way. The Lite's left stick, the one
+ * read here, reports Y upside down. */
 static bool s_nav_cal, s_nav_from_l;
 static u16 s_nav_cx, s_nav_cy;
 
