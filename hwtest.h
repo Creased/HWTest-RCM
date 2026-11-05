@@ -145,6 +145,15 @@ void log_capture_arm(char *buf, u32 cap);
 
 u32 health_color(int v, int warn_lo, int warn_hi, int err_lo, int err_hi);
 const char *panel_model_name(u16 dec);
+/* The panel's DSI id, raw (0xCCCCCC: the read failed). The GUI stage gets
+ * it from hwtest.bin and sets it, decoded id included, or says it has none. */
+u32  panel_id_raw(void);
+void panel_id_set(u32 raw);
+void panel_id_lost(void);
+bool panel_id_known(void);
+/* What hwtest.bin passes the GUI stage at the jump: R0 this, R1 the raw
+ * panel id. An older hwtest.bin passes neither. */
+#define GUI_ARGS_MAGIC 0x44494E50u   /* "PNID" */
 const char *_pmx_pull_str(u32 pmx);
 void status_set(const char *msg);
 void status_step(const char *msg);

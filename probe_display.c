@@ -26,10 +26,46 @@ const char *panel_model_name(u16 dec)
     }
 }
 
+/* The panel's id as display_init() read it. The GUI stage never runs
+ * display_init(), so bdk's copy in it stays zero: hwtest.bin passes the id
+ * over at the jump (ui_boot_gui, gui/start.S) and the stage sets it here,
+ * as Nyx sets hekate's. An older hwtest.bin passes nothing: the id is then
+ * not known, and the checks built on it do not run. */
+static u32 s_panel_raw;
+static bool s_panel_set, s_panel_lost;
+
+void panel_id_set(u32 raw)
+{
+    s_panel_raw = raw;
+    s_panel_set = true;
+    display_set_decoded_panel_id(raw);
+}
+
+void panel_id_lost(void)
+{
+    s_panel_lost = true;
+    /* As a failed read leaves it: an OLED is still told by its fuses. */
+    display_set_decoded_panel_id(0xCCCCCC);
+}
+
+bool panel_id_known(void)
+{
+    return !s_panel_lost;
+}
+
+u32 panel_id_raw(void)
+{
+    return s_panel_set ? s_panel_raw : display_get_verbose_panel_id();
+}
+
 void probe_display(void)
 {
     HEADER("[DSI panel ID]");
-    u32 raw = display_get_verbose_panel_id();
+    if (!panel_id_known()) {
+        LOG("  Raw ID bytes : not known (this GUI was started by an older hwtest.bin)\n");
+        return;
+    }
+    u32 raw = panel_id_raw();
     u16 dec = display_get_decoded_panel_id();
     LOG("  Raw ID bytes : %02X %02X %02X\n",
         raw & 0xFF, (raw >> 8) & 0xFF, (raw >> 16) & 0xFF);

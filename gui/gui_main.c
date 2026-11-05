@@ -545,8 +545,18 @@ void gui_fonts_init(void)
 
 /* ---- entry --------------------------------------------------------------- */
 
+/* R0 and R1 as hwtest.bin jumped here (gui/start.S). */
+u32 gui_boot_args[2];
+
 void ipl_main(void)
 {
+    /* The panel's id first: bdk's display calls branch on it (an OLED's
+     * brightness goes over DSI). An older hwtest.bin passes none. */
+    if (gui_boot_args[0] == GUI_ARGS_MAGIC)
+        panel_id_set(gui_boot_args[1]);
+    else
+        panel_id_lost();
+
     heap_init((void *)IPL_HEAP_START);
     bpmp_mmu_enable();
     bpmp_clk_rate_set(BPMP_CLK_NORMAL);

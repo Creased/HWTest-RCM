@@ -287,9 +287,10 @@ void ui_boot_gui(void)
         free(img);
         return;
     }
+    u32 panel = display_get_verbose_panel_id();
     memcpy((void *)dst, img, size);
     bpmp_mmu_disable();
-    ((void (*)(void))dst)();
+    ((void (*)(u32, u32))dst)(GUI_ARGS_MAGIC, panel);
 }
 
 /* The RAM test's payload, read off the SD card. NULL when it cannot be, with

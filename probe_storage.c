@@ -818,7 +818,7 @@ void probe_serial(void)
          * real mismatch is a warning, not a fault: a replaced panel is
          * ordinary repair work, it just means the factory calibration no
          * longer matches what is fitted. */
-        if ((display_get_verbose_panel_id() & 0xFFFFFF) != 0xCCCCCC) {
+        if (panel_id_known() && (panel_id_raw() & 0xFFFFFF) != 0xCCCCCC) {
             u16 dsi_panel = display_get_decoded_panel_id();
             bool same = (dsi_panel == cal_panel);
             log_color(same ? COL_OK : COL_WARN,

@@ -9,6 +9,9 @@
  * runs instead.
  *
  * State on arrival: hw_init done, DRAM trained, display up, BPMP MMU off.
+ * R0 is GUI_ARGS_MAGIC and R1 the panel's id, which bdk's display code in
+ * this stage needs and never reads itself; they are kept in gui_boot_args
+ * past the BSS clear.
  */
 
 .section .text._start
@@ -31,11 +34,15 @@ _start:
 _gui_entry:
 	/* Stack in IRAM: hwtest.bin's own image is no longer needed. */
 	LDR SP, =0x4003FF00
+	MOV R4, R0
+	MOV R5, R1
 	LDR R0, =__bss_start
 	EOR R1, R1, R1
 	LDR R2, =__bss_end
 	SUB R2, R2, R0
 	BL memset
+	LDR R0, =gui_boot_args
+	STMIA R0, {R4, R5}
 	BL _irq_setup
 	B .
 
