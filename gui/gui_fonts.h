@@ -7,9 +7,11 @@
 extern lv_font_t gui_font_30;
 extern lv_font_t gui_font_20;
 extern lv_font_t gui_font_mono;
+extern lv_font_t gui_font_25;
 extern lv_font_t gui_icons_30;
 extern lv_font_t gui_icons_20;
 extern lv_font_t gui_icons_120;
+extern lv_font_t gui_icons_100;
 
 /* Icon letters: valid in every gui_icons_* font, and inline in a
  * text font once gui_fonts_init() has chained its icon face. */
@@ -56,6 +58,7 @@ extern lv_font_t gui_icons_120;
 #define ICON_FAN        "\xE8"
 #define ICON_SDCARD     "\xE9"
 #define ICON_HEART      "\xEA"
+#define ICON_TV         "\xEB"
 
 void gui_fonts_init(void);
 

@@ -1,9 +1,9 @@
 /*
  * hwtest GUI - the main screen.
  *
- * Laid out as Nyx's Home tab: the name and a tagline, a row of 256 px
- * buttons - the health check first, then the hands-on tests, and past a
- * divider the RAM test, which leaves for its own payload - and flat text
+ * Laid out as Nyx's Home tab: the name and a tagline, a row of square
+ * buttons (the health check first, then the hands-on tests, and past a
+ * divider the RAM test, which leaves for its own payload) and flat text
  * buttons along the bottom, with Reboot and Power Off asking first.
  */
 #include "gui.h"
@@ -21,6 +21,7 @@ static lv_res_t _act_custom(lv_obj_t *b)  { gui_show(gui_custom); return LV_RES_
 static lv_res_t _act_joycon(lv_obj_t *b)  { gui_show(gui_joycon_test); return LV_RES_OK; }
 static lv_res_t _act_touch(lv_obj_t *b)   { gui_show(gui_touch_test); return LV_RES_OK; }
 static lv_res_t _act_screen(lv_obj_t *b)  { gui_show(gui_screen_test); return LV_RES_OK; }
+static lv_res_t _act_dock(lv_obj_t *b)    { gui_show(gui_dock_test); return LV_RES_OK; }
 static lv_res_t _act_ram(lv_obj_t *b)     { gui_show(gui_ram_test); return LV_RES_OK; }
 static lv_res_t _act_results(lv_obj_t *b) { gui_show(gui_results); return LV_RES_OK; }
 
@@ -65,17 +66,19 @@ void gui_home(void)
     lv_obj_t *tag = gui_hint(tab, 0, "HARDWARE HEALTH CHECK FOR THE NINTENDO SWITCH");
     lv_obj_set_pos(tag, GUI_MARGIN, TAB_Y(148));
 
-    /* Nyx's row of square buttons, five across: from the left margin 16 px
-     * apart, the divider in a wider gap before the last, which ends on the
-     * right margin and leaves for its own payload. */
-    const lv_coord_t bw = 216, step = bw + 16;
+    /* Nyx's row of square buttons, six across: from the left margin 13 px
+     * apart, the divider in a wider 32 px gap before the last, which ends on
+     * the right margin and leaves for its own payload. Nyx's 256 px tile and
+     * its 16/36 px gaps, scaled to fit six between the margins. */
+    const lv_coord_t bw = 180, step = bw + 13;
     lv_coord_t y = TAB_Y(240);
     lv_obj_t *check = gui_big_button(tab, GUI_MARGIN, y, bw, ICON_HEALTH,
                                      "Health Check", _act_check);
     gui_big_button(tab, GUI_MARGIN + step, y, bw, ICON_GAMEPAD, "Joy-Con", _act_joycon);
     gui_big_button(tab, GUI_MARGIN + 2 * step, y, bw, ICON_TOUCH, "Touchscreen", _act_touch);
     gui_big_button(tab, GUI_MARGIN + 3 * step, y, bw, ICON_SCREEN, "Screen", _act_screen);
-    gui_divider(tab, GUI_RIGHT - bw - 19, TAB_Y(220), bw + 40);
+    gui_big_button(tab, GUI_MARGIN + 4 * step, y, bw, ICON_TV, "Dock", _act_dock);
+    gui_divider(tab, GUI_RIGHT - bw - 16, TAB_Y(220), bw + 40);
     gui_big_button(tab, GUI_RIGHT - bw, y, bw, ICON_RAM, "RAM Test", _act_ram);
 
     /* The bottom row: the flat buttons' text lines up with the margins and

@@ -14,7 +14,9 @@
  *    with a dead touchscreen and no Joy-Con has left.
  */
 #include "gui.h"
+#include "../dpout.h"
 #include <display/vic.h>
+#include <mem/heap.h>
 #include <input/joycon.h>
 #include <input/touch.h>
 
@@ -89,10 +91,54 @@ void gui_sentinel_raise(void)
     lv_obj_set_design_func(s_sentinel, _sentinel_design);
 }
 
+/* The TV's second head scans a picture of its own, copied from the GUI's
+ * buffer once a frame is complete. LVGL draws in place, the background
+ * first and then each object, so a head scanning the drawing buffer shows
+ * the screen half drawn whenever anything changes (the Nintendo dock's
+ * blinking, 2026-11-05). Only the rows the frame drew are copied; areas are
+ * always full width here, and the BPMP cache is write-through, so the copy
+ * is in DRAM when memcpy returns. */
+static u32 s_tv_fb;
+static s32 s_tv_y1 = -1, s_tv_y2 = -1;
+
+u32 gui_tv_fb(void)
+{
+    if (!s_tv_fb) {
+        u8 *mem = malloc(GUI_W * GUI_H * 4 + 0x100);   /* kept for the session */
+        if (!mem)
+            return 0;
+        s_tv_fb = ALIGN((u32)mem, 0x100);
+    }
+    memcpy((void *)s_tv_fb, (void *)NYX_FB2_ADDRESS, GUI_W * GUI_H * 4);
+    return s_tv_fb;
+}
+
+static void _tv_mark(int32_t y1, int32_t y2)
+{
+    if (s_tv_y1 < 0 || y1 < s_tv_y1)
+        s_tv_y1 = y1;
+    if (y2 > s_tv_y2)
+        s_tv_y2 = y2;
+}
+
+static void _tv_copy(void)
+{
+    if (s_tv_y1 < 0)
+        return;
+    if (s_tv_fb && dpout_video_on()) {
+        u32 off = (u32)s_tv_y1 * GUI_W * 4;
+        u32 n = (u32)(s_tv_y2 - s_tv_y1 + 1) * GUI_W * 4;
+        memcpy((u8 *)s_tv_fb + off, (u8 *)NYX_FB2_ADDRESS + off, n);
+    }
+    s_tv_y1 = s_tv_y2 = -1;
+}
+
 static void _disp_flush(int32_t x1, int32_t y1, int32_t x2, int32_t y2,
                         const lv_color_t *src)
 {
-    (void)y1; (void)y2; (void)src;    /* already in the framebuffer */
+    (void)src;    /* already in the framebuffer */
+    gui_input_sample();
+    _tv_mark(y1, y2);
     /* The window is only pointed at the VIC output once a full first frame
      * exists, so the panel never shows a half-drawn screen. After that, a
      * frame can arrive in several areas, and each VIC pass rotates the
@@ -112,6 +158,7 @@ static void _present(void)
         s_dirty = false;
         vic_compose();
     }
+    _tv_copy();
 }
 
 void gui_refresh_now(void)
@@ -310,6 +357,34 @@ static u32 _jc_key(const jc_gamepad_rpt_t *jc)
 #define KEY_REPEAT_AFTER 400
 #define KEY_REPEAT_EVERY 120
 
+/* VOL presses latched between input reads. LVGL reads the buttons only
+ * between frames, and acts on the release after a press it saw: a frame
+ * longer than a quick press (the Dock Test's I2C and redraws at the
+ * payload's clocks) swallowed it. gui_input_sample() is two GPIO reads,
+ * taken while frames render, in long tasks and every loop pass; a press
+ * that came and went between two reads is replayed as one. */
+static u8 s_vol_latch, s_vol_prev;
+static u32 s_vol_up_ms[2];        /* when VOL+ and VOL- were last let go */
+
+/* A press counts only after its button was up this long: a release bounces
+ * (and the emulator's key events can flicker), and that is not a new press. */
+#define VOL_DEBOUNCE_MS 40
+
+void gui_input_sample(void)
+{
+    static const u8 bit[2] = { BTN_VOL_UP, BTN_VOL_DOWN };
+    u8 b = btn_read_vol();
+    u32 now = get_tmr_ms();
+    for (u32 i = 0; i < 2; i++) {
+        bool down = b & bit[i], was = s_vol_prev & bit[i];
+        if (was && !down)
+            s_vol_up_ms[i] = now;
+        else if (down && !was && now - s_vol_up_ms[i] >= VOL_DEBOUNCE_MS)
+            s_vol_latch |= bit[i];
+    }
+    s_vol_prev = b;
+}
+
 static bool _keys_read(lv_indev_data_t *data)
 {
     static u32 last = LV_GROUP_KEY_ENTER;
@@ -319,12 +394,22 @@ static bool _keys_read(lv_indev_data_t *data)
 
     if (!s_input_hold) {
         u8 btn = btn_read();
+        gui_input_sample();
         if (btn & BTN_VOL_UP)
             key = LV_GROUP_KEY_NEXT;
         else if (btn & BTN_VOL_DOWN)
             key = LV_GROUP_KEY_PREV;
         else if (btn & BTN_POWER)
             key = LV_GROUP_KEY_ENTER;
+        else if (s_vol_latch & BTN_VOL_UP)
+            key = LV_GROUP_KEY_NEXT;      /* a press between two reads */
+        else if (s_vol_latch & BTN_VOL_DOWN)
+            key = LV_GROUP_KEY_PREV;
+        /* Seen now, held or replayed: not again. */
+        if (key == LV_GROUP_KEY_NEXT)
+            s_vol_latch &= ~BTN_VOL_UP;
+        else if (key == LV_GROUP_KEY_PREV)
+            s_vol_latch &= ~BTN_VOL_DOWN;
 
         /* The Joy-Con test reads the Joy-Con itself (gui_jc_state); there
          * every button is under test, so none of them navigates. */
@@ -499,6 +584,7 @@ void ipl_main(void)
             _frame_stat(get_tmr_us() - t0);
         }
         uart_poll_reboot();
+        gui_input_sample();
         usleep(500);
     }
 }

@@ -113,7 +113,7 @@ skipped and the LCD/UART results remain usable.
 
 ## GUI
 
-![The GUI: home, the health check running, results, a category, the technical report, the Joy-Con and touchscreen tests, a prompt](img/gui.png)
+![The GUI: home, the health check running, results, a category, the technical report, the custom check, the Joy-Con, touchscreen, screen and dock tests, a prompt](img/gui.png)
 
 For people who are not technicians, `hwtest.bin` has a second face: a
 touch and Joy-Con interface that looks like hekate's Nyx (the same theme,
@@ -138,8 +138,8 @@ the root of the card. Every CI run uploads it as the `hwtest-sd` artifact and
 every release carries it as `hwtest-sd.zip`.
 
 With `hwtest/gui.bin` on the card, injecting `hwtest.bin` opens the GUI. Without
-it - no card, an unreadable card, or a file that is not a GUI stage for this
-build's layout - the text launcher above runs exactly as before, so a console
+it (no card, an unreadable card, or a file that is not a GUI stage for this
+build's layout), the text launcher above runs exactly as before, so a console
 whose SD slot is the fault can still be diagnosed. Hold **VOL-** while the
 payload starts to skip the GUI on purpose.
 
@@ -156,7 +156,7 @@ touchscreen and no Joy-Con. In a message box they pick between its buttons.
 
 | Screen | What it does |
 |---|---|
-| **Home** | Nyx's Home tab: Health Check, Joy-Con, Touchscreen, Screen and RAM Test, and along the bottom Custom Check, Last Results, and Reboot / Power Off (each asks first). The first tab has what hwtest checks and the credits. |
+| **Home** | Nyx's Home tab: Health Check, Joy-Con, Touchscreen, Screen, Dock and RAM Test, and along the bottom Custom Check, Last Results, and Reboot / Power Off (each asks first). The first tab has what hwtest checks and the credits. |
 | **Custom Check** | The text launcher's Custom test: one checkbox per group of checks (identity, power, memory, storage, wireless, sound chip, sound output, screen, inputs, system details), then Run. The check's step list greys out what was not picked and the results say "not checked" for it. Check Again on the results repeats the same selection; Health Check on the home screen always runs everything. |
 | **Health Check** | The full sweep, with a progress bar and the steps ticked off. Then one row per part of the console (battery, charging, power, temperature and fan, storage, Wi-Fi and Bluetooth, processor and memory, sound, screen, touch, system) saying in a few words whether it is fine; each opens to what was checked, what a problem means and what to try, and from there to the report pages behind it. The report is saved to the SD card as in the text flow. |
 | **Joy-Con** | Both Joy-Cons (or a Lite's built-in controls): every button that can be reached on the rail lights up when pressed and stays marked once it has been, with a count of how many are done, and each stick is drawn live and judged. Let go of it for a second, then roll it all the way around. The Joy-Con's own calibration (factory, or the owner's from the system settings) is read from its flash over the rail, so each direction is judged against what the console's firmware calls full travel and drift against the firmware's centre, which is what an owner feels in a game. A pad with no such calibration (a Lite's controls, a third-party pad) is judged on its own travel: each direction against the furthest one (wear comes up short on one side, not evenly), drift against the middle of the travel seen. A connection that drops and comes back is counted, which is what a worn rail looks like. |
@@ -165,12 +165,13 @@ touchscreen and no Joy-Con. In a message box they pick between its buttons.
 | **IR Camera** | The right Joy-Con's infrared camera, shown live and enlarged, at 80 x 60 by default and up to its full 320 x 240 (Image Size). The Joy-Con's own infrared lights illuminate whatever is held in front of it, so a hand shows pale on a dark background. The start-up sequence is CTCaer's jc_toolkit's, step by step, and a step that fails is named with what the Joy-Con answered. |
 | **Touchscreen** | A grid over the whole panel that turns green under a finger; what never turns green does not respond. The instructions panel steps out of the way while a finger is down and returns a moment after; tap its Finish button or press POWER for the verdict. |
 | **Screen** | The whole panel in one colour at a time, white, red, green, blue and black, then white while the backlight dims and brightens: dots that stay dark or bright, lines and patches show against a flat field, and a backlight that flickers or lights unevenly shows on the last page. A touch, VOL+, VOL- or any Joy-Con button turns the page. |
+| **Dock Test** | The USB-C port's PD controller (BM92T36) watched live: status, alerts, the power profiles on offer, the contract, its DisplayPort bits and the hot plug detect line. Run then performs the handshake the console performs when it docks, as switchroot's L4T kernel does it: the 15 V request, the data role swap, the dock's own mode, DisplayPort on 2 lanes, the dock's light and USB hub, step by step with what each found. The USB 3/DisplayPort switch (PI3USB30532) has no I2C address of its own on this board and is set by the PD controller with the pin assignment, so it is reached through that step. Reset Chip does to the controller what HOS's usb sysmodule does at every boot (a 30 ms pulse on its reset line PV5, its interrupt line watched, the device id polled, SYS_RESET, DisplayPort alerts and over-current protection on), for a controller that does not answer; the view shows its pins. When the handshake ends with DisplayPort up and a TV on the dock, Run goes on to put this very screen on the TV, 1280x720 at 60 Hz, the way switchroot's L4T kernel drives the dock: the AUX channel (DPAUX1), the dock converter's DPCD and the TV's EDID through it, SOR1 on its own 270 MHz PLL with the SoC's DisplayPort tuning values for Erista or Mariko, link training on 2 lanes against the sink's status registers (5.4 Gbps with training pattern 3 first, then lower rates if that fails), a second check for symbol errors that trains again from a higher swing when there are any, then the second display head attached to SOR1. The TV is fed its own copy of each finished frame, so it never shows the screen half drawn. The report gives the TV's name, the link and the pixel clock SOR1 measures, and a full log with a register dump is saved to the SD card as hwtest/tvlink_<date>.txt. Tested on hardware with the Nintendo dock and a Ugreen USB-C hub. Leaving the screen takes it all down again. Nothing of it runs from the health check. |
 | **Screenshot** | Two fingers on the panel save the screen as a 1280 x 720 BMP under `hwtest/screenshots/` on the SD card, named by date and time, as Nyx does with a third finger. The backlight blinks for the shutter. |
 | **RAM Test** | Starts `hwtest_ram.bin` from the card, as the text launcher's RAM test does. |
 
 The status bar along the bottom shows the console's serial number when
-`sd:/switch/prod.keys` (from Lockpick_RCM) is on the card - the serial is in
-the encrypted PRODINFO - and the battery as Nyx shows it: the current going
+`sd:/switch/prod.keys` (from Lockpick_RCM) is on the card (the serial is in
+the encrypted PRODINFO), and the battery as Nyx shows it: the current going
 in (green) or out (red), the cell voltage, the level to a tenth, and a bolt
 while it charges.
 
@@ -263,7 +264,7 @@ low together, holds them, then raises `BT_REG_ON` to produce a genuine POR
 (Power-On Reset, the chip's internal reset, which is released when
 `BT_REG_ON` rises and can hold the part for up to 110 ms afterwards).
 
-The power cycle is not optional, because two of these pins are *straps* --
+The power cycle is not optional, because two of these pins are *straps*:
 sampled once, a few milliseconds after POR deassertion, then latched until the
 next one. Re-pulsing `BT_REG_ON` without a low period changes nothing; the
 part keeps whatever mode it latched first.
@@ -283,13 +284,13 @@ defined state across the edge, but nothing latches them as configuration.
 
 It also self-tests. A 16550 internal loopback runs first, proving the clock,
 divisor, FIFOs and helper routines without involving a single pad. **A radio
-that stays silent is only reported as a failure when that loopback passed** --
+that stays silent is only reported as a failure when that loopback passed**;
 otherwise the fault is on our side of the pads and nothing is recorded against
 the radio.
 
 The probe does not settle for one attempt before it records silence. It runs
 three power-cycle arms and four flow-control (MCR) variants, every one of them
-at 115200 -- the CYW4356's default HCI rate, and the only rate the probe
+at 115200: the CYW4356's default HCI rate, and the only rate the probe
 configures. There is no baud sweep. What that covers is a host-side transport
 or flow-control mismatch; the host baud is not covered, so a silent unit is
 reported as silent at 115200 rather than at every rate.
@@ -300,7 +301,7 @@ units, two Mariko and one Erista, each answer with a valid Command Complete
 Erista, reporting error 2110-1118 on Wi-Fi, stays quiet through every arm and
 every MCR variant: it never releases its internal pull-up on `BT_HOST_WAKE`
 and never asserts the transport-ready handshake. Its PRODINFO calibration is
-intact, which points at the module, its supply, or its solder -- unless that
+intact, which points at the module, its supply, or its solder, unless that
 module came up at a rate other than 115200, which this probe does not test.
 
 ## Wi-Fi radio probe (PCIe)
@@ -553,8 +554,8 @@ Four lines carry the verdict, and they fail independently:
   gen1 x1, which is what this endpoint negotiates.
 - `EP config : 14E4:43EC` is the enumeration verdict: the WLAN function
   answered config reads with the right ID, so the core is present and on
-  the bus. (Reading the die-level ChipID would need a firmware download -
-  the backplane is firmware-gated in ROM phase - which is the OS's job.)
+  the bus. (Reading the die-level ChipID would need a firmware download,
+  since the backplane is firmware-gated in ROM phase, and that is the OS's job.)
 
 The `uphy entry`/`uphy ungated` pairs bracket the pad controller coming out
 of reset, and exist because the register values on either side are how you
@@ -678,6 +679,8 @@ probe_display.c      - DSI panel ID + backlight
 probe_inputs.c       - touch, ambient light, Joy-Con rails, buttons
 probe_memclk.c       - DRAM identity + clock registers
 probe_lowlevel.c     - GPIO census, UART debug port, reset reason, PMC scratch
+usbpd.c/.h           - USB-C PD controller (BM92T36) and the dock handshake, for the GUI's Dock Test
+dpout.c/.h           - DisplayPort out to the dock: DPAUX1, DPCD, EDID, SOR1 link training, second head
 cpu_mbox.h           - BPMP <-> CPU0 mailbox, shared by both toolchains
 cpu_stub/            - AArch64 stub that does the PCIe half on CPU0
 emmcsn.c             - Hekate-style backup/<emmc_serial>/<sub>/<file> path
@@ -707,6 +710,8 @@ Heavy reliance on the work of:
 - [dekuNukem's Joy-Con notes](https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering) and [CTCaer's jc_toolkit](https://github.com/CTCaer/jc_toolkit): the HID subcommands, the motion sensor's units, the rumble encoding and the infrared camera's start-up sequence, which the GUI's Joy-Con screens speak over the rail
 - [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere): public Erista/Mariko MTC code and timing tables used by the dedicated RAM diagnostic
 - [Lockpick_RCM](https://github.com/shchmue/Lockpick_RCM)
+- CTCaer's [switchroot L4T kernel](https://github.com/CTCaer/switch-l4t-kernel-4.9) and [its NVIDIA drivers](https://github.com/CTCaer/switch-l4t-kernel-nvidia): the BM92T36 driver whose dock handshake the Dock Test follows, and the Tegra display driver (DPAUX, SOR, the DisplayPort tuning values) it brings the TV picture up by
+- [coreboot](https://github.com/coreboot/coreboot)'s Tegra210 DisplayPort driver, the other reference for the link training
 - [switchbrew.org](https://switchbrew.org/wiki/)
 - [shinyquagsire23's hekate audio branch](https://github.com/shinyquagsire23/hekate/tree/audio):
   the only known bare-metal Switch audio implementation, and what the audio

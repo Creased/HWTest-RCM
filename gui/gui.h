@@ -89,6 +89,7 @@ lv_obj_t *gui_blank_new(void);           /* full screen, no header       */
 lv_obj_t *gui_win_new(const char *title);
 lv_obj_t *gui_win_btn(lv_obj_t *win, const char *text, lv_action_t action);
 void gui_win_close_hide(bool hide);      /* for a screen that cannot be left yet */
+void gui_hide(lv_obj_t *obj, bool hide); /* the focus leaves it while hidden */
 
 lv_obj_t *gui_label(lv_obj_t *parent, const lv_font_t *font, lv_color_t col,
                     const char *text);
@@ -138,6 +139,8 @@ void gui_set_back(gui_screen_fn_t screen); /* where B / Close leads (home */
                                          /* unless a screen says other) */
 void gui_back(void);
 void gui_refresh_now(void);              /* draw pending changes now    */
+void gui_input_sample(void);             /* latch VOL presses (long work) */
+u32  gui_tv_fb(void);                    /* the TV's copy of the screen  */
 void gui_sentinel_raise(void);           /* after creating on the screen */
 
 /* ---- input state the test screens read (gui_main.c) ---- */
@@ -177,6 +180,7 @@ void gui_jc_ir(void);
 void gui_jc_test_resumed(void);          /* a sensor screen gave the rails back */
 void gui_touch_test(void);
 void gui_screen_test(void);
+void gui_dock_test(void);
 void gui_ram_test(void);
 void gui_screenshot(void);               /* two fingers, from gui_main.c */
 void gui_results(void);

@@ -28,6 +28,7 @@ static lv_group_t *s_group;
 static lv_obj_t *s_root, *s_page, *s_mbox, *s_mbox_bg;
 static lv_obj_t *s_hdr, *s_hdr_close;
 static lv_coord_t s_hdr_x;      /* where the next header button's text ends */
+static void *s_hdr_first;       /* the focus list node of the leftmost one   */
 static lv_obj_t *s_bar, *s_bar_batt, *s_bar_more;
 static char s_name[32];
 
@@ -45,11 +46,92 @@ static void _focus_style(lv_style_t *st)
     st->body.border.part  = LV_BORDER_FULL;
 }
 
-static void _focus_follow(lv_group_t *g)
+/* Shown: neither the object nor any parent of it hidden. */
+static bool _shown(lv_obj_t *o)
 {
-    lv_obj_t *f = lv_group_get_focused(g);
+    for (; o; o = lv_obj_get_parent(o))
+        if (lv_obj_get_hidden(o))
+            return false;
+    return true;
+}
+
+static void _focus_page(lv_obj_t *f)
+{
     if (f && s_page && lv_obj_get_parent(f) == lv_page_get_scrl(s_page))
         lv_page_focus(s_page, f, 150);
+}
+
+static bool s_refocusing;
+
+/* LVGL 5's group steps onto hidden objects as onto any other: the focus goes
+ * on past them, the way it was going, then the other way from an end of a
+ * group that does not wrap. */
+static void _focus_past_hidden(lv_group_t *g, bool back)
+{
+    u32 n = 0;
+    lv_obj_t **i;
+    LL_READ(g->obj_ll, i)
+        n++;
+    s_refocusing = true;
+    for (u32 pass = 0; pass < 2; pass++, back = !back) {
+        for (u32 k = 0; k < n && !_shown(lv_group_get_focused(g)); k++) {
+            if (back)
+                lv_group_focus_prev(g);
+            else
+                lv_group_focus_next(g);
+        }
+    }
+    s_refocusing = false;
+}
+
+/* The focused object that hid, and where the focus went then: it comes back
+ * when the object shows again and the focus has not moved since. */
+static lv_obj_t *s_hid_from, *s_hid_to;
+
+/* Off a hidden object that has the focus, to the one before it: on a header
+ * that is the one on its left, away from Close, so a press meant for the
+ * hidden button does not leave the screen. */
+static void _focus_off(lv_obj_t *f)
+{
+    _focus_past_hidden(s_group, true);
+    s_hid_from = f;
+    s_hid_to = lv_group_get_focused(s_group);
+    _focus_page(s_hid_to);
+}
+
+static void _focus_follow(lv_group_t *g)
+{
+    if (s_refocusing)
+        return;                 /* a step past a hidden one: the last one follows */
+    lv_obj_t *f = lv_group_get_focused(g);
+    if (f && !_shown(f)) {
+        lv_indev_t *in = lv_indev_get_act();
+        u32 key = lv_indev_get_type(in) == LV_INDEV_TYPE_KEYPAD ? in->proc.last_key : 0;
+        if (key != LV_GROUP_KEY_NEXT && key != LV_GROUP_KEY_PREV) {
+            /* A touch on a button that hid itself: LVGL focuses what was
+             * touched after its action ran. */
+            _focus_off(f);
+            return;
+        }
+        /* VOL or the D-pad: on past it the way they moved. */
+        _focus_past_hidden(g, key == LV_GROUP_KEY_PREV);
+        f = lv_group_get_focused(g);
+    }
+    _focus_page(f);
+}
+
+void gui_hide(lv_obj_t *obj, bool hide)
+{
+    lv_obj_set_hidden(obj, hide);
+    lv_obj_t *f = lv_group_get_focused(s_group);
+    if (hide) {
+        if (f && !_shown(f))
+            _focus_off(f);
+    } else if (s_hid_from && _shown(s_hid_from)) {
+        if (f == s_hid_to)
+            lv_group_focus_obj(s_hid_from);
+        s_hid_from = NULL;
+    }
 }
 
 /* The status bar names the console by the serial on its sticker. That lives
@@ -220,6 +302,8 @@ static void _root_reset(void)
     s_root = NULL;
     s_page = NULL;
     s_hdr = NULL;
+    s_hid_from = NULL;
+    s_hid_to = NULL;
 }
 
 static lv_obj_t *_root_new(void)
@@ -246,7 +330,7 @@ static void _tab_plain(lv_obj_t *tab)
 static void _about_tab(lv_obj_t *tab)
 {
     lv_obj_t *t = gui_label(tab, &gui_font_30, GUI_COL_TEXT,
-                            "#" GUI_HEX_ACCENT " hwtest#  -  hardware diagnostics");
+                            "#" GUI_HEX_ACCENT " hwtest:# hardware diagnostics");
     lv_obj_set_pos(t, GUI_MARGIN, GUI_TOP - GUI_BAR_H);
     lv_obj_t *d = gui_hint(tab, GUI_CONTENT_W,
         "Checks the console's hardware from RCM, without starting its system: "
@@ -318,6 +402,7 @@ lv_obj_t *gui_win_new(const char *title)
     lv_obj_t *t = gui_label(s_hdr, &gui_font_30, GUI_COL_TEXT, title);
     lv_obj_align(t, NULL, LV_ALIGN_IN_LEFT_MID, GUI_MARGIN, 0);
     s_hdr_x = GUI_RIGHT;
+    s_hdr_first = NULL;
 
     gui_sentinel_raise();
     s_hdr_close = gui_win_btn(s_root, ICON_CLOSE " Close", _act_close);
@@ -329,7 +414,7 @@ lv_obj_t *gui_win_new(const char *title)
 void gui_win_close_hide(bool hide)
 {
     if (s_hdr_close)
-        lv_obj_set_hidden(s_hdr_close, hide);
+        gui_hide(s_hdr_close, hide);
 }
 
 /* Right to left: the text of the first one ends on the right margin, each
@@ -351,6 +436,23 @@ lv_obj_t *gui_win_btn(lv_obj_t *win, const char *text, lv_action_t action)
     lv_obj_set_pos(b, s_hdr_x + GUI_TEXT_PAD - w, 4);
     s_hdr_x -= w + GUI_TEXT_PAD;
     lv_group_add_obj(s_group, b);
+    /* Buttons are laid out from the right, Close first; in the focus list
+     * each goes before the ones made earlier, so VOL+ and the D-pad move
+     * right across the header, as the buttons read. */
+    {
+        lv_ll_t *ll = &s_group->obj_ll;
+        void *node = lv_ll_get_tail(ll);
+        if (s_hdr_first) {
+            /* LVGL 5's lv_ll_move_before links a node in before the head
+             * but leaves the head pointer alone, which orphans the node:
+             * the head is set here. */
+            bool was_head = ll->head == s_hdr_first;
+            lv_ll_move_before(ll, node, s_hdr_first);
+            if (was_head)
+                ll->head = node;
+        }
+        s_hdr_first = node;
+    }
     return b;
 }
 
@@ -368,13 +470,14 @@ lv_obj_t *gui_big_button(lv_obj_t *parent, lv_coord_t x, lv_coord_t y,
     lv_obj_set_pos(b, x, y);
     lv_btn_set_action(b, LV_BTN_ACTION_CLICK, action);
 
-    /* Nyx's proportions at 256 px, kept when the square is smaller. */
+    /* Nyx's proportions at 256 px, kept when the square is smaller; the
+     * icon and caption faces are cut for the home row's 180 px tiles. */
     char buf[48];
     s_printf(buf, "#" GUI_HEX_ACCENT " %s#", icon);
-    lv_obj_t *ic = gui_label(b, &gui_icons_120, GUI_COL_TEXT, buf);
+    lv_obj_t *ic = gui_label(b, &gui_icons_100, GUI_COL_TEXT, buf);
     lv_obj_align(ic, NULL, LV_ALIGN_CENTER, 0, -(w * 28 / 256));
     s_printf(buf, "#" GUI_HEX_ACCENT " %s#", caption);
-    lv_obj_t *cap = gui_label(b, &gui_font_30, GUI_COL_TEXT, buf);
+    lv_obj_t *cap = gui_label(b, &gui_font_25, GUI_COL_TEXT, buf);
     lv_obj_align(cap, NULL, LV_ALIGN_IN_TOP_MID, 0, w * 174 / 256);
 
     lv_group_add_obj(s_group, b);
