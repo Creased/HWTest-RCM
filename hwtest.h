@@ -146,8 +146,10 @@ void log_capture_arm(char *buf, u32 cap);
 u32 health_color(int v, int warn_lo, int warn_hi, int err_lo, int err_hi);
 const char *panel_model_name(u16 dec);
 /* The panel's DSI id, raw (0xCCCCCC: the read failed). The GUI stage gets
- * it from hwtest.bin and sets it, decoded id included, or says it has none. */
+ * it from hwtest.bin and sets it, decoded id included, or says it has none.
+ * panel_id_decoded() is the id as it answered (0xBBVV), not bdk's copy. */
 u32  panel_id_raw(void);
+u16  panel_id_decoded(void);
 void panel_id_set(u32 raw);
 void panel_id_lost(void);
 bool panel_id_known(void);

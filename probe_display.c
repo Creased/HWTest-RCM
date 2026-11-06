@@ -22,7 +22,29 @@ const char *panel_model_name(u16 dec)
     case PANEL_AUO_A055TAN01:   return "AUO A055TAN";
     case PANEL_SHP_LQ055T1SW10: return "Sharp LQ055T1SW10";
     case PANEL_SAM_AMS699VC01:  return "Samsung AMS699VC01";
+    case PANEL_OEM_CLONE_6_2:   return "OEM clone 6.2\"";
+    case PANEL_OEM_CLONE_5_5:   return "OEM clone 5.5\"";
+    case PANEL_OEM_CLONE:       return "OEM clone";
     default: return NULL;
+    }
+}
+
+static bool _panel_clone(u16 dec)
+{
+    return dec == PANEL_OEM_CLONE_6_2 || dec == PANEL_OEM_CLONE_5_5 ||
+           dec == PANEL_OEM_CLONE;
+}
+
+/* The vendor, from the id's low byte, for a model not in the table. */
+static const char *_panel_vendor(u16 dec)
+{
+    switch (dec & 0xFF) {
+    case 0x10: return "JDI";
+    case 0x20: return "InnoLux";
+    case 0x30: return "AUO";
+    case 0x40: return "Sharp";
+    case 0x50: return "Samsung";
+    default:   return NULL;
     }
 }
 
@@ -38,7 +60,12 @@ void panel_id_set(u32 raw)
 {
     s_panel_raw = raw;
     s_panel_set = true;
-    display_set_decoded_panel_id(raw);
+    /* bdk's copy as display_init() left it in hwtest.bin, so this stage
+     * drives the panel the way it was brought up: an Aula always as the
+     * Samsung OLED, whatever answered. bdk's setter (Nyx's) only does that
+     * for a failed read, so an Aula is given one. */
+    display_set_decoded_panel_id(fuse_read_hw_type() == FUSE_NX_HW_TYPE_AULA ?
+                                 0xCCCCCC : raw);
 }
 
 void panel_id_lost(void)
@@ -58,6 +85,20 @@ u32 panel_id_raw(void)
     return s_panel_set ? s_panel_raw : display_get_verbose_panel_id();
 }
 
+/* The panel's id as it answered, decoded as Nyx's console info decodes it:
+ * the board in the high byte, the vendor in the low one (0x0F30, an AUO on
+ * an Icosa/Iowa board). bdk's decoded copy is the id it drives the panel
+ * by, which is not that: it folds every JDI into the generic 0x0010 and
+ * makes every Aula a Samsung AMS699VC01, as display_init() does. The report
+ * and the PRODINFO comparison need what answered, or a JDI console reads as
+ * having a replaced screen and an OLED as having its own, whatever is
+ * fitted. */
+u16 panel_id_decoded(void)
+{
+    u32 raw = panel_id_raw();
+    return ((raw >> 8) & 0xFF00) | (raw & 0xFF);
+}
+
 void probe_display(void)
 {
     HEADER("[DSI panel ID]");
@@ -66,19 +107,29 @@ void probe_display(void)
         return;
     }
     u32 raw = panel_id_raw();
-    u16 dec = display_get_decoded_panel_id();
     LOG("  Raw ID bytes : %02X %02X %02X\n",
         raw & 0xFF, (raw >> 8) & 0xFF, (raw >> 16) & 0xFF);
 
-    bool sentinel = (raw & 0xFFFFFF) == 0xCCCCCC;
-    log_color(sentinel ? COL_ERR : COL_OK,
-        "  Decoded ID   : 0x%04X%s\n", dec, sentinel ? " (read FAILED)" : "");
-    dx_set("dsi_id", sentinel ? DX_FAIL : DX_PASS,
-        sentinel ? "DSI ID read failed (cable?)" : "");
+    if ((raw & 0xFFFFFF) == 0xCCCCCC) {
+        log_color(COL_ERR, "  Decoded ID   : none (read FAILED)\n");
+        log_color(COL_ERR, "  Model        : Unknown\n");
+        dx_set("dsi_id", DX_FAIL, "DSI ID read failed (cable?)");
+        return;
+    }
+    dx_set("dsi_id", DX_PASS, "");
 
-    const char *name = panel_model_name(dec);
-    log_color(name ? COL_OK : (sentinel ? COL_ERR : COL_WARN),
-        "  Model        : %s\n", name ? name : "Unknown");
+    u16 dec = panel_id_decoded();
+    const char *name = panel_model_name(dec), *vendor = _panel_vendor(dec);
+    log_color(COL_OK, "  Decoded ID   : 0x%04X\n", dec);
+    log_color(name && !_panel_clone(dec) ? COL_OK : COL_WARN,
+        "  Model        : %s%s\n", name ? name : vendor ? vendor : "Unknown",
+        !name && vendor ? ", model unknown" : "");
+
+    /* An Aula is driven as the Samsung OLED whatever answered; said when
+     * something else did. */
+    if (display_get_decoded_panel_id() == PANEL_SAM_AMS699VC01 &&
+        dec != PANEL_SAM_AMS699VC01)
+        log_color(COL_WARN, "  Driven as    : Samsung AMS699VC01, as on every Aula\n");
 }
 
 /* ------------------------------------------------------------------------ */

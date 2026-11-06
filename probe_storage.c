@@ -799,8 +799,10 @@ void probe_serial(void)
             soc_mariko ? "Mariko" : "Erista");
     }
 
-    /* nyx's decode: CAL0 packs the vendor in byte 0 and the panel type in
-     * byte 2, which recombine into the same 0xVVTT the DSI read returns.
+    /* Nyx's decode: CAL0 keeps the board in byte 0 and the vendor in byte
+     * 2, the other way round from the DSI read (an AUO on a bench Erista:
+     * 0x30940F here, 30 94 0F read back byte 0 first), and both recombine
+     * into the same 0xBBVV.
      * An all-zero field is not a panel ID, it means the factory never wrote
      * one, which is common on Mariko. Comparing against it would report every
      * console as having a replaced screen, so don't. */
@@ -819,7 +821,7 @@ void probe_serial(void)
          * ordinary repair work, it just means the factory calibration no
          * longer matches what is fitted. */
         if (panel_id_known() && (panel_id_raw() & 0xFFFFFF) != 0xCCCCCC) {
-            u16 dsi_panel = display_get_decoded_panel_id();
+            u16 dsi_panel = panel_id_decoded();
             bool same = (dsi_panel == cal_panel);
             log_color(same ? COL_OK : COL_WARN,
                 "  Panel fitted : 0x%04X %s\n", dsi_panel,
