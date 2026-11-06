@@ -133,17 +133,17 @@ void gui_clock_init(void)
     char buf[96];
     s_printf(buf, "gui: DRAM %d MHz (%s)\n", s_dram_fast / 1000,
              s_minerva_path ? s_minerva_path : "no libsys_minerva.bso found");
-    uart_send_crlf(UART_B, (u8 *)buf, strlen(buf));
+    dbg_send((u8 *)buf, strlen(buf));
 
     s_fast = false;
     gui_clock_fast(true);
     static const char boosted[] = "gui: BPMP boosted\n";
-    uart_send_crlf(UART_B, (u8 *)boosted, sizeof(boosted) - 1);
+    dbg_send((u8 *)boosted, sizeof(boosted) - 1);
 
     /* What the clocks actually are now, counted by the PTO, not what was
      * asked for. */
     s_printf(buf, "gui: measured BPMP %d MHz, DRAM %d MHz\n",
              clock_get_dev_freq(CLK_PTO_SCLK) / 1000,
              clock_get_dev_freq(CLK_PTO_EMC) / 1000);
-    uart_send_crlf(UART_B, (u8 *)buf, strlen(buf));
+    dbg_send((u8 *)buf, strlen(buf));
 }

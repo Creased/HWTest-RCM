@@ -126,7 +126,23 @@ bool gui_mbox_open(void);
 
 void gui_statusbar_init(void);
 void gui_statusbar_hide(bool hide);
-void gui_uart_puts(const char *s);       /* a debug line, while UART-B is still ours */
+void gui_uart_puts(const char *s);       /* a line for the debug console */
+
+/* ---- the debug console's port (gui_dbg.c) ---- */
+typedef enum {
+    DBG_UART_B,                          /* the right rail, as in the text payload */
+    DBG_UART_C,                          /* the left rail (not on a Lite)          */
+    DBG_UART_A,                          /* the board's test pads                  */
+    DBG_USB,                             /* a serial port on a PC (usbser.c)       */
+    DBG_PORTS
+} gui_dbg_port_t;
+void gui_dbg_init(bool lite);            /* after jc_init_hw()                     */
+void gui_dbg_rails(void);                /* before each Joy-Con poll               */
+void gui_dbg_poll(void);                 /* every loop pass                        */
+bool gui_dbg_set(gui_dbg_port_t p);      /* false: that port did not come up       */
+gui_dbg_port_t gui_dbg_port(void);
+bool gui_dbg_taken(gui_dbg_port_t p);    /* a Joy-Con owns that rail's port        */
+const char *gui_dbg_name(gui_dbg_port_t p);
 
 extern lv_style_t gui_st_mono;
 

@@ -240,16 +240,19 @@ int  uart_getc(void);
 void uart_ungetc(u8 c);
 void do_reboot(void);
 
-/* UART-B is also the right Joy-Con's rail. The GUI stage drives Joy-Cons, so
- * once one is attached there the debug console has to let go of the port:
- * nothing more is sent, and nothing read that the Joy-Con driver needs.
- * The text payload never drives a Joy-Con, so it keeps the port for good. */
+/* The debug console. The text payload's is UART-B, for good. The GUI stage
+ * can move it to another port (gui/gui_dbg.c), and it lets go of a Joy-Con
+ * rail's port once a Joy-Con is attached there: nothing more is sent, and
+ * nothing read that the Joy-Con driver needs. */
 #ifdef HWTEST_GUI
-extern bool g_uart_debug;
-#define UART_DEBUG_ON g_uart_debug
+void dbg_send(const u8 *buf, u32 n);
+int  dbg_recv(u8 *c);
+#define DBG_SEND(buf, n) dbg_send(buf, n)
+#define DBG_RECV(c)      dbg_recv(c)
 void gui_log_capture(u32 color, const char *s, u32 n);
 #else
-#define UART_DEBUG_ON 1
+#define DBG_SEND(buf, n) uart_send_crlf(UART_B, buf, n)
+#define DBG_RECV(c)      (uart_recv(UART_B, c, 1) == 1)
 #endif
 
 #endif /* HWTEST_H */

@@ -157,7 +157,7 @@ touchscreen and no Joy-Con. In a message box they pick between its buttons.
 | Screen | What it does |
 |---|---|
 | **Home** | Nyx's Home tab: Health Check, Joy-Con, Touchscreen, Screen, Dock and RAM Test, and along the bottom Custom Check, Last Results, and Reboot / Power Off (each asks first). The first tab has what hwtest checks and the credits. |
-| **Custom Check** | The text launcher's Custom test: one checkbox per group of checks (identity, power, memory, storage, wireless, sound chip, sound output, screen, inputs, system details), then Run. The check's step list greys out what was not picked and the results say "not checked" for it. Check Again on the results repeats the same selection; Health Check on the home screen always runs everything. |
+| **Custom Check** | The text launcher's Custom test: one checkbox per group of checks (identity, power, memory, storage, wireless, sound chip, sound output, screen, inputs, system details), then Run. The check's step list greys out what was not picked and the results say "not checked" for it. Check Again on the results repeats the same selection; Health Check on the home screen always runs everything. Beside the groups, UART output picks where the debug console goes for the rest of the session: UART-B on the right rail (the default), UART-C on the left rail (not on a Lite, whose built-in controls use it) or UART-A on the board's test pads (cluster C: pad 3 TX, pad 2 RX), all 115200 8N1 at 1.8 V, or USB serial, a serial port on the PC the console's USB-C port is plugged into, which Windows 10 and later, Linux and macOS use without a driver (USB ID 1209:0001). |
 | **Health Check** | The full sweep, with a progress bar and the steps ticked off. Then one row per part of the console (battery, charging, power, temperature and fan, storage, Wi-Fi and Bluetooth, processor and memory, sound, screen, touch, system) saying in a few words whether it is fine; each opens to what was checked, what a problem means and what to try, and from there to the report pages behind it. The report is saved to the SD card as in the text flow. |
 | **Joy-Con** | Both Joy-Cons (or a Lite's built-in controls): every button that can be reached on the rail lights up when pressed and stays marked once it has been, with a count of how many are done, and each stick is drawn live and judged. Let go of it for a second, then roll it all the way around. The Joy-Con's own calibration (factory, or the owner's from the system settings) is read from its flash over the rail, so each direction is judged against what the console's firmware calls full travel and drift against the firmware's centre, which is what an owner feels in a game. A pad with no such calibration (a Lite's controls, a third-party pad) is judged on its own travel: each direction against the furthest one (wear comes up short on one side, not evenly), drift against the middle of the travel seen. A connection that drops and comes back is counted, which is what a worn rail looks like. |
 | **Rumble** | A button on the Joy-Con test: the left Joy-Con buzzes at full strength for half a second, then the right, and each panel says "buzzing" while it should be felt. One that stays still has a dead motor or driver. |
@@ -187,10 +187,12 @@ the module from the hekate submodule. The debug UART reports the DRAM clock
 and which module it took at start-up and, every couple of seconds while
 anything is drawn, what a frame costs.
 
-UART-B stays the debug console while the GUI runs, with the `R` reboot, until a
-Joy-Con is attached to the right rail: that rail is UART-B, so the debug output
-stops there and the Joy-Con takes the port. The bench's UART adapter does not
-pull the rail's detect line, so it is never mistaken for one.
+UART-B stays the debug console while the GUI runs, with the `R` reboot, unless
+Custom Check moves it. A rail's port stops being the console once a Joy-Con is
+attached there: that rail is the Joy-Con's UART, so the debug output stops and
+the Joy-Con takes the port. `R` is also taken on UART-B while no Joy-Con has
+it, whichever port is picked. The bench's UART adapter does not pull the
+rail's detect line, so it is never mistaken for one.
 
 The GUI's fonts (Inter at Nyx's sizes, Source Code Pro, Font Awesome 4.7
 symbols) are rasterised by `tools/mkfont.py` into `gui/res/fonts.bin` and

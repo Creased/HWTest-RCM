@@ -35,7 +35,7 @@ void status_step(const char *msg)
 {
     char line[96];
     s_printf(line, "[step] %s\n", msg);
-    uart_send_crlf(UART_B, (u8 *)line, strlen(line));
+    DBG_SEND((u8 *)line, strlen(line));
 
     status_set(msg);
     if (g_show_status)
@@ -118,7 +118,7 @@ const struct page_entry g_pages[] = {
     {probe_joycon,     "Inputs"},
     {probe_inputs,     "Inputs"},
 
-    /* Low-level dumps. UART_B is always the debug/report console. */
+    /* Low-level dumps. UART_B is the text payload's debug/report console. */
     {probe_gpio_census,"Raw state"},
     {probe_uart_b,     "Raw state"},
     {probe_reset,      "Raw state"},
@@ -211,7 +211,7 @@ int uart_getc(void)
     if (g_uart_pb_tail != g_uart_pb_head)
         return g_uart_pb[g_uart_pb_tail++ % UART_PUSHBACK_N];
     u8 c;
-    if (!UART_DEBUG_ON || uart_recv(UART_B, &c, 1) != 1)
+    if (!DBG_RECV(&c))
         return -1;
     return c;
 }
@@ -265,7 +265,7 @@ void do_reboot(void)
 void uart_poll_reboot(void)
 {
     u8 c;
-    while (UART_DEBUG_ON && uart_recv(UART_B, &c, 1) == 1) {
+    while (DBG_RECV(&c)) {
         if (c == 'R')
             do_reboot();
         uart_ungetc(c);

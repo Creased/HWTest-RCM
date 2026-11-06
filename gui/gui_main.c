@@ -167,13 +167,12 @@ void gui_refresh_now(void)
     _present();
 }
 
-/* A line for the debug UART - only while it is still the debug UART: once
- * a right Joy-Con sits on the rail, bdk's driver owns UART-B and anything
- * written to it lands in the Joy-Con's protocol. */
+/* A line for the debug console, wherever it is (gui_dbg.c). Nothing goes
+ * out on a rail a Joy-Con has taken over: there it would land in the
+ * Joy-Con's protocol. */
 void gui_uart_puts(const char *s)
 {
-    if (g_uart_debug)
-        uart_send_crlf(UART_B, (u8 *)s, strlen(s));
+    dbg_send((const u8 *)s, strlen(s));
 }
 
 /* What a frame costs on this console, on the debug UART every couple of
@@ -260,49 +259,18 @@ static bool _touch_read(lv_indev_data_t *data)
     return false;
 }
 
-/* The right rail's IsAttached line (PH6) shares its contact with UART-B
- * TX, so it can only be read with TX released - which is how bdk's
- * Joy-Con driver reads it, and this does the same. A real Joy-Con pulls
- * it low; the UART adapter used on a test bench does not. */
-static bool _right_rail_attached(void)
-{
-    PINMUX_AUX(PINMUX_AUX_UART2_TX) = PINMUX_INPUT_ENABLE;
-    gpio_direction_input(GPIO_PORT_G, GPIO_PIN_0);
-    usleep(20);
-    (void)gpio_read(GPIO_PORT_H, GPIO_PIN_6);
-    bool on = !gpio_read(GPIO_PORT_H, GPIO_PIN_6);
-    PINMUX_AUX(PINMUX_AUX_UART2_TX) = 0;
-    gpio_config(GPIO_PORT_G, GPIO_PIN_0, GPIO_MODE_SPIO);
-    usleep(20);
-    return on;
-}
-
-/* Give UART-B back to the debug console after jc_init_hw() re-clocked it
- * for the Joy-Con protocol: the same set-up main.c does before the GUI is
- * loaded. */
-static void _uart_debug_restore(void)
-{
-    uart_init(UART_B, 115200, UART_AO_TX_AO_RX);
-    gpio_config(GPIO_PORT_G, GPIO_PIN_1, GPIO_MODE_SPIO);
-    PINMUX_AUX(PINMUX_AUX_UARTX_RX(UART_B)) = PINMUX_INPUT_ENABLE | PINMUX_PULL_UP;
-}
-
 /* The driver brings a Joy-Con up over several polls - handshake, the reply,
  * then status requests 15 ms apart - and starts over whenever 1.8 s pass
  * without a reply, so it has to be polled at the input rate all the time,
  * as Nyx does. Each poll briefly releases both rails' TX pins to read the
- * attach lines: while UART-B is still the debug console its last bytes go
- * out first, and the right rail is checked before the driver can take
- * UART-B over. */
+ * attach lines: the debug console's last bytes go out first, and a rail it
+ * needs is checked before the driver can take that UART over
+ * (gui_dbg_rails). */
 static jc_gamepad_rpt_t *_jc_poll(void)
 {
     if (!s_jc_ok)
         return NULL;
-    if (g_uart_debug && !s_lite) {
-        uart_wait_xfer(UART_B, UART_TX_IDLE);
-        if (_right_rail_attached())
-            g_uart_debug = false;    /* the Joy-Con owns UART-B from here on */
-    }
+    gui_dbg_rails();
     return joycon_poll();
 }
 
@@ -471,12 +439,7 @@ static void _input_init(void)
     s_lite = fuse_read_hw_type() == FUSE_NX_HW_TYPE_HOAG;
     jc_init_hw();
     s_jc_ok = true;
-    if (!s_lite) {
-        if (!_right_rail_attached())
-            _uart_debug_restore();
-        else
-            g_uart_debug = false;
-    }
+    gui_dbg_init(s_lite);
 
     lv_indev_drv_init(&drv);
     drv.type = LV_INDEV_TYPE_KEYPAD;
@@ -565,7 +528,7 @@ void ipl_main(void)
      * screen belongs to LVGL. */
     _log_uart_only = true;
     static const char banner[] = "\n=== hwtest GUI ===\n";
-    uart_send_crlf(UART_B, (u8 *)banner, sizeof(banner) - 1);
+    dbg_send((const u8 *)banner, sizeof(banner) - 1);
 
     lv_init();
     _display_init();
@@ -594,6 +557,7 @@ void ipl_main(void)
             _frame_stat(get_tmr_us() - t0);
         }
         uart_poll_reboot();
+        gui_dbg_poll();
         gui_input_sample();
         usleep(500);
     }
