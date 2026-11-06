@@ -194,6 +194,7 @@ void gui_joycon_test(void);
 void gui_jc_motion(void);                /* from the Joy-Con test        */
 void gui_jc_ir(void);
 void gui_jc_test_resumed(void);          /* a sensor screen gave the rails back */
+void gui_jc_attach_show(int side, const u8 *body); /* the edge glow, gui_jcattach.c */
 void gui_touch_test(void);
 void gui_screen_test(void);
 void gui_dock_test(void);

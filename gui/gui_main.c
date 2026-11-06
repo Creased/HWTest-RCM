@@ -14,6 +14,7 @@
  *    with a dead touchscreen and no Joy-Con has left.
  */
 #include "gui.h"
+#include "gui_jcwire.h"
 #include "../dpout.h"
 #include <display/vic.h>
 #include <mem/heap.h>
@@ -266,12 +267,46 @@ static bool _touch_read(lv_indev_data_t *data)
  * attach lines: the debug console's last bytes go out first, and a rail it
  * needs is checked before the driver can take that UART over
  * (gui_dbg_rails). */
+/* A Joy-Con slid onto a rail, shown in its colour (gui_jcattach.c). That
+ * is a connection after the rail was found empty, which is the only thing
+ * that clears its battery byte: the driver bringing a Joy-Con up again
+ * after a timeout or a sensor screen leaves it. Those already on the rails
+ * when the GUI starts are connected within the first seconds, and are not
+ * shown. */
+#define JC_ATTACH_QUIET_MS 3000
+static bool s_jc_was[2], s_jc_gone[2] = { true, true };
+static u32 s_jc_quiet_until;
+
+static void _jc_attach_watch(const jc_gamepad_rpt_t *jc)
+{
+    if (!jc || jc->sio_mode)
+        return;
+    bool conn[2] = { jc->conn_l, jc->conn_r };
+    u8 batt[2] = { jc->batt_info_l, jc->batt_info_r };
+    for (u32 side = 0; side < 2; side++) {
+        if (!conn[side] && !batt[side])
+            s_jc_gone[side] = true;
+        if (conn[side] && !s_jc_was[side] && s_jc_gone[side]) {
+            s_jc_gone[side] = false;
+            if (get_tmr_ms() >= s_jc_quiet_until) {
+                /* Grey for a pad that has no colour. */
+                u8 body[3] = { 0x82, 0x82, 0x82 };
+                gui_jc_colour_read(side, body);
+                gui_jc_attach_show(side, body);
+            }
+        }
+        s_jc_was[side] = conn[side];
+    }
+}
+
 static jc_gamepad_rpt_t *_jc_poll(void)
 {
     if (!s_jc_ok)
         return NULL;
     gui_dbg_rails();
-    return joycon_poll();
+    jc_gamepad_rpt_t *jc = joycon_poll();
+    _jc_attach_watch(jc);
+    return jc;
 }
 
 jc_gamepad_rpt_t *gui_jc_state(void)
@@ -439,6 +474,7 @@ static void _input_init(void)
     s_lite = fuse_read_hw_type() == FUSE_NX_HW_TYPE_HOAG;
     jc_init_hw();
     s_jc_ok = true;
+    s_jc_quiet_until = get_tmr_ms() + JC_ATTACH_QUIET_MS;
     gui_dbg_init(s_lite);
 
     lv_indev_drv_init(&drv);

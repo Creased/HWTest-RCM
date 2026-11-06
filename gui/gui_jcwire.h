@@ -41,6 +41,10 @@ typedef struct {
  * such flash) or what comes back is not a calibration. */
 bool gui_jc_cal_read(int side, jc_cal_t *out);
 
+/* Its body colour (RGB), from the flash. False when nothing answers or
+ * none was ever written. */
+bool gui_jc_colour_read(int side, u8 *rgb);
+
 /* Rumble on (a strong, steady buzz) or off. The Joy-Con keeps the last
  * setting, so one report each way is enough. It plays nothing until rumble
  * has been enabled, which the driver does once, at the first connection:

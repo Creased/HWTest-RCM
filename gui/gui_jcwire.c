@@ -17,6 +17,7 @@
 #define SPI_CAL_USER_R   0x801B
 #define SPI_CAL_FACT_L   0x603D   /* nine bytes */
 #define SPI_CAL_FACT_R   0x6046
+#define SPI_COLOUR       0x6050   /* the body's RGB, then the buttons' */
 #define CAL_USER_MAGIC_0 0xB2
 #define CAL_USER_MAGIC_1 0xA1
 
@@ -247,6 +248,19 @@ static bool _decode(int side, const u8 *d, jc_cal_t *cal)
         if (travel[i] < 0x200 || travel[i] > 0xA00)
             return false;
     return cal->cx > 0x400 && cal->cx < 0xC00 && cal->cy > 0x400 && cal->cy < 0xC00;
+}
+
+bool gui_jc_colour_read(int side, u8 *rgb)
+{
+    u8 d[3];
+    gui_jc_own(side);
+    bool ok = _spi_read(side, SPI_COLOUR, sizeof(d), d);
+    gui_jc_release(side);
+    /* A pad that never had colours written reads erased flash, FF. */
+    if (!ok || (d[0] & d[1] & d[2]) == 0xFF)
+        return false;
+    memcpy(rgb, d, sizeof(d));
+    return true;
 }
 
 bool gui_jc_cal_read(int side, jc_cal_t *out)
