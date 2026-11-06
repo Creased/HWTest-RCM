@@ -1,14 +1,17 @@
 # hwtest RCM
 
-![hwtest running in the emulator](img/demo.png)
+![The GUI's health check results on an emulated console with a dead Wi-Fi/Bluetooth module and a worn battery](img/demo.png)
 
 An active RCM (Recovery Mode) hardware diagnostic that probes the Switch from
-the BPMP environment, then reports identity / status / faults to the LCD and
-UART_B (Joy-Con right rail, 115200 8N1). The BPMP is the Boot and Power
-Management Processor, the small ARM7 core that runs before the main CPU comes
-up. That is what an RCM payload executes on, and it bounds what can be tested.
-Output is also captured into a heap buffer that can be written to
-`backup/<emmc_serial>/hwtest.txt` on the SD card.
+the BPMP (the Boot and Power Management Processor, the small ARM7 core that
+runs before the main CPU comes up), then reports identity / status / faults to
+the LCD and UART-B (Joy-Con right rail, 115200 8N1). The report can also be
+written to `backup/<emmc_serial>/hwtest.txt` on the SD card.
+
+The intended audience is repair techs working on Erista or Mariko consoles
+(handheld, V2, OLED, Lite). The output is colour-coded so a unit with a
+borderline reading or a real fault stands out without reading every line. For
+everyone else there is a [GUI](#gui) that explains the results in plain words.
 
 The payload is not register-read-only. Active probes can change temporary rails,
 GPIO/pinmux, clocks, power partitions, PWM, radio reset state, audio fabric,
@@ -18,55 +21,37 @@ subsystem. The touch probe deliberately avoids Hekate's button-triggered
 autotune path, runs the FTS ITO production test without saving compensation, and
 powers the touch controller down afterward.
 
-The intended audience is repair techs working on Erista or Mariko consoles
-(handheld, V2, OLED, Lite). The output is colour-coded so a unit with a
-borderline reading or a real fault stands out without reading every line.
-
 ## Building
-
-Hekate and Atmosphere are pinned git submodules under `third_party/`.
-Initialize both before the first build:
 
 ```sh
 git submodule update --init --recursive
 export DEVKITARM=/opt/devkitpro/devkitARM   # or wherever yours lives
-make                                        # normal launcher / hardware diagnostic
-make ram                                    # dedicated full-memory DRAM diagnostic
-make gui                                    # touch / Joy-Con front end, for the SD card
+make                                        # build/hwtest.bin, the payload
+make ram                                    # build-ram/hwtest_ram.bin, the RAM test
+make gui                                    # build-gui/gui.bin and libsys_minerva.bso, for the SD card
+make sdzip                                  # all of it as build/hwtest-sd.zip
 ```
 
-Hekate provides the BDK/SoC support. The RAM build takes the MTC sources,
-register definitions, and timing tables directly from `third_party/Atmosphere`
-and applies `ramtest/patches/atmosphere-mtc.patch` in `build-ram/`; upstream
-Atmosphere files are not duplicated in the main repository.
+Hekate provides the BDK/SoC support; the RAM build takes its MTC sources and
+timing tables from `third_party/Atmosphere` and applies
+`ramtest/patches/atmosphere-mtc.patch` in `build-ram/`.
 
-Two toolchains are involved. devkitARM builds the BPMP payload; **devkitA64**
-(or another suitable AArch64 compiler) builds the small freestanding stub the
-Wi-Fi probe runs on CPU0, because BPMP cannot reach PCIe directly. If no AArch64
-compiler is available, the normal build can still complete without that stub and
-the Wi-Fi probe reports `CPU0 handoff : not built`. Release builds use
-`REQUIRE_A64=1`, so a missing CPU0 stub is a hard failure rather than a silently
-degraded release.
-
-`make gui` produces `build-gui/gui.bin`, the [GUI](#gui) that `hwtest.bin`
-starts from the SD card, and `build-gui/libsys_minerva.bso`, hekate's DRAM
-training module built from the submodule, which the GUI loads to draw faster.
-The GUI is built from the same probes with bdk's LVGL, and is far larger than
-an RCM payload may be, so it never ships as one.
-
-Plain `make` produces `build/hwtest.bin`. `make ram` additionally produces
-`build-ram/hwtest_ram.bin`; it is a separate DRAM service payload and is not part
-of plain `make`. The normal launcher's **RAM test** entry loads that payload from
-the SD card. The same RAM payload supports Erista and Mariko by selecting the
-matching memory-training backend from Tegra `GP_HIDREV`.
+devkitARM builds the BPMP payload; **devkitA64** (or another suitable AArch64
+compiler) builds the small stub the Wi-Fi probe runs on CPU0, because BPMP
+cannot reach PCIe directly. Without it the build still completes and the Wi-Fi
+probe reports `CPU0 handoff : not built`; release builds use `REQUIRE_A64=1`,
+so a missing CPU0 stub fails them.
 
 ## Dedicated RAM diagnostic
 
-`build-ram/hwtest_ram.bin` is for suspected DRAM / memory-bus faults. It tests almost all free DRAM while preserving its own live runtime state. The payload preserves its own runtime, SMMU tables and framebuffer, then reaches the rest of physical memory through a remapped 4 MiB SMMU window, including RAM above 4 GiB.
+`build-ram/hwtest_ram.bin` is for suspected DRAM / memory-bus faults. It tests
+almost all free DRAM, including RAM above 4 GiB, on Erista and Mariko alike.
 
-The payload contains both public Atmosphere Erista and Mariko MTC implementations but **does not run both**. `GP_HIDREV` is checked before `hw_init()`; T210 selects the Erista path and T210B01 selects the Mariko path. Unknown revisions stop before memory training. Both paths use bounded PLL / EMC / DLL waits so a failed memory interface becomes a reported training failure instead of an infinite wait.
-
-The payload opens a persistent physical-key menu: **Quick test**, **Advanced test**, **Custom test**, and **Power off**. VOL+ moves down, VOL- moves up, and POWER selects or toggles. There is no timed mode-selection window. **VOL-** aborts a running test after the current 4 MiB region; after an abort or completed run, POWER returns to the RAM-test menu and VOL- powers off.
+It opens a physical-key menu: **Quick test**, **Advanced test**, **Custom
+test**, and **Power off**. VOL+ moves down, VOL- moves up, and POWER selects or
+toggles. **VOL-** aborts a running test after the current 4 MiB region; after
+an abort or completed run, POWER returns to the RAM-test menu and VOL- powers
+off.
 
 | Mode | Coverage |
 |---|---|
@@ -74,13 +59,15 @@ The payload opens a persistent physical-key menu: **Quick test**, **Advanced tes
 | Advanced | Training/preflight plus all seven patterns: Address, Inverse address, all-zero, all-one, `AA`, `55`, and address-seeded PRBS with retention |
 | Custom | Training/preflight plus any non-empty user-selected subset of the seven patterns |
 
-Writes and verification are separate full-memory phases on purpose: an address-decoder alias can otherwise pass an immediate write/read-back test. The build also proves the self-extractor cannot overwrite unread compressed input; the current build is roughly 168 KiB expanded and 73 KiB as the injected payload, comfortably below the 130392-byte TegraRcmSmash ceiling.
+Writes and verification are separate full-memory phases on purpose: an
+address-decoder alias can otherwise pass an immediate write/read-back test.
 
 ## Running
 
 Inject `build/hwtest.bin` like any other RCM payload (fusee-launcher,
-TegraRcmGUI, modchip, RCM jig). It opens a physical-key launcher before storage,
-touch, thermal, or other diagnostic subsystems are initialized:
+TegraRcmGUI, a modchip). Without the [GUI](#gui) on the SD card, it opens
+a physical-key launcher before storage, touch, thermal, or other diagnostic
+subsystems are initialized:
 
 | Launcher entry | Action |
 |---|---|
@@ -90,14 +77,14 @@ touch, thermal, or other diagnostic subsystems are initialized:
 | **Power off** | Request a clean PMIC power-off without running diagnostics |
 
 VOL+ moves down, VOL- moves up (VOL+ always goes forward, here and in the
-pager), and POWER selects. For RAM test the launcher
-searches `bootloader/payloads/hwtest_ram.bin`, `hwtest_ram.bin`, then
-`/hwtest_ram.bin`. If RAM payload loading fails, control returns to the launcher
-instead of starting the hardware sweep.
+pager), and POWER selects. For RAM test the launcher searches
+`bootloader/payloads/hwtest_ram.bin`, `hwtest_ram.bin`, then `/hwtest_ram.bin`.
+If RAM payload loading fails, control returns to the launcher.
 
 After Hardware test or Custom test completes, the LCD pager opens on the
-verdict. If SD is unavailable, the diagnostic still runs; report saving is
-skipped and the LCD/UART results remain usable.
+verdict. If SD is unavailable, the diagnostic still runs; only the report file
+is skipped. A Custom test without Storage / gamecard does not bring the SD card
+up, so it writes no report and `s` answers SD not ready.
 
 | Pager/UART key | Action |
 |---|---|
@@ -106,7 +93,7 @@ skipped and the LCD/UART results remain usable.
 | `r` | Refresh current LCD page |
 | `a` / `A` | Refresh ALL probes (re-emit full UART dump) |
 | `G<name>\n` | Refresh just the named group (host viewer uses this) |
-| `w` / `W` | Re-run the [Wi-Fi PCIe probe](#wi-fi-radio-probe-pcie) (it already runs in the sweep) |
+| `w` / `W` | Re-run the [Wi-Fi PCIe probe](docs/wireless.md#wi-fi-radio-probe-pcie) (it already runs in the sweep) |
 | `s` / `S` | Re-write the SD report file |
 | `R` | Reboot (PMIC power cycle, so a modchip re-injects) |
 | `q` / POWER | Power off the console |
@@ -116,32 +103,28 @@ skipped and the LCD/UART results remain usable.
 ![The GUI: home, the health check running, results, a category, the technical report, the custom check, the Joy-Con, touchscreen, screen and dock tests, a prompt](img/gui.png)
 
 For people who are not technicians, `hwtest.bin` has a second face: a
-touch and Joy-Con interface that looks like hekate's Nyx (the same theme,
-colours, fonts and layout), runs the same checks, and explains the results
-in plain words. It is too large to be injected, so it lives on the SD card
-and `hwtest.bin` hands over to it, the way hekate hands over to Nyx:
+touch and Joy-Con interface that looks like hekate's Nyx, runs the same checks,
+and explains the results in plain words. It is too large to be injected, so it
+lives on the SD card and `hwtest.bin` hands over to it, the way hekate hands
+over to Nyx:
 
 ```
 SD card
 |-- bootloader/payloads/
-|   |-- hwtest.bin           build/hwtest.bin (the payload itself, for hekate's
-|   |                        Payloads menu; inject it over RCM as usual otherwise)
+|   |-- hwtest.bin           build/hwtest.bin (also for hekate's Payloads menu)
 |   `-- hwtest_ram.bin       build-ram/hwtest_ram.bin (only for the RAM test)
 `-- hwtest/
     |-- gui.bin              build-gui/gui.bin
-    `-- libsys_minerva.bso   build-gui/libsys_minerva.bso (optional, faster drawing;
-                             hekate's bootloader/sys/libsys_minerva.bso is used when absent)
+    `-- libsys_minerva.bso   build-gui/libsys_minerva.bso (optional, faster drawing)
 ```
 
-`make sdzip` packs exactly that as `build/hwtest-sd.zip`, to be unzipped at
-the root of the card. Every CI run uploads it as the `hwtest-sd` artifact and
-every release carries it as `hwtest-sd.zip`.
+`make sdzip` packs exactly that, to be unzipped at the root of the card; every
+release carries it as `hwtest-sd.zip`.
 
-With `hwtest/gui.bin` on the card, injecting `hwtest.bin` opens the GUI. Without
-it (no card, an unreadable card, or a file that is not a GUI stage for this
-build's layout), the text launcher above runs exactly as before, so a console
-whose SD slot is the fault can still be diagnosed. Hold **VOL-** while the
-payload starts to skip the GUI on purpose.
+Without `hwtest/gui.bin` (no card, an unreadable card, or a file that is not a
+hwtest GUI image), the text launcher above runs instead, so a console whose SD
+slot is the fault can still be diagnosed. Hold **VOL-** while the payload
+starts to skip the GUI on purpose.
 
 Every screen works with any one of:
 
@@ -152,496 +135,61 @@ Every screen works with any one of:
 | Console buttons | VOL+ / VOL- | POWER | Close |
 
 The console buttons are enough on their own, for a console with a broken
-touchscreen and no Joy-Con. In a message box they pick between its buttons.
+touchscreen and no Joy-Con. On the Joy-Con, Motion and IR Camera tests the
+Joy-Con is what is being tested, so it does not navigate there: leave them with
+POWER or a tap. On the Screen test a Joy-Con button turns the page, but the
+closing box needs a tap or POWER.
 
 | Screen | What it does |
 |---|---|
-| **Home** | Nyx's Home tab: Health Check, Joy-Con, Touchscreen, Screen, Dock and RAM Test, and along the bottom Custom Check, Last Results, and Reboot / Power Off (each asks first). The first tab has what hwtest checks and the credits. |
-| **Custom Check** | The text launcher's Custom test: one checkbox per group of checks (identity, power, memory, storage, wireless, sound chip, sound output, screen, inputs, system details), then Run. The check's step list greys out what was not picked and the results say "not checked" for it. Check Again on the results repeats the same selection; Health Check on the home screen always runs everything. Beside the groups, UART output picks where the debug console goes for the rest of the session: UART-B on the right rail (the default), UART-C on the left rail (not on a Lite, whose built-in controls use it) or UART-A on the board's test pads (cluster C: pad 3 TX, pad 2 RX), all 115200 8N1 at 1.8 V, or USB serial, a serial port on the PC the console's USB-C port is plugged into, which Windows 10 and later, Linux and macOS use without a driver (USB ID 1209:0001). |
-| **Health Check** | The full sweep, with a progress bar and the steps ticked off. Then one row per part of the console (battery, charging, power, temperature and fan, storage, Wi-Fi and Bluetooth, processor and memory, sound, screen, touch, system) saying in a few words whether it is fine; each opens to what was checked, what a problem means and what to try, and from there to the report pages behind it. The report is saved to the SD card as in the text flow. |
-| **Joy-Con** | Both Joy-Cons (or a Lite's built-in controls): every button that can be reached on the rail lights up when pressed and stays marked once it has been, with a count of how many are done, and each stick is drawn live and judged. Let go of it for a second, then roll it all the way around. The Joy-Con's own calibration (factory, or the owner's from the system settings) is read from its flash over the rail, so each direction is judged against what the console's firmware calls full travel and drift against the firmware's centre, which is what an owner feels in a game. A pad with no such calibration (a Lite's controls, a third-party pad) is judged on its own travel: each direction against the furthest one (wear comes up short on one side, not evenly), drift against the middle of the travel seen. A connection that drops and comes back is counted, which is what a worn rail looks like. |
-| **Rumble** | A button on the Joy-Con test: the left Joy-Con buzzes at full strength for half a second, then the right, and each panel says "buzzing" while it should be felt. One that stays still has a dead motor or driver. |
-| **Motion** | The Joy-Cons' accelerometer and gyroscope, which the health check never touches: a dot that follows gravity, three bars that swing when the Joy-Con is turned, and the readings in g and degrees per second. A sensor that reads about 1 g at rest and moves with the Joy-Con passes; one that sends zeros or nothing fails. |
-| **IR Camera** | The right Joy-Con's infrared camera, shown live and enlarged, at 80 x 60 by default and up to its full 320 x 240 (Image Size). The Joy-Con's own infrared lights illuminate whatever is held in front of it, so a hand shows pale on a dark background. The start-up sequence is CTCaer's jc_toolkit's, step by step, and a step that fails is named with what the Joy-Con answered. |
-| **Touchscreen** | A grid over the whole panel that turns green under a finger; what never turns green does not respond. The instructions panel steps out of the way while a finger is down and returns a moment after; tap its Finish button or press POWER for the verdict. |
-| **Screen** | The whole panel in one colour at a time, white, red, green, blue and black, then white while the backlight dims and brightens: dots that stay dark or bright, lines and patches show against a flat field, and a backlight that flickers or lights unevenly shows on the last page. A touch, VOL+, VOL- or any Joy-Con button turns the page. |
-| **Dock Test** | The USB-C port's PD controller (BM92T36) watched live: status, alerts, the power profiles on offer, the contract, its DisplayPort bits and the hot plug detect line. Run then performs the handshake the console performs when it docks, as switchroot's L4T kernel does it: the 15 V request, the data role swap, the dock's own mode, DisplayPort on 2 lanes, the dock's light and USB hub, step by step with what each found. The USB 3/DisplayPort switch (PI3USB30532) has no I2C address of its own on this board and is set by the PD controller with the pin assignment, so it is reached through that step. Reset Chip does to the controller what HOS's usb sysmodule does at every boot (a 30 ms pulse on its reset line PV5, its interrupt line watched, the device id polled, SYS_RESET, DisplayPort alerts and over-current protection on), for a controller that does not answer; the view shows its pins. When the handshake ends with DisplayPort up and a TV on the dock, Run goes on to put this very screen on the TV, 1280x720 at 60 Hz, the way switchroot's L4T kernel drives the dock: the AUX channel (DPAUX1), the dock converter's DPCD and the TV's EDID through it, SOR1 on its own 270 MHz PLL with the SoC's DisplayPort tuning values for Erista or Mariko, link training on 2 lanes against the sink's status registers (5.4 Gbps with training pattern 3 first, then lower rates if that fails), a second check for symbol errors that trains again from a higher swing when there are any, then the second display head attached to SOR1. The TV is fed its own copy of each finished frame, so it never shows the screen half drawn. The report gives the TV's name, the link and the pixel clock SOR1 measures, and a full log with a register dump is saved to the SD card as hwtest/tvlink_<date>.txt. Tested on hardware with the Nintendo dock and a Ugreen USB-C hub. Leaving the screen takes it all down again. Nothing of it runs from the health check. |
-| **Screenshot** | Two fingers on the panel save the screen as a 1280 x 720 BMP under `hwtest/screenshots/` on the SD card, named by date and time, as Nyx does with a third finger. The backlight blinks for the shutter. |
+| **Home** | Health Check, Joy-Con, Touchscreen, Screen, Dock and RAM Test, and along the bottom Custom Check, Last Results, and Reboot / Power Off (each asks first). |
+| **Health Check** | The full sweep, with the steps ticked off. Then one row per part of the console saying in a few words whether it is fine; each opens to what was checked, what a problem means and what to try, and from there to the report pages behind it. The report is saved to the SD card. |
+| **Custom Check** | One checkbox per group of checks, then Run; what was not picked shows as "not checked". UART output picks where the debug console goes: UART-B on the right rail (the default), UART-C on the left rail (not on a Lite), UART-A on the board's test pads (cluster C: pad 3 TX, pad 2 RX), all 115200 8N1 at 1.8 V, or USB serial over the USB-C port, which Windows 10 and later, Linux and macOS use without a driver (USB ID 1209:0001). |
+| **Joy-Con** | Both Joy-Cons (or a Lite's built-in controls): every button reachable on the rail (not SL/SR) lights up when pressed and stays marked, and each stick is drawn live and judged against the Joy-Con's own calibration, read from its flash (or against its own travel when it has none). A connection that drops and comes back is counted, which is what a worn rail looks like. |
+| **Rumble** | The left Joy-Con buzzes for half a second, then the right. One that stays still has a dead motor or driver. |
+| **Motion** | The Joy-Cons' accelerometer and gyroscope, live. A sensor that reads about 1 g and no rotation while the Joy-Con is held still passes; one that sends zeros or nothing fails. |
+| **IR Camera** | The right Joy-Con's infrared camera, live, in four sizes from 40 x 30 up to its full 320 x 240. A start-up step that fails is named with what the Joy-Con answered. |
+| **Touchscreen** | A grid over the whole panel that turns green under a finger; what never turns green does not respond. |
+| **Screen** | The whole panel in one colour at a time, then white while the backlight dims and brightens: dead pixels, lines, patches and an uneven or flickering backlight show against a flat field. |
+| **Dock Test** | The USB-C port's PD controller (BM92T36) watched live, then the handshake the console performs when it docks, step by step, and with a TV on the dock, this screen on the TV at 1280x720. Reset Chip restarts a controller that does not answer. Nothing of it runs from the health check; see [docs/dock.md](docs/dock.md). |
+| **Screenshot** | Two fingers on the panel save the screen as a BMP under `hwtest/screenshots/` on the SD card. |
 | **RAM Test** | Starts `hwtest_ram.bin` from the card, as the text launcher's RAM test does. |
 
-The status bar along the bottom shows the console's serial number when
-`sd:/switch/prod.keys` (from Lockpick_RCM) is on the card (the serial is in
-the encrypted PRODINFO), and the battery as Nyx shows it: the current going
-in (green) or out (red), the cell voltage, the level to a tenth, and a bolt
-while it charges.
-
-The GUI draws where Nyx does: the BPMP at hekate's boost clock, and the DRAM
-trained up by hekate's Minerva module (1600 MHz on Erista, 408 MHz on Mariko,
-which has no table). The module is read from `hwtest/libsys_minerva.bso`,
-or failing that from hekate's own `bootloader/sys/libsys_minerva.bso`; a
-copy whose interface does not match (hekate changes a magic word with it)
-is passed over. Without any it runs at the 204 MHz boot clock, only slower.
-Both go back to the payload's clocks for the health check, so its readings
-match the text payload's, and before the RAM test starts. `make gui` builds
-the module from the hekate submodule. The debug UART reports the DRAM clock
-and which module it took at start-up and, every couple of seconds while
-anything is drawn, what a frame costs.
+The status bar shows the console's serial number when `sd:/switch/prod.keys`
+(from Lockpick_RCM) is on the card, and the battery as Nyx shows it.
 
 UART-B stays the debug console while the GUI runs, with the `R` reboot, unless
 Custom Check moves it. A rail's port stops being the console once a Joy-Con is
-attached there: that rail is the Joy-Con's UART, so the debug output stops and
-the Joy-Con takes the port. `R` is also taken on UART-B while no Joy-Con has
-it, whichever port is picked. The bench's UART adapter does not pull the
-rail's detect line, so it is never mistaken for one.
-
-The GUI's fonts (Inter at Nyx's sizes, Source Code Pro, Font Awesome 4.7
-symbols) are rasterised by `tools/mkfont.py` into `gui/res/fonts.bin` and
-`gui/gui_fonts.c`; only that output is in the tree, with the faces' licence in
-`gui/res/LICENSE-fonts.txt`.
+attached there. `R` is also taken on UART-B while no Joy-Con has it, whichever
+port is picked.
 
 ## What's reported
 
 Eleven logical pages (some span multiple LCD-sized sub-pages). The Verdict
-page is index 0, so the pager opens on the summary and you only page into
-the detail when something needs chasing:
+page comes first, so the pager opens on the summary. The terms are explained
+in [docs/terms.md](docs/terms.md).
 
 | Page | Probes |
 |---|---|
-| Verdict | rolled-up pass/warn/fail per subsystem, plus cross-checks across SoC / fuses / charger / display / touch / battery / eMMC / thermal / USB-PD / fuel-gauge. Shown first on the pager and written first into the SD report |
+| Verdict | rolled-up pass/warn/fail per subsystem, plus three cross-checks: VBUS and ACOK against USB-PD, the charge state against the gauge's current, eMMC HS400 against the bus width |
 | SoC | HIDREV chip ID + major/minor |
 | Fuses | identity + speedo / IDDQ + lot/wafer + public key + SBK/DK + KFUSE |
-| Power & charging | MAX77620 + GPIOs + regulators + 5V + battery + charger + USB-PD + thermal + fan |
-| Memory & clocks | LPDDR4 mode regs + CLK_RST raw + decoded rates |
-| Storage | SD + eMMC + partitions + health + GPT + BOOT0/pkg1 + AutoRCM + SD content scan, plus PRODINFO: serial, CAL0 body SHA-256, config ID, product model vs SoC, LCD vendor vs fitted panel, WLAN/BD MACs, battery lot, USB-C PD rev, touch IC, IMU, sticks, region, speaker calibration |
-| Wireless | Bluetooth radio: full CYW4356 power-up, then HCI over UART-D. Reports whether the radio answers and identifies itself. Then the WLAN half: a complete T210 PCIe bring-up, link training and endpoint enumeration (`14E4:43EC`): enumeration is the verdict, the die-level ChipID is firmware-gated and left to the OS. The PCIe half runs on CPU0, so this is also the only page that powers the A57 cluster: its bring-up reads the CPU regulator back and bounds the RAM repair, and a dead CPU rail is reported on the Verdict's own **CPU complex** row rather than hanging the console |
-| Audio | ALC5639 codec identity over I2C-1 + an I2C-1 census + APE/AHUB power and clocks + AUD_MCLK, then a melody clocked out of I2S1: first phrase on the left speaker, second on the right, tail on the headphone jack, so a dead or weak output is obvious by ear, one output at a time |
+| Power & charging | MAX77620 + MAX77621 / MAX77812 + GPIOs + regulators + 5V + battery + charger + USB-PD + thermal + fan |
+| Memory & clocks | LPDDR4 / LPDDR4X mode regs + CLK_RST raw + decoded rates |
+| Storage | SD + eMMC + partitions + health + GPT + BOOT0/pkg1 + AutoRCM + SD content scan + game card reader, plus PRODINFO: serial, CAL0 body SHA-256, config ID, product model vs SoC, LCD vendor vs fitted panel, WLAN/BD MACs, battery lot, USB-C PD rev, touch IC, IMU, sticks, region, speaker calibration |
+| Wireless | Bluetooth: full CYW4356 power-up, then HCI over UART-D. Wi-Fi: a complete T210 PCIe bring-up on CPU0, link training and endpoint enumeration (`14E4:43EC`); a dead CPU rail is reported on the Verdict's **CPU complex** row rather than hanging the console. See [docs/wireless.md](docs/wireless.md) |
+| Audio | ALC5639 codec identity over I2C-1 + an I2C-1 census + APE/AHUB power and clocks + AUD_MCLK, then a melody on the left speaker, the right speaker, then the headphone jack, one output at a time. See [docs/audio.md](docs/audio.md) |
 | Display | DSI panel ID + backlight PWM + GPIO state |
 | Inputs | FTS touch FW + electrical ITO open/short test + ALS + Joy-Con rails + buttons + AC adapter |
 | Raw state | GPIO pin census + UART debug port + reset reason + PMC scratch |
 
-### Terms used in that table
-
-| Term | Meaning |
-|---|---|
-| **HIDREV** | Tegra chip identity register: chip ID plus major/minor revision |
-| **IDDQ** | Quiescent supply current, a factory-measured leakage figure burnt into fuses |
-| **speedo** | Factory-measured silicon speed grade, also fuse-burnt |
-| **SBK / DK** | Secure Boot Key / Device Key, per-console fuse-burnt secrets |
-| **KFUSE** | Separate fuse block holding the HDCP/display key data |
-| **PMC** | Power Management Controller, the Tegra block holding scratch registers and reset reason |
-| **DSI** | Display Serial Interface, the MIPI link to the LCD panel |
-| **ALC5639** | The Realtek audio codec: DACs, class-D speaker amplifier and capless headphone driver |
-| **I2S** | Inter-IC Sound, the serial audio link carrying samples from the SoC to the codec |
-| **APE / AHUB** | Tegra's Audio Processing Engine and the Audio Hub crossbar inside it |
-| **AUD_MCLK** | The master clock the SoC feeds the codec to run its converters |
-| **PWM** | Pulse-Width Modulation, used here for backlight brightness |
-| **LPDDR4** | The DRAM standard the Switch uses |
-| **CLK_RST** | Tegra's Clock and Reset Controller |
-| **GPT** | GUID Partition Table, the eMMC partition layout |
-| **BOOT0 / pkg1** | eMMC boot partition and the first-stage bootloader package in it |
-| **AutoRCM** | A deliberately corrupted boot0 that forces the console into RCM at power-on |
-| **PRODINFO** | The factory calibration partition, encrypted with per-console keys |
-| **CAL0** | The structure inside PRODINFO holding that calibration data |
-| **BD MAC** | Bluetooth device address (the radio's MAC-equivalent identifier) |
-| **IMU** | Inertial Measurement Unit, the console's accelerometer/gyro |
-| **USB-PD** | USB Power Delivery, the charging negotiation protocol |
-| **eMMC** | The soldered-down internal flash storage |
-
-## Bluetooth radio probe
-
-Most of hwtest reads. This probe writes, and it is worth knowing what it does.
-
-The Switch's Broadcom CYW4356 carries WLAN on **PCIe** and Bluetooth on a
-plain 4-wire UART (Tegra UART-D, `0x70006300`). The UART half is the cheap
-measurement, and it is the one that runs first: both radios share one package
-and one supply, so if Bluetooth answers HCI (Host Controller Interface, the
-standard Bluetooth host-to-controller command protocol), the module is
-powered, clocked and executing code, and a Wi-Fi fault has to be downstream
-of the chip. The [Wi-Fi probe](#wi-fi-radio-probe-pcie) then goes and finds
-out which.
-
-To get there the probe performs a real cold power cycle: it parks every radio
-control line in a known state, drives `BT_REG_ON` (PH4) and `WL_REG_ON` (PH1)
-low together, holds them, then raises `BT_REG_ON` to produce a genuine POR
-(Power-On Reset, the chip's internal reset, which is released when
-`BT_REG_ON` rises and can hold the part for up to 110 ms afterwards).
-
-The power cycle is not optional, because two of these pins are *straps*:
-sampled once, a few milliseconds after POR deassertion, then latched until the
-next one. Re-pulsing `BT_REG_ON` without a low period changes nothing; the
-part keeps whatever mode it latched first.
-
-* `BT_HOST_WAKE` (**PH5**, chip `BT_GPIO_1`) selects the host transport. Held
-  low across the edge it latches **SPI**, and the part then ignores the UART
-  entirely. The probe leaves it high-Z with no pull so the chip's own
-  internal pull-up wins and UART is selected.
-* `BT_GPIO4` (**PK2**, on port K, not H) is the one strap the datasheet
-  tabulates: driven high, the ROM hunts for an external serial flash instead
-  of presenting HCI. The probe holds PK0-PK2 as inputs.
-
-The remaining lines (`BT_REG_ON`, `WL_REG_ON`, `BT_DEV_WAKE` on PH3) are
-ordinary control and wake signals, not straps. They still have to be in a
-defined state across the edge, but nothing latches them as configuration.
-`WL_REG_ON` is restored before the probe returns.
-
-It also self-tests. A 16550 internal loopback runs first, proving the clock,
-divisor, FIFOs and helper routines without involving a single pad. **A radio
-that stays silent is only reported as a failure when that loopback passed**;
-otherwise the fault is on our side of the pads and nothing is recorded against
-the radio.
-
-The probe does not settle for one attempt before it records silence. It runs
-three power-cycle arms and four flow-control (MCR) variants, every one of them
-at 115200: the CYW4356's default HCI rate, and the only rate the probe
-configures. There is no baud sweep. What that covers is a host-side transport
-or flow-control mismatch; the host baud is not covered, so a silent unit is
-reported as silent at 115200 rather than at every rate.
-
-Verified against four consoles spanning both SoC generations. Three healthy
-units, two Mariko and one Erista, each answer with a valid Command Complete
-(`04 0E 04 01 03 0C 00`) and identify as Broadcom (`0x000F`). One faulty
-Erista, reporting error 2110-1118 on Wi-Fi, stays quiet through every arm and
-every MCR variant: it never releases its internal pull-up on `BT_HOST_WAKE`
-and never asserts the transport-ready handshake. Its PRODINFO calibration is
-intact, which points at the module, its supply, or its solder, unless that
-module came up at a rate other than 115200, which this probe does not test.
-
-## Wi-Fi radio probe (PCIe)
-
-The other half of the same package, and the only probe in hwtest that brings
-up an entire bus from nothing.
-
-### The BPMP cannot reach PCIe
-
-Worth stating before the sequence, because every symptom of it looks like a
-bring-up bug you could fix by writing one more register. You cannot: the
-PCIe apertures do not answer the BPMP, and no register sequence changes that.
-
-The Tegra X1 TRM chapter 19 (AHB) describes the BPMP-Lite crossbar as "the
-path to IRAM from AHB devices, and also the BPMP-Lite and CPU path to AHB
-devices", and lists the AHB slaves: XBAR, DRAM, USB-OTG/USB2 and TZRAM. PCIe
-is not among them. The PCIe aperture hangs off MSELECT instead, and MSELECT
-is documented in chapter 16, *CPU Complex*: `MSELECT_CONFIG_0`, reset value
-`0x07ff4020`, carrying the `ENABLE_PCIE_APERTURE` bit. The block diagram says
-the same thing: MSELECT's master is CCPLEX/CPUCIF, and its 32-bit
-`AXI>ARM7 (APC)` port is a bridge *into* the ARM7 world, not out of it. The
-BPMP-Lite is an AHB master; PCIe lives on the CPU's AXI, behind MSELECT.
-
-What that looks like from a payload, with every precondition it controls
-already satisfied (PCIE and AFI clocked and out of reset, the PCIE power
-partition ungated, PLLE and PLLREFE locked, MSELECT's own reset released):
-
-| Access | From the BPMP | From CPU0 |
-| --- | --- | --- |
-| AFI window `0x01003800` | all-ones, and writes do not stick | decodes, writes stick |
-| `MSELECT_CONFIG_0` `0x50060000` | `0xEAFFFFFE`, and the same word at every other MSELECT offset | `0x07FF4020`, the TRM's reset value |
-| Display controller `0x54200000`, TSEC `0x54500000` | read fine | n/a |
-
-The third row is the control: this is not a general MMIO fault on the way to
-some fix, it is PCIe and MSELECT specifically. So the probe splits, and the
-PCIe-side accesses run on CPU0; see
-[Running part of the probe on CPU0](#running-part-of-the-probe-on-cpu0).
-
-(Aside if you cross-reference hekate: its `MSELECT_CFG_WRAP_TO_INCR_BPMP` for
-bit 27 is a misnomer. The TRM calls that bit `WRAP_TO_INCR_SLAVE0 (APC)`,
-and it is the APC bridge, not the BPMP.)
-
-### Running it
-
-It runs in the boot sweep by default, so the wireless verdict is part of the
-report with no pager interaction required. Press `w` on the pager, or send
-`W` over UART, to run it again. For a build where it only ever runs when
-armed that way:
-
-```sh
-make EXTRA_DEFINES=-DWIFI_CFG_AUTORUN=0
-```
-
-That knob exists because the probe is *invasive* in a way the rest of the
-sweep is not, not because it endangers the payload: with the PCIe half on
-CPU0, an access that never completes takes out CPU0 alone, and the BPMP sees
-the mailbox heartbeat stop, prints the last breadcrumb the stub wrote,
-powergates the cluster and carries on. What it does do is boot the CPU
-cluster (CPU rail up through the MAX77621/MAX77812, PLLX, the CRAIL/C0NC/CE0
-partitions) and cold-cycle `WL_REG_ON`, resetting the WLAN section. hwtest
-is otherwise a read-only pass you can point at an unknown console, and this
-costs 3-4 seconds on top.
-
-Every line it prints is flushed to the wire before the access it describes,
-so if it does stall, the last line received names the access that did it.
-
-### The bring-up sequence
-
-BDK has no PCIe support at all: no AFI (Address Framing Interface, the
-controller's register window), no PLLE (the PCIe phase-locked loop), no UPHY
-(Universal PHY) lane initialisation, not even a base address. So this probe
-carries its own T210 root-complex bring-up, ported from U-Boot's
-`drivers/pci/pci_tegra.c` plus its Tegra210 clock and XUSB pad-controller
-code, and cross-checked against Linux's `pci-tegra.c` and
-`phy/tegra/xusb-tegra210.c`. In order:
-
-0. **MSELECT out of reset.** The step with nothing to do with PCIe that stops
-   everything without it. MSELECT is the fabric between every master, the
-   CPU cluster *and the BPMP*, and the AXI slaves. `hw_init()` enables its
-   clock but never clears its reset; the only BDK code that does is the path
-   that boots the A57s, which this payload never takes. Setting
-   `MSELECT_CFG_ERR_RESP_EN_PCIE` at the same time is what makes the rest of
-   the probe safe: an unserviceable PCIe access then comes back as a data
-   abort, which BDK's handler survives, instead of stalling the bus.
-
-   This is one instance of the rule every step below obeys: **a T210 block
-   that is clocked but held in reset does not error a read, it never
-   completes one.** The BPMP hangs with no abort, no timeout and no reset
-   path. It holds for MSELECT, and for `XUSB_PADCTL`, where a diagnostic
-   register dump alone is enough to hang the console. So every block is
-   released, then its `RST_DEVICES_*` bit is read back and checked, *before*
-   the first access. A guard placed after the access it guards is not a
-   guard, and a read-modify-write like `REG |= bit` is a read.
-1. **Rails**, enabled *and set to the right voltage*. LDO1 (`VDD_PEX_1V05`)
-   and LDO7 (`AVDD_1V05_PLL`) are the two 1.05 V supplies the Switch device
-   tree hangs off `pcie@1003000`. Enabling is not enough: LDO7 feeds
-   `avdd-pll-uerefe`, the UPHY reference PLL's own analog supply, and a
-   Mariko in RCM is still on its 1.000 V cold OTP default because HOS's
-   `pcv`, which would program the 1.05 V the board specifies, never runs
-   here. (Erista boots at 1.05 V, so this is Mariko-specific.)
-2. **`WL_REG_ON` cold cycle** on PH1, which starts the endpoint's own
-   power-on reset. `BT_REG_ON` is left alone, so this resets the WLAN
-   section without disturbing the Bluetooth result above.
-3. **Tegra side**, interleaved into that reset window: PEX I/O pads out of
-   deep power down, the PCIE power partition ungated (with the REMOVE_CLAMPING
-   quirk that swaps the PCIE and VDEC bits), PCIE/AFI clocks and resets,
-   PLLREFE then PLLE, the pad controller out of reset, lane `pcie-0` muxed to
-   `pcie-x1`, and the UPHY PLL P0 frequency- and resistor-calibration
-   sequence. The AFI cross-bar and fuse configuration waits for the CPU0
-   half: the BPMP cannot see those registers.
-
-   **On Mariko there is one more clock, and without it the calibration can
-   never finish.** T210B01's padctl PCIe pad takes a second clock that
-   Erista's does not: NVIDIA's own tegra210b01 device tree gives it
-   `clock-names = "pll", "uphy_mgmt"` where tegra210.dtsi has only `"pll"`,
-   and L4T enables `uphy_mgmt` inside `tegra210_pcie_pad_probe()` behind
-   `if (t210b01_compatible(padctl) == 1)`, ahead of every UPHY access. It
-   clocks the calibration state machine, so with it gated `CAL_EN` latches
-   and `CAL_DONE` stays 0 for ever, while ELPG, the lane mux and CTL1/2/4
-   all read and write perfectly, because those are ordinary APB registers.
-   Two CAR registers BDK never touches: `PLLP_MISC1` (0x680) carries the
-   `pll_p_out_xusb` branch gate, and `PEX_SATA_USB_RX_BYP` (0x6D0), which
-   means something else entirely on Erista, is repurposed on B01 as this
-   clock's 7.1 divider plus enable gate. 408 MHz over a divider value of 6
-   gives the 102 MHz NVIDIA's init table asks for. This is exactly the class
-   of difference that lets the U-Boot sequence work on a Jetson TX1 and fail
-   here, and no T210-only reference can show it to you.
-
-   **And the UPHY PLL itself is configured a different way on B01.** Every
-   public T210 driver writes `CAL_CTRL = 0x136` and `DCO_CTRL = 0x2a` before
-   calibrating. L4T does that *only* on Erista; on T210B01 it instead loads a
-   table through an indirect address/data port at `UPHY_PLL_P0_CTL10`
-   (`usb3_pll_g1_init_data`), plus a per-lane table through each lane's
-   `CTL8`. It is an either/or, not an addition. Take the T210 branch on a
-   Mariko and the PLL is never configured: `CAL_EN` latches, `CAL_CTRL` reads
-   back `0x136`, and `CAL_DONE` stays 0 for ever, which looks exactly like
-   dead silicon and sends you hunting on the PCIe side, where nothing is
-   wrong. Only L4T shows this; mainline has no B01 support at all.
-4. **Link training** on root port 1, honouring the CYW4356's own ordering:
-   reference clock stable for 10 ms *before* PERST# is released, then 6 ms
-   before the first configuration access (datasheet Table 62, p147). Neither
-   upstream driver waits for either; they drive add-in cards whose rails
-   came up long before the driver loaded.
-5. **Enumeration.** The root port's own identity, then the endpoint's:
-   `14E4:43EC` is the CYW4356's WLAN function, class `0x028000` (network
-   controller), and the command register takes the one config write the
-   ROM-phase chip accepts. **Enumeration is the verdict**: the WLAN core
-   answered config reads with the right ID, so it is present and on the
-   bus. The die-level ChipID would need a firmware download (the backplane
-   is firmware-gated in ROM phase), which is the OS's job, not the probe's.
-
-The BT and WLAN halves each have their own verdict: a radio that answers
-HCI and a WLAN function that enumerates means the module is powered,
-clocked and on its busses; one that does neither has nothing on the bus at
-all. Both are reported distinctly, and both feed the `Wireless` verdict
-alongside `bt_hci`.
-
-The emulator models all of this, including the timing gates, so a bring-up
-that skips a step fails on the host with a `[pcie] root port 1 cannot train:`
-line naming what was missed. `--wifi-radio healthy|faulty|absent` selects
-which console you are testing against.
-
-### Running part of the probe on CPU0
-
-The PCIe apertures answer a CPU-complex master and nobody else, so the probe
-splits in two. The BPMP does everything it can legitimately reach: rails,
-`WL_REG_ON`, the PEX I/O pads, the PCIE partition, PCIE/AFI clocks and
-resets, PLLREFE and PLLE, the pad controller, the lane mux and UPHY PLL P0,
-all of it APB and CAR. Then it hands over:
-
-1. Copies a small **AArch64 stub** (`cpu_stub/`, built with devkitA64, linked
-   at `0xA0000000`) into DRAM, and clears a mailbox at `0xA0030000`.
-2. Runs its own copy of bdk's `ccplex_boot_cpu0()` sequence, which brings
-   up the CPU rail, PLLX, the CPU clock domain and the CRAIL/C0NC/CE0
-   partitions, and releases CPU0 at the stub, in EL3, AArch64, MMU off.
-   Its own copy because bdk's spins on the RAM repair with no timeout, and
-   a console with a dead CPU rail would hang there; this one reads the
-   regulator back and bounds the wait, so the fault is reported instead.
-3. The stub does MSELECT, the AFI translations (byte-identical to U-Boot's
-   `tegra_pcie_setup_translations`), the controller enable, root port 1's
-   refclk and PERST# (with the CYW4356's own 10 ms and 6 ms waits), link
-   training, and the endpoint's configuration space with paired-readback
-   verification. It stores a **breadcrumb before each access** and bumps a
-   heartbeat.
-4. The BPMP watches the heartbeat, prints the results, and calls
-   `ccplex_powergate_cpu0()` to put the cluster away again.
-
-**This is the safer arrangement, which is the real argument for it.** An
-aperture that does not decode, or a block held in reset, does not error a
-transaction on this SoC; it never completes one. Such an access from the
-BPMP takes the whole console down, because the BPMP is also what runs the
-UART, the pager and the reset path, so recovery means a manual power cycle.
-Made from CPU0, the same stall costs CPU0 alone: the BPMP sees the heartbeat
-stop, prints the last breadcrumb, powergates the cluster and reboots itself.
-
-The emulator models CPU0 (AArch64 at EL3, in lockstep with the BPMP) and
-the PCIe root complex, so the stub runs to completion there and enumerates
-the endpoint; `--fault vdd_cpu` or `--fault max77621_cpu` leaves the rail
-dead and exercises the supervisor's refusal path instead, which is worth
-running since that path is the safety net.
-
-### Reading the output
-
-Every line is a register read printed next to what it means, so a bring-up
-that stops somewhere tells you where. This is a healthy Erista, end to end:
-
-```
-[Wi-Fi radio (BCM/CYW4356 WLAN core over PCIe)]
-  entry clocks  : PCIE=0 AFI=0  rst PCIE=1 AFI=1 PCIEXCLK=1
-  entry power   : PWRGATE PCIE=1  PLLE lock=0 PLLREFE lock=0
-  CCPLEX amap   : 00020000  PCIe apertures A1=MMIO A2=MMIO A3=MMIO
-  LDO1 VDD_PEX_1V05 : en 3->3  1050->1050 mV
-  LDO7 AVDD_1V05_PLL: en 3->3  1050->1050 mV
-  PEX_L1 pads   : RST 00000460->00000440  CLKREQ 00000470->00000450
-  PH0 wifi_en   : 0 on entry (left as found)
-  PH0/PH1       : 0,1 (cold cycle, t=0 for Table 62)
-  PEX I/O pads  : DPD already awake
-  PCIE partition: ungated (was already up, left alone, bit 3 = 1)
-  PLLREFE/PLLE  : refe locked, plle locked
-  lane power    : P0_CTL_2=00053131 (IDDQ/PWR overrides released)
-  lane mux      : USB3_PAD_MUX=817FC03E (pcie-0 -> pcie-x1)
-  UPHY PLL P0   : calibrated and locked
-  POR window    : 62 ms since WL_REG_ON (Tvddtopor 57 ms)
-
-[Wi-Fi radio - PCIe link and endpoint]
-  -- CPU0 handoff (PCIe needs a CPU-complex master) --
-  stub          : 5872 bytes -> A0000000, mailbox A0030000
-  CPU0          : ran to completion (hb=12)
-  MSELECT (CPU) : 07FF4020 -> 17FF4020 (TRM reset 07FF4020)
-  AFI (CPU)     : cfg=00103025 witness=A5A50000 -> APERTURE LIVE
-  RP1 link      : UP, DL active (LNKSTA=3011 gen1 x1)
-  RP1 id        : 10DE:0FAF
-  EP config     : 14E4:43EC Broadcom BCM/CYW4356 WLAN
-  EP class/rev  : 028000 rev 03  BAR0=00000004 (default)
-  CFG write chk : bar0=00000000/00000004 cmd=00000000/00100046
-  CFG window    : 00000000/18003000
-  CFG retries   : cmd=0 SECSTS 00000101->00000101
-  Result        : WLAN core enumerated on the PCIe bus
-  CPU0          : powergated
-```
-
-Four lines carry the verdict, and they fail independently:
-
-- `MSELECT (CPU)` reading back `07FF4020` rather than all-ones is the proof
-  the handoff worked at all. If this is `EAFFFFFE` the stub is running but
-  the aperture is not, and nothing after it can be trusted.
-- `AFI ... APERTURE LIVE` is a write-then-read-back witness, not just a
-  non-zero read, because an undecoded window can return plausible garbage.
-- `RP1 link : UP, DL active` is the Tegra root port. `LNKSTA=3011` decodes as
-  gen1 x1, which is what this endpoint negotiates.
-- `EP config : 14E4:43EC` is the enumeration verdict: the WLAN function
-  answered config reads with the right ID, so the core is present and on
-  the bus. (Reading the die-level ChipID would need a firmware download,
-  since the backplane is firmware-gated in ROM phase, and that is the OS's job.)
-
-The `uphy entry`/`uphy ungated` pairs bracket the pad controller coming out
-of reset, and exist because the register values on either side are how you
-tell a gated clock from a mis-programmed one. They are printed before the
-access they describe, so a stall leaves the last line on the wire naming
-what stalled.
-
-## Audio probe
-
-Three pages. The first identifies the ALC5639 codec on I2C-1 (`0x1C`) and
-walks the bus; the second brings up the APE/AHUB power and clock domain plus
-`AUD_MCLK`. The second plays a melody: the first phrase on the left speaker,
-the second on the right, then a tail on the headphone jack, split that way so
-one weak or dead output can be picked out by ear without needing a meter.
-
-Samples reach the codec by PIO, not DMA: the CPU writes straight into the
-ADMAIF TX FIFO (`FIFO_CTRL` bit 31), the crossbar routes ADMAIF1 to I2S1, and
-I2S1 clocks them out on DAP1. ADMA is powered and reset but never runs, which
-keeps the DMA buffer and its cache-coherency hazard out of the path entirely.
-
-Most of the bring-up is unremarkable; these five are not, and none of them can
-be spotted by reading registers back, which is what made this slow to find:
-
-| Gotcha | Why it matters |
-|---|---|
-| ADMAIF CIF `FIFO_THRESHOLD` = 3, not 0 | A zero threshold forwards to the crossbar before real data is held, so the port clocks out stale words: DC clicks, never a waveform |
-| DAS routing (`DAS_DAP_CTRL_SEL`, `DAS_DAC_INPUT_DATA_CLK_SEL`) | The Digital Audio Switch is what connects the DAP1 pin group to I2S1. Miss it and everything upstream looks perfect |
-| PMC `PWR_DET` latch for the AUDIO_HV rail | Pads on a rail whose voltage is never latched drive at the wrong level |
-| One 32-bit FIFO word per stereo *frame* | Under the CIF's `UNPACK16`, low half is left and high half is right. Writing one 16-bit sample per push leaves the right DAC on DC and emits two frames per sample: silent right channel, an octave low, half speed |
-| The jack is the codec's own capless HPO | Reached through the HPVOL leg (`HPO_MIXER` = `0xC000`), not a DAC1-direct tap |
-
-The clock recipe (`AUD_MCLK` from PLLP/17 = 24 MHz, BCLK 1.5 MHz from
-PLLA_OUT0, `TIMING` = 31) gives fs = 23437.5 Hz. That is the *actual* sample
-rate, and the note pitches and durations are computed from it; using a nominal
-48 kHz instead just detunes and slows the melody.
-
-Three keys feed the `Audio` verdict, and they mean different strengths of
-thing. `audio_codec` passes when the part answers with a Realtek identity
-after the probe asserts LDO1_EN on **PZ4** itself; silence is only a WARN,
-never a fail, because nothing here separates a faulty codec from a board that
-was never fitted with one; HOS treats it as optional too.
-`audio_clocks` fails if the AUD power partition
-will not ungate or APE stays in reset, and passes when the island is up.
-
-`audio_beep` is the one to read carefully: it is a **completion marker, not
-an acoustic measurement**. Nothing in the payload can hear the console, so it
-passes as soon as the sequence has been clocked out end to end: a console
-whose speakers are dead, disconnected or swapped still reports PASS. The
-verdict says the SoC side did its job; your ears are the instrument for the
-rest, which is exactly why the melody is split one output at a time.
-
-## BDK's SDRAM parameter scratch
-
-BDK hands out a few fixed IRAM addresses no section knows about, and
-`SDRAM_PARAMS_ADDR` (`memory_map.h`) is one of them: `sdram_init()`, reached
-from `hw_init()` on the first line of `ipl_main`, decompresses the DRAM
-parameter blob there and writes `0x838` bytes, unconditionally, on every
-boot. Any static that lands in that window is destroyed during `hw_init`,
-after `start.S` zeroes `.bss`, before any probe runs.
-
-Nothing in the payload can defend against that, so the link script stays out
-of the way: `link.ld` starts `.bss` above the scratch window and asserts that
-`.text`/`.data` never reach it. The gap costs no image bytes, since `.bss`
-occupies none. Such a collision is harmless for any variable written before
-it is first read, which is most of them, so it surfaces only as a static read
-before assignment coming up with a garbage value.
-
 ## Host viewer (`host_tools/hwtest_viewer.py`)
 
-ImGui front-end that connects to the same UART and understands both payloads.
-For `hwtest.bin` it parses the page/section diagnostic dump plus `[boot]`,
-`[save]` and `[step]` runtime messages. `[step]` is the step a probe is about
-to take, sent before an access that may hang the console and also shown on
-its status line, so on a frozen console the Runtime page's **Last step** says
-where it stopped. For `hwtest_ram.bin` it presents RAM mode, training,
-live progress, completed passes, abort/final statistics, MTC flags and failing
-word records as a dedicated **RAM test** page. The raw UART transcript remains
-available unchanged in both cases.
-
-When connected to the normal hardware payload, the toolbar can refresh the
-selected group (`G<group>\n`), refresh all probes (`a`), save the SD report
-(`s`) or request power-off (`q`). The dedicated RAM payload is transmit-only on
-this UART protocol, so those remote-command buttons are disabled while a RAM
-stream is active; RAM run-again/power-off remains controlled on the console.
+ImGui front-end that connects to the same UART and understands both payloads:
+the hardware payload's pages (on a frozen console, the Runtime page's **Last
+step** says where it stopped) and the RAM test's progress and failing words.
+For the hardware payload, the toolbar can refresh a group or all probes, save
+the SD report or power off.
 
 ```sh
 pip install -r host_tools/requirements.txt
@@ -654,11 +202,30 @@ The Switch UART runs at 1.8 V. Use a level-shifter between the Tegra rail
 and any USB-TTL cable that doesn't natively support 1.8 V. For wiring the
 Joy-Con right rail as a UART tap, see this gbatemp guide:
 <https://gbatemp.net/threads/how-to-make-a-joycon-rail-uart-to-capture-boot-log.625784/>.
+Without an adapter on the rail, the Raw state page reads its RX line LOW; that
+is not a fault.
 
-Without an adapter on the rail, the Raw state page's UART debug port section
-reads the RX line LOW. That only means nothing is driving it, which is the
-normal state of a console with nothing plugged into the rail; it is not a
-fault.
+## Technical notes
+
+| Note | Covers |
+|---|---|
+| [docs/soc.md](docs/soc.md) | SoC revision, fuses and KFUSE: what each field decodes to, Patched RCM, the Identity and Boot integrity rows |
+| [docs/power.md](docs/power.md) | The PMICs, regulators, fuel gauge, charger, USB-PD controller, thermal sensor and fan, and the power cross-checks |
+| [docs/memory.md](docs/memory.md) | DRAM identity, the channel symmetry check, PLL lock and the decoded clock rates |
+| [docs/storage.md](docs/storage.md) | SD and eMMC bring-up, PRODINFO and CAL0, eMMC health, GPT, BOOT0 (pkg1, AutoRCM), error counters, the SD report |
+| [docs/gamecard.md](docs/gamecard.md) | The game card reader probe: what it never does, what it reports, what it puts back |
+| [docs/wireless.md](docs/wireless.md) | The Bluetooth and Wi-Fi probes: why the PCIe half runs on CPU0, the bring-up sequence, reading its output |
+| [docs/audio.md](docs/audio.md) | The audio probe: codec identity, clocks, the melody, and the gotchas behind it |
+| [docs/display.md](docs/display.md) | The panel ID and its decoding, the backlight, the CAL0 LCD vendor check |
+| [docs/inputs.md](docs/inputs.md) | The touch panel, the ambient light sensor, the Joy-Con rail lines and the input census |
+| [docs/raw-state.md](docs/raw-state.md) | The pin census, the UART debug port, reset reason, PMIC latches, RTC and PMC scratch |
+| [docs/verdict.md](docs/verdict.md) | How findings become the Verdict: the registry, cross-checks, rows, aggregation and colours |
+| [docs/gui.md](docs/gui.md) | The GUI: hand-over from hwtest.bin, input, screens, the health check, Results, Custom Check, the debug console |
+| [docs/joycon.md](docs/joycon.md) | The Joy-Con Test, rumble, motion sensors, the IR camera and the attach glow |
+| [docs/dock.md](docs/dock.md) | The Dock Test's handshake and the TV picture |
+| [docs/ramtest.md](docs/ramtest.md) | The dedicated RAM test: starting it, training, menus, reading a failure |
+| [docs/internals.md](docs/internals.md) | The GUI's clocks and fonts, BDK's SDRAM parameter scratch |
+| [docs/terms.md](docs/terms.md) | The terms and abbreviations used in the report, the README and these notes |
 
 ## Layout
 
@@ -666,13 +233,14 @@ fault.
 hwtest.h             - shared header: logging + finding APIs, probe prototypes
 core.c               - page table, the sweep, step breadcrumbs, UART reboot hook
 main.c               - boot flow, text launcher hand-off, pager + UART command loop
-log.c                - three-sink logging (LCD + UART_B + report capture)
+log.c                - logging to the LCD, the debug console and the report capture
 dx.c                 - diagnostic-finding registry consumed by the verdict
 report.c             - SD report writer (backup/<emmc_serial>/hwtest.txt)
 verdict.c            - cross-checks + per-subsystem verdict aggregation
 probe_soc.c          - SoC identity, fuses, KFUSE
 probe_power.c        - PMIC, regulators, battery, charger, USB-PD, thermal, fan
 probe_storage.c      - SD, eMMC, partitions, health, GPT, BOOT0/pkg1, PRODINFO
+probe_gamecard.c     - game card reader (Lotus3 ASIC on SDMMC2)
 probe_bt.c           - Bluetooth radio (CYW4356 HCI over UART-D)
 probe_wifi.c         - Wi-Fi radio (CYW4356 WLAN over PCIe)
 probe_audio.c        - ALC5639 codec + I2C-1 census + APE/AHUB clocks + AUD_MCLK
@@ -686,18 +254,20 @@ dpout.c/.h           - DisplayPort out to the dock: DPAUX1, DPCD, EDID, SOR1 lin
 cpu_mbox.h           - BPMP <-> CPU0 mailbox, shared by both toolchains
 cpu_stub/            - AArch64 stub that does the PCIe half on CPU0
 emmcsn.c             - Hekate-style backup/<emmc_serial>/<sub>/<file> path
-diskio.c, ffconf.h   - FatFS glue + config (vendored from the Hekate bootloader)
-exception_handlers.S - boot exception/relocation entry (vendored from Hekate)
+loader/              - self-extracting stub: build/hwtest.bin is it plus the LZ-packed payload, under the 130392-byte RCM limit
 ui_menu.c/.h         - physical-key launcher, custom probe selection, GUI and RAM payload loaders
 ui_theme.h           - shared LCD colors and menu geometry used by hwtest and RAM UI
 chain_reloc.S        - tiny upper-IRAM relocator used for the hwtest -> RAM handoff
 gfx/                 - LCD driver (vendored from the Hekate bootloader)
 stubs.c              - minerva_deinit no-op
 link.ld              - link script; also keeps .bss off BDK's SDRAM scratch
+memory_map.h         - BDK's memory map with the SDRAM parameter scratch moved past the image
 gui/                 - LVGL front end (`make gui`): screens, theme, plain-language texts, fonts
 tools/mkfont.py      - rasterises the GUI's fonts into LVGL's format
 tools/mksdzip.py     - packs the SD card zip (`make sdzip`)
+tools/mkpayload.py   - LZ-packs the linked payload for the loader (tools/lzpack.py is the compressor)
 Makefile             - devkitARM normal payload, `make ram`, `make gui`, AArch64 CPU0-stub build support
+docs/                - technical notes
 third_party/hekate/  - pinned Hekate BDK git submodule
 third_party/Atmosphere/ - pinned Atmosphere MTC/timing-table git submodule
 ramtest/             - universal Erista/Mariko DRAM diagnostic + Atmosphere MTC adaptation patch
