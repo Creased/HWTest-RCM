@@ -29,6 +29,8 @@ void usbser_stop(void);
 void usbser_poll(void);                 /* from the loop and every send   */
 void usbser_send(const u8 *buf, u32 n); /* \n goes out as \r\n            */
 int  usbser_getc(u8 *c);                /* 1 when a byte came             */
+u32  usbser_read(u8 *buf, u32 max);     /* what came, up to max           */
+bool usbser_tx_empty(void);             /* all sent to the PC             */
 usbser_state_t usbser_state(void);
 
 /* ---- between usbser.c and a controller driver ---- */

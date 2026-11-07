@@ -161,7 +161,7 @@ void usbser_out(const usb_ctrl_setup_t *s, const u8 *buf, u32 len)
 /* ---- the port ---- */
 
 #define TX_SIZE 16384
-#define RX_SIZE 256
+#define RX_SIZE 4096
 #define TX_DRAIN_MS 20      /* how long a full queue waits for the PC */
 
 static const usbser_ctrl_t *s_ctrl;
@@ -236,14 +236,20 @@ void usbser_poll(void)
     }
     s_state = s_dtr ? USBSER_OPEN : USBSER_CONNECTED;
 
-    u32 n = s_ctrl->rx(rx, sizeof(rx));
-    for (u32 i = 0; i < n && s_rx_head - s_rx_tail < RX_SIZE; i++)
-        s_rx[s_rx_head++ % RX_SIZE] = rx[i];
-
-    if (!s_dtr) {
-        s_tx_tail = s_tx_head;          /* nobody listens */
-        return;
+    /* A packet is only taken when it fits whole: otherwise it stays in the
+     * controller, which then holds the PC off (no read is queued), and
+     * nothing is dropped. A file sent over the port depends on it. */
+    if (RX_SIZE - (s_rx_head - s_rx_tail) >= sizeof(rx)) {
+        u32 n = s_ctrl->rx(rx, sizeof(rx));
+        for (u32 i = 0; i < n; i++)
+            s_rx[s_rx_head++ % RX_SIZE] = rx[i];
     }
+
+    /* Nobody listens yet: what was said is kept (the newest TX_SIZE
+     * bytes, _tx_put), so a PC that opens the port later still reads the
+     * start-up. */
+    if (!s_dtr)
+        return;
     if (s_tx_head == s_tx_tail || !s_ctrl->tx_idle())
         return;
 
@@ -260,7 +266,9 @@ void usbser_poll(void)
 
 static void _tx_put(u8 c)
 {
-    if (s_tx_head - s_tx_tail == TX_SIZE) {
+    if (s_tx_head - s_tx_tail == TX_SIZE && s_state != USBSER_OPEN) {
+        s_tx_tail++;                    /* no PC reading: the oldest goes */
+    } else if (s_tx_head - s_tx_tail == TX_SIZE) {
         /* Full: the PC gets a moment to take some, then it is dropped. */
         u32 t0 = get_tmr_ms();
         while (s_tx_head - s_tx_tail == TX_SIZE && s_state == USBSER_OPEN &&
@@ -274,7 +282,7 @@ static void _tx_put(u8 c)
 
 void usbser_send(const u8 *buf, u32 n)
 {
-    if (s_state == USBSER_OPEN) {
+    if (s_ctrl) {
         for (u32 i = 0; i < n; i++) {
             if (buf[i] == '\n')
                 _tx_put('\r');
@@ -291,4 +299,19 @@ int usbser_getc(u8 *c)
         return 0;
     *c = s_rx[s_rx_tail++ % RX_SIZE];
     return 1;
+}
+
+u32 usbser_read(u8 *buf, u32 max)
+{
+    usbser_poll();
+    u32 n = 0;
+    while (n < max && s_rx_head != s_rx_tail)
+        buf[n++] = s_rx[s_rx_tail++ % RX_SIZE];
+    return n;
+}
+
+bool usbser_tx_empty(void)
+{
+    usbser_poll();
+    return s_tx_head == s_tx_tail;
 }

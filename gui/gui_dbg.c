@@ -14,6 +14,11 @@
  * Joy-Con driver needs. R is also taken on UART-B while it is free,
  * whichever port is picked, so a bench that reboots the console over it
  * keeps working.
+ *
+ * The USB serial port also runs beside whichever port is picked, from the
+ * GUI's start: a PC on the USB-C port that opens it gets the same lines,
+ * and can send the same commands (gui_push.c), with no adapter and no
+ * choice made on the console first.
  */
 #include "gui.h"
 #include "usbser.h"
@@ -21,6 +26,9 @@
 static gui_dbg_port_t s_port = DBG_UART_B;
 static bool s_taken[2];          /* UART-B, UART-C: a Joy-Con (a Lite's controls) owns it */
 static bool s_lite;
+static bool s_usb;               /* the USB serial port is up, as console or beside it */
+static bool s_src_usb;           /* where the last byte dbg_recv returned came from */
+static u32 s_src_uart;
 
 static const u32 s_uart[DBG_USB] = { UART_B, UART_C, UART_A };
 static const char *const s_name[DBG_PORTS] = {
@@ -126,8 +134,27 @@ void gui_dbg_rails(void)
 
 void gui_dbg_poll(void)
 {
-    if (s_port == DBG_USB)
+    if (s_usb)
         usbser_poll();
+}
+
+/* The USB serial port beside the console, from the GUI's start. */
+void gui_dbg_usb_start(void)
+{
+    s_usb = usbser_start();
+}
+
+/* Before handing over to another payload: the USB controller keeps a read
+ * queued, which it would go on filling by DMA in memory the next payload
+ * owns (the RAM test tests it). */
+void gui_dbg_end(void)
+{
+    if (s_usb) {
+        for (u32 t0 = get_tmr_ms(); !usbser_tx_empty() && get_tmr_ms() - t0 < 300; )
+            ;
+        usbser_stop();
+        s_usb = false;
+    }
 }
 
 bool gui_dbg_set(gui_dbg_port_t p)
@@ -136,15 +163,17 @@ bool gui_dbg_set(gui_dbg_port_t p)
         return true;
     if (p >= DBG_PORTS || (p == DBG_UART_C && s_lite))
         return false;
-    if (p == DBG_USB && !usbser_start())
-        return false;
+    if (p == DBG_USB && !s_usb) {
+        if (!usbser_start())
+            return false;
+        s_usb = true;
+    }
 
     char line[80];
     s_printf(line, "gui: debug console moves to %s\n", s_name[p]);
     dbg_send((u8 *)line, strlen(line));
-    if (s_port == DBG_USB)
-        usbser_stop();
-    else if (!gui_dbg_taken(s_port))
+    /* The USB port stays up beside the console when it is left. */
+    if (s_port != DBG_USB && !gui_dbg_taken(s_port))
         uart_wait_xfer(s_uart[s_port], UART_TX_IDLE);
 
     /* A left Joy-Con the driver already drives keeps its port. */
@@ -161,21 +190,41 @@ bool gui_dbg_set(gui_dbg_port_t p)
 
 void dbg_send(const u8 *buf, u32 n)
 {
-    if (s_port == DBG_USB)
+    if (s_usb)
         usbser_send(buf, n);
-    else if (!gui_dbg_taken(s_port))
+    if (s_port != DBG_USB && !gui_dbg_taken(s_port))
         uart_send_crlf(s_uart[s_port], buf, n);
 }
 
 int dbg_recv(u8 *c)
 {
-    if (s_port == DBG_USB) {
-        if (usbser_getc(c))
-            return 1;
-    } else if (!gui_dbg_taken(s_port) && uart_recv(s_uart[s_port], c, 1) == 1) {
+    if (s_usb && usbser_getc(c)) {
+        s_src_usb = true;
+        return 1;
+    }
+    s_src_usb = false;
+    if (s_port != DBG_USB && !gui_dbg_taken(s_port) &&
+        uart_recv(s_uart[s_port], c, 1) == 1) {
+        s_src_uart = s_uart[s_port];
         return 1;
     }
     /* UART-B while it is free, whichever port is the console. */
-    return s_port != DBG_UART_B && !s_taken[DBG_UART_B] &&
-           uart_recv(UART_B, c, 1) == 1;
+    if (s_port != DBG_UART_B && !s_taken[DBG_UART_B] &&
+        uart_recv(UART_B, c, 1) == 1) {
+        s_src_uart = UART_B;
+        return 1;
+    }
+    return 0;
+}
+
+/* More bytes from where the last one dbg_recv returned came from: a file
+ * sent after a command (gui_push.c) is read from that port only. */
+u32 gui_dbg_read(u8 *buf, u32 max)
+{
+    if (s_src_usb)
+        return usbser_read(buf, max);
+    u32 n = 0;
+    while (n < max && uart_recv(s_src_uart, buf + n, 1) == 1)
+        n++;
+    return n;
 }

@@ -377,6 +377,7 @@ static lv_res_t _act_rumble(lv_obj_t *b)
 }
 static lv_res_t _act_motion(lv_obj_t *b) { gui_show(gui_jc_motion); return LV_RES_OK; }
 static lv_res_t _act_ir(lv_obj_t *b)     { gui_show(gui_jc_ir); return LV_RES_OK; }
+static lv_res_t _act_bt(lv_obj_t *b)     { gui_show(gui_bt_test); return LV_RES_OK; }
 
 static void _jc_leave(void)
 {
@@ -393,11 +394,13 @@ static void _jc_leave(void)
 
 void gui_joycon_test(void)
 {
-    lv_obj_t *win = gui_win_new(ICON_GAMEPAD " Joy-Con Test");
+    lv_obj_t *win = gui_win_new(ICON_GAMEPAD " Joy-Con");
     gui_jc_nav(false);
     gui_on_leave(_jc_leave);
     /* The deeper tests, right to left after Close. A Lite's controls do
-     * not speak the protocol they need. */
+     * not speak the protocol the sensor ones need; Bluetooth is for a
+     * controller off the rails, which a Lite can pair with too. */
+    gui_win_btn(win, ICON_BLUETOOTH " Bluetooth", _act_bt);
     if (!gui_is_lite()) {
         gui_win_btn(win, ICON_SUN " IR Camera", _act_ir);
         gui_win_btn(win, ICON_CROSSHAIR " Motion", _act_motion);

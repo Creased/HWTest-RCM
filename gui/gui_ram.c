@@ -22,6 +22,7 @@ static lv_res_t _act_start(lv_obj_t *b)
 
     void *buf = ram_payload_load(&used, &size, &err);
     if (buf) {
+        gui_dbg_end();                /* no USB DMA into what it tests */
         gui_clock_fast(false);        /* it trains from the boot clock */
         ram_payload_run(buf, size);   /* does not return */
     }

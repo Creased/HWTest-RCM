@@ -143,6 +143,10 @@ bool gui_dbg_set(gui_dbg_port_t p);      /* false: that port did not come up    
 gui_dbg_port_t gui_dbg_port(void);
 bool gui_dbg_taken(gui_dbg_port_t p);    /* a Joy-Con owns that rail's port        */
 const char *gui_dbg_name(gui_dbg_port_t p);
+void gui_dbg_usb_start(void);            /* the USB serial port beside it, at start */
+void gui_dbg_end(void);                  /* before handing over to another payload */
+u32  gui_dbg_read(u8 *buf, u32 max);     /* from the port the last byte came from  */
+void gui_cmd_poll(void);                 /* R, and the PC's commands: gui_push.c   */
 
 extern lv_style_t gui_st_mono;
 
@@ -193,6 +197,7 @@ void gui_run_mask(u32 mask);             /* what gui_run checks from now on */
 void gui_joycon_test(void);
 void gui_jc_motion(void);                /* from the Joy-Con test        */
 void gui_jc_ir(void);
+void gui_bt_test(void);                  /* from the Joy-Con test, gui_btscreen.c */
 void gui_jc_test_resumed(void);          /* a sensor screen gave the rails back */
 void gui_jc_attach_show(int side, const u8 *body); /* the edge glow, gui_jcattach.c */
 void gui_touch_test(void);

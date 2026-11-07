@@ -560,10 +560,14 @@ void ipl_main(void)
     bpmp_mmu_enable();
     bpmp_clk_rate_set(BPMP_CLK_NORMAL);
 
+    /* The USB serial port first, so a PC on the USB-C port reads the
+     * start-up too (usbser.c keeps it until the PC opens the port). */
+    gui_dbg_usb_start();
+
     /* Everything the probes print goes to UART and the report buffer; the
      * screen belongs to LVGL. */
     _log_uart_only = true;
-    static const char banner[] = "\n=== hwtest GUI ===\n";
+    static const char banner[] = "\n=== hwtest GUI === " GUI_VERSION "\n";
     dbg_send((const u8 *)banner, sizeof(banner) - 1);
 
     lv_init();
@@ -592,7 +596,7 @@ void ipl_main(void)
             _present();
             _frame_stat(get_tmr_us() - t0);
         }
-        uart_poll_reboot();
+        gui_cmd_poll();
         gui_dbg_poll();
         gui_input_sample();
         usleep(500);
