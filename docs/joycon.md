@@ -7,8 +7,10 @@ controls, with every button that can be pressed on the rail, each stick
 drawn live and judged, and a count of connections that dropped. Its header
 has Rumble, which buzzes each Joy-Con in turn on this screen, and Motion
 and IR Camera, which open screens of their own; none of the three is on a
-Lite. A Joy-Con slid onto a rail is also greeted, on any screen where the
-driver is being polled, by a glow in its body colour.
+Lite. The header's Bluetooth button, on a Lite too, opens
+[the Bluetooth test](bluetooth.md), for SL and SR and for a Pro
+Controller. A Joy-Con slid onto a rail is also greeted, on any screen where
+the driver is being polled, by a glow in its body colour.
 
 None of these screens calls `dx_set` or writes to the report: every
 judgement below is text on the screen, gone when the screen is left; two

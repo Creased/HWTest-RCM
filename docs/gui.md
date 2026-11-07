@@ -10,9 +10,9 @@ way hekate hands over to Nyx. The screens are listed in the
 [README](../README.md#gui). The GUI records no finding of its own (nothing
 in `gui/` calls `dx_set`): every result it shows comes from the probes,
 whose conditions are in their own notes. The Joy-Con screens and the
-attach glow are in [Joy-Con tests](joycon.md), the Dock Test in
-[Dock Test](dock.md), and the GUI's clocks and fonts in
-[Internals](internals.md).
+attach glow are in [Joy-Con tests](joycon.md), the Bluetooth test in
+[The Bluetooth test](bluetooth.md), the Dock Test in [Dock Test](dock.md),
+and the GUI's clocks and fonts in [Internals](internals.md).
 
 ## Hand-over from hwtest.bin
 
@@ -117,8 +117,9 @@ scans a half-drawn screen either ([Dock Test](dock.md#the-frame-on-the-tv)).
 
 The loop then runs a pending screen switch, `lv_task_handler()`, the VIC
 pass and the frame statistics when anything was drawn (the line itself at
-most every 2 s), `uart_poll_reboot()`, `gui_dbg_poll()` (USB serial only),
-a VOL sample and a 500 us sleep.
+most every 2 s), `gui_cmd_poll()` (`R` and the PC's commands, see
+[Commands from the PC](#commands-from-the-pc)), `gui_dbg_poll()` (the USB
+serial port), a VOL sample and a 500 us sleep.
 
 The status bar along the bottom shows on the left the console's serial
 from PRODINFO, which decrypts only with `sd:/switch/prod.keys`; without
@@ -208,6 +209,7 @@ Some screens take an input for themselves:
 | Joy-Con Test, Motion, IR Camera | no navigation, B does nothing | LVGL's | POWER on the focused Close, or a tap |
 | Screen test | no navigation; any button turns the page | the screen's | its closing box only |
 | Touchscreen test | navigation on: B leaves for Home | the screen's | Finish and its box, or Joy-Con B |
+| Bluetooth | navigation on until Pair from rails, then the rails are not polled | LVGL's | Close |
 | Health check, while it runs | not read | not read | none until it ends, bar `R` |
 
 The next screen switch gives everything back.
@@ -428,7 +430,10 @@ The right half, "UART output", picks the debug console's port.
 
 The text payload's console is UART-B on the right rail, for good. The
 GUI's can be moved from Custom Check, one port at a time, for the rest of
-the session:
+the session. The USB serial port also runs beside whichever port is picked,
+from the first lines of `ipl_main` (`gui_dbg_usb_start()`), so a PC on the
+USB-C port gets everything, start-up included, and can send the same
+commands, with no choice made on the console:
 
 | Port | Where |
 |---|---|
@@ -453,15 +458,13 @@ UART-C gets the left rail's 5 V (`REGULATOR_5V_JC_L`) and its
 charge-enable PCC3 driven high, which bridge the rail's pads to the SoC,
 then its pinmux and clock; for UART-B main.c did the same. Nothing of it
 is undone on moving away: the old UART stays configured, and UART-C's 5 V
-and charge-enable stay on. USB is stopped, its controller powered down.
+and charge-enable stay on. USB stays up beside the new port.
 
 Moving sends "gui: debug console moves to <port>" on the old port and
 "=== hwtest GUI === debug console on <port>" on the new one. Either is
-dropped when its port is a rail a Joy-Con has taken. Leaving USB stops the
-controller straight after the first line, without waiting for its queue to
-empty, so it may never arrive; the second is never seen over USB, since it
-is sent while the port is still waiting for a PC. A USB start that fails
-keeps the old port, and the checkboxes follow the port in use. The note
+dropped when its port is a rail a Joy-Con has taken; both also go out over
+USB. A USB start that fails keeps the old port, and the checkboxes follow
+the port in use. The note
 under them, refreshed every 300 ms, says where the port is and, for USB,
 its state: "Waiting for a PC.", "The PC has it: open the port there (COMx
 on Windows, /dev/ttyACM0 on Linux).", "Open on the PC." or "The USB
@@ -508,13 +511,16 @@ and the run's output keeps going out on that rail until then.
 
 ### The R reboot
 
-`uart_poll_reboot()` (`core.c`) drains the console's input and reboots on
-an uppercase `R`; other bytes do nothing in the GUI. It reads the chosen
-port and, whichever that is, UART-B as long as no Joy-Con has taken it,
-"so a bench that reboots the console over it keeps working". It is polled
-on every pass of the main loop, before every page and step of the health
-check, and in the probes' long waits (`msleep_poll()`), so not while
-anything else blocks the loop, a screenshot included.
+An uppercase `R` reboots. `dbg_recv()` reads the USB serial port, the
+chosen port and, whichever that is, UART-B as long as no Joy-Con has taken
+it, "so a bench that reboots the console over it keeps working". On every
+pass of the main loop `gui_cmd_poll()` (`gui/gui_push.c`) reads it: an `R`
+outside a command line reboots, a `!` starts one
+([Commands from the PC](#commands-from-the-pc)), anything else is ignored.
+During the health check `uart_poll_reboot()` (`core.c`) reads it instead,
+before every page and step and in the probes' long waits
+(`msleep_poll()`), and takes only `R`; nothing reads it while anything
+else blocks the loop, a screenshot included.
 
 `do_reboot()` prints "Rebooting (PMIC power cycle)...", gives the line
 50 ms, sets `MAX77620_ONOFFCNFG2_SFT_RST_WK` and writes
@@ -540,14 +546,20 @@ high speed, 64 at full speed). `SET_LINE_CODING` is kept and read back
 the DTR bit of `SET_CONTROL_LINE_STATE` says a program holds the port,
 `SEND_BREAK` is acknowledged and ignored, and anything else stalls.
 
-Output is queued only while DTR is set: before a program opens the port
-and after it closes it, what is printed is thrown away, as a UART's bytes
-go nowhere when nobody listens. The queue is 16 KiB; when it is full a
-byte waits up to 20 ms for the PC, then is dropped. A newline goes out as
-CR LF. Each transfer is kept one byte short of a full packet, so it ends
-on a short one and the PC hands it over at once. Input is read whenever
-the port is configured, DTR or not, so an `R` from a program that does not
-raise DTR still reboots.
+Output is queued from the moment the port is up and sent once DTR is set:
+before a program opens the port, and after it closes it, the queue keeps
+the newest 16 KiB, so a PC that opens the port late still reads the
+start-up. While a program holds the port and the queue is full, a byte
+waits up to 20 ms for the PC, then is dropped. A newline goes out as CR LF.
+Each transfer is kept one byte short of a full packet, so it ends on a
+short one and the PC hands it over at once. The queue is cleared when the
+port starts and when a PC goes away.
+
+Input is read whenever the port is configured, DTR or not, so an `R` from
+a program that does not raise DTR still reboots. It goes through a 4 KiB
+queue, and a packet is only taken from the controller when it fits whole:
+otherwise it stays there, no read is queued, and the controller holds the
+PC off. Nothing is dropped, which a file sent over the port depends on.
 
 Nothing runs the port in the background: it moves on each loop pass and
 on every send and read, at most one packet a poll. A send is only queued,
@@ -571,6 +583,44 @@ control stages synchronously, as bdk does ("a PC completes them within
 microseconds"), each wait bounded at `USB_XFER_SYNCED_ENUM` tries, about
 2 s. XUSB's `init()` cannot fail, so "The USB controller did not come up."
 can only appear on Erista.
+
+Before the GUI hands over to another payload (the RAM test, or `!RUN`
+below), `gui_dbg_end()` gives the queue up to 300 ms to drain and stops the
+controller: it keeps a read queued, which it would go on filling by DMA in
+memory the next payload owns.
+
+### Commands from the PC
+
+A line that starts with `!` on the debug console is a command
+(`gui/gui_push.c`), so a PC on the USB-C port, or a bench UART, can put a
+new build on the SD card and start it with nobody at the console. The
+answer is one line, `+...` or `-ERR <reason>`:
+
+| Command | Answer, and what it does |
+|---|---|
+| `!PING` | `+PONG hwtest GUI <version>` |
+| `!PUT <path> <size> <crc32 hex>` | `+READY <size>`, then exactly `<size>` raw bytes; `+OK <path> <size> <crc>` once the file is on the card |
+| `!RUN` | `+OK starting hwtest.bin, <n> bytes`, then `bootloader/payloads/hwtest.bin` is started from the card, which brings up the `hwtest/gui.bin` now there |
+| `!BT OPEN`, `SCAN`, `LIST`, `CONNECT <n>`, `DISCONNECT`, `STATE`, `CLOSE`, `RAILPAIR` | the [Bluetooth test](bluetooth.md#from-a-pc), without the confirmation box |
+
+`!PUT` writes only the four files a release puts on the card
+(`hwtest/gui.bin`, `hwtest/libsys_minerva.bso`,
+`bootloader/payloads/hwtest.bin`, `bootloader/payloads/hwtest_ram.bin`),
+up to 8 MiB. Nothing is drawn while the bytes come, since at 115200 a
+frame's worth would overrun a UART's FIFO; a transfer that stops for 5 s
+fails. The CRC-32 (bdk's `crc32_calc`, the same as zlib's) is checked, the
+file is written as `<path>.new`, read back and checked again, and only then
+renamed over the old one, so a transfer cut short leaves the old file in
+place. `!RUN` stages the payload as the RAM test is staged
+(`ram_payload_run()`): USB stopped, the boot clocks back, the payload
+copied to 0x40010000 from IRAM. Over USB a whole release (about 1.3 MB)
+goes over in about a second.
+
+`host_tools/hwtest_push.py` speaks it from the PC, finding the port by its
+USB ID: `release` puts the four built files on the card (hwtest.bin last),
+runs it, waits for the port to come back and pings the new build; `log`
+streams the console and reconnects across restarts; `cmd` sends any
+command and can follow the log after it.
 
 ## Touchscreen test
 
@@ -674,17 +724,13 @@ On a failure the loader has powered the card down, so it is initialised
 again for later checks, and the window says "The SD card could not be
 read.", "hwtest_ram.bin is not on the SD card. Copy it to the root of the
 card." or "hwtest_ram.bin on the SD card is damaged. Copy it again."; the
-clocks stay up. A USB serial port is not stopped before the hand-off. On
-Mariko the XUSB rings sit in IRAM at `XUSB_RING_ADDR` (0x40020000), inside
-the range the relocator may copy the payload into (0x40010000 up to
-0x4003FF00); nothing in the code says what a live port does to a start.
-Moving the console to a UART in Custom Check before Start stops the
-controller (`usbser_stop()`).
+clocks stay up. The USB serial port is stopped before the hand-off
+(`gui_dbg_end()`, see [USB serial](#usb-serial)).
 
 ## Debug console lines
 
 ```
-=== hwtest GUI ===                     start-up, always on UART-B
+=== hwtest GUI === <version>           start-up, on UART-B and USB serial
 gui: DRAM <n> MHz (...)                the clocks, see Internals
 gui: BPMP boosted
 gui: measured BPMP <n> MHz, DRAM <n> MHz
@@ -696,6 +742,9 @@ gui: <n> frames, <n> ms avg, <n> ms worst, VIC wait <n> ms/frame
 gui: report: <n> pages, <n> labels, <n> px, built in <n> ms
 gui: debug console moves to <port>
 === hwtest GUI === debug console on <port>
+gui: push wrote <path>, <n> bytes      a !PUT, see Commands from the PC
+gui: bt <step>                         the Bluetooth test, see bluetooth.md
+gui: bt> <what> <code> len <n>: ...    its trace
 Rebooting (PMIC power cycle)...
 ```
 

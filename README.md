@@ -144,11 +144,12 @@ closing box needs a tap or POWER.
 |---|---|
 | **Home** | Health Check, Joy-Con, Touchscreen, Screen, Dock and RAM Test, and along the bottom Custom Check, Last Results, and Reboot / Power Off (each asks first). |
 | **Health Check** | The full sweep, with the steps ticked off. Then one row per part of the console saying in a few words whether it is fine; each opens to what was checked, what a problem means and what to try, and from there to the report pages behind it. The report is saved to the SD card. |
-| **Custom Check** | One checkbox per group of checks, then Run; what was not picked shows as "not checked". UART output picks where the debug console goes: UART-B on the right rail (the default), UART-C on the left rail (not on a Lite), UART-A on the board's test pads (cluster C: pad 3 TX, pad 2 RX), all 115200 8N1 at 1.8 V, or USB serial over the USB-C port, which Windows 10 and later, Linux and macOS use without a driver (USB ID 1209:0001). |
+| **Custom Check** | One checkbox per group of checks, then Run; what was not picked shows as "not checked". UART output picks where the debug console goes: UART-B on the right rail (the default), UART-C on the left rail (not on a Lite), UART-A on the board's test pads (cluster C: pad 3 TX, pad 2 RX), all 115200 8N1 at 1.8 V, or USB serial over the USB-C port, which Windows 10 and later, Linux and macOS use without a driver (USB ID 1209:0001) and which is open beside any of them anyway. |
 | **Joy-Con** | Both Joy-Cons (or a Lite's built-in controls): every button reachable on the rail (not SL/SR) lights up when pressed and stays marked, and each stick is drawn live and judged against the Joy-Con's own calibration, read from its flash (or against its own travel when it has none). A connection that drops and comes back is counted, which is what a worn rail looks like. |
 | **Rumble** | The left Joy-Con buzzes for half a second, then the right. One that stays still has a dead motor or driver. |
 | **Motion** | The Joy-Cons' accelerometer and gyroscope, live. A sensor that reads about 1 g and no rotation while the Joy-Con is held still passes; one that sends zeros or nothing fails. |
 | **IR Camera** | The right Joy-Con's infrared camera, live, in four sizes from 40 x 30 up to its full 320 x 240. A start-up step that fails is named with what the Joy-Con answered. |
+| **Bluetooth** | From the Joy-Con screen, on a Lite too: finds a Joy-Con or a Pro Controller in pairing mode, connects to it over the console's own radio and shows every button, SL and SR included, and its sticks. Pair from rails puts the Joy-Cons on the rails in pairing mode, no sync button needed. See [docs/bluetooth.md](docs/bluetooth.md). |
 | **Touchscreen** | A grid over the whole panel that turns green under a finger; what never turns green does not respond. |
 | **Screen** | The whole panel in one colour at a time, then white while the backlight dims and brightens: dead pixels, lines, patches and an uneven or flickering backlight show against a flat field. |
 | **Dock Test** | The USB-C port's PD controller (BM92T36) watched live, then the handshake the console performs when it docks, step by step, and with a TV on the dock, this screen on the TV at 1280x720. Reset Chip restarts a controller that does not answer. Nothing of it runs from the health check; see [docs/dock.md](docs/dock.md). |
@@ -161,7 +162,10 @@ The status bar shows the console's serial number when `sd:/switch/prod.keys`
 UART-B stays the debug console while the GUI runs, with the `R` reboot, unless
 Custom Check moves it. A rail's port stops being the console once a Joy-Con is
 attached there. `R` is also taken on UART-B while no Joy-Con has it, whichever
-port is picked.
+port is picked. The USB serial port carries everything as well, from the
+GUI's start (it keeps the last 16 KiB until a PC opens it), and takes the
+commands that [push a build](#pushing-a-build-over-usb-host_toolshwtest_pushpy)
+over it.
 
 ## What's reported
 
@@ -205,6 +209,25 @@ Joy-Con right rail as a UART tap, see this gbatemp guide:
 Without an adapter on the rail, the Raw state page reads its RX line LOW; that
 is not a fault.
 
+## Pushing a build over USB (`host_tools/hwtest_push.py`)
+
+With the GUI running and the console's USB-C port on a PC, a new build goes
+onto the SD card and starts without touching the console:
+
+```sh
+python host_tools/hwtest_push.py release      # the four built files, run, then the new build's log
+python host_tools/hwtest_push.py log          # the debug console, live; reconnects across restarts
+python host_tools/hwtest_push.py ping         # which build is running
+python host_tools/hwtest_push.py cmd BT STATE # any console command, see docs/gui.md
+```
+
+The port is found by its USB ID (1209:0001; `--port` overrides). The GUI only
+writes the four files a release puts on the card, each checked by CRC-32,
+written beside the old one, read back and only then renamed over it, and then
+starts `bootloader/payloads/hwtest.bin` from the card, which brings up the new
+GUI. The first GUI with this has to reach the card by hand. The commands are
+in [docs/gui.md](docs/gui.md#commands-from-the-pc).
+
 ## Technical notes
 
 | Note | Covers |
@@ -220,8 +243,9 @@ is not a fault.
 | [docs/inputs.md](docs/inputs.md) | The touch panel, the ambient light sensor, the Joy-Con rail lines and the input census |
 | [docs/raw-state.md](docs/raw-state.md) | The pin census, the UART debug port, reset reason, PMIC latches, RTC and PMC scratch |
 | [docs/verdict.md](docs/verdict.md) | How findings become the Verdict: the registry, cross-checks, rows, aggregation and colours |
-| [docs/gui.md](docs/gui.md) | The GUI: hand-over from hwtest.bin, input, screens, the health check, Results, Custom Check, the debug console |
+| [docs/gui.md](docs/gui.md) | The GUI: hand-over from hwtest.bin, input, screens, the health check, Results, Custom Check, the debug console and the PC's commands |
 | [docs/joycon.md](docs/joycon.md) | The Joy-Con Test, rumble, motion sensors, the IR camera and the attach glow |
+| [docs/bluetooth.md](docs/bluetooth.md) | The Bluetooth test: the host on the console's radio, pairing, what it took on real hardware, pairing mode from the rails |
 | [docs/dock.md](docs/dock.md) | The Dock Test's handshake and the TV picture |
 | [docs/ramtest.md](docs/ramtest.md) | The dedicated RAM test: starting it, training, menus, reading a failure |
 | [docs/internals.md](docs/internals.md) | The GUI's clocks and fonts, BDK's SDRAM parameter scratch |
@@ -271,7 +295,7 @@ docs/                - technical notes
 third_party/hekate/  - pinned Hekate BDK git submodule
 third_party/Atmosphere/ - pinned Atmosphere MTC/timing-table git submodule
 ramtest/             - universal Erista/Mariko DRAM diagnostic + Atmosphere MTC adaptation patch
-host_tools/          - ImGui + pyserial UART viewer (parser, GUI, replay)
+host_tools/          - ImGui + pyserial UART viewer (parser, GUI, replay), and hwtest_push.py (log and push builds over USB)
 ```
 
 ## Acknowledgements

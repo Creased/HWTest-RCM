@@ -9,6 +9,8 @@ and the [README](../README.md) has the overview.
 ## Bluetooth radio probe
 
 Most of hwtest reads. This probe writes, and it is worth knowing what it does.
+(The GUI's [Bluetooth test](bluetooth.md) brings the radio up the same way
+and then talks to a controller.)
 
 The Switch's Broadcom CYW4356 carries WLAN on **PCIe** and Bluetooth on a
 plain 4-wire UART (Tegra UART-D, `0x70006300`). The UART half is the cheap

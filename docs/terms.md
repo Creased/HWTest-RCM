@@ -261,6 +261,18 @@ sink, partition); both meanings are listed.
 | **ROM phase** | The radio running from its built-in ROM before the OS loads its firmware; it then takes only the command-register write |
 | **backplane, ChipID** | The radio's internal bus and the die's own ID on it, both out of reach until a firmware download |
 | **RF** | Radio frequency: the antenna side of the radio, which no probe tests |
+| **inquiry, page** | Searching for devices that answer (inquiry), and calling one by its address to connect (paging); a page that gets no answer ends in "page timeout" (`0x04`) |
+| **RSSI** | Received signal strength, in dBm, as the radio reports it for each device found |
+| **class of device** | Three bytes a device announces when found; a Joy-Con or a Pro Controller is `0x002508` (peripheral, gamepad) |
+| **pairing mode, sync button** | A controller ready to pair with a new host, shown by its sweeping lights; the small button that puts it there |
+| **SSP, just works, IO capability** | Secure Simple Pairing, Bluetooth 2.1's pairing; its mode for devices with no screen or keys; and what each side says it can show or type |
+| **link key, bonding** | The key pairing produces, and keeping it so the pair can reconnect without pairing again |
+| **L2CAP, PSM, CID** | The layer that multiplexes channels over a link; the number a channel is opened to (`0x11` HID control, `0x13` HID interrupt); a channel's id at each end |
+| **echo request** | An L2CAP ping a device must answer, whatever is above it |
+| **HID DATA, SET_REPORT, HANDSHAKE** | HID over Bluetooth: a report sent on the interrupt channel; one sent on the control channel; the control channel's answer to it |
+| **basic rate, EDR** | Bluetooth's original packet types (DM1, DH1, DH3 and so on) and the faster Enhanced Data Rate ones (2-DH1 and so on), which the radio's ROM does not receive |
+| **sniff mode** | A low-power link mode in which a device listens only every so many slots |
+| **slot, poll interval** | Bluetooth's 625 us time unit; how often the master gives a slave its turn to send (40 slots by default) |
 
 ## PCIe
 
