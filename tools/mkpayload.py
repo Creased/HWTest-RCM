@@ -7,15 +7,17 @@ fixed 66216-byte exploit prologue and then truncates the whole buffer to
 192 KiB without reporting anything. Payloads past 130392 bytes are silently
 cut off and the console jumps into a partial image.
 
-The codec is the BCL LZ77 that BDK already carries as LZ_Uncompress(), so the
-on-device side is hekate's decompressor; only the packer lives here. It is
-imported from the injector, which has been round-tripping the same format
-over the wire for a while.
+Two codecs. The default is the BCL LZ77 that BDK already carries as
+LZ_Uncompress(), which the RAM test's loader uses; its packer is
+tools/lzpack.py. --codec deflate is raw deflate (RFC 1951, zlib at level 9),
+which packs the main payload about a fifth tighter and which the main
+payload's loader expands with loader/inflate.c.
 
-    mkpayload.py <payload.bin> <out.lz> <out.h>
+    mkpayload.py [--codec lz|deflate] <payload.bin> <out.lz> <out.h>
 """
 import os
 import sys
+import zlib
 
 # The packer sits alongside this script. It must not be imported from a
 # sibling checkout: CI builds this repository alone.
@@ -24,18 +26,34 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lzpack
 
 
-def main():
-    if len(sys.argv) != 4:
-        sys.exit("usage: mkpayload.py <payload.bin> <out.lz> <out.h>")
+def _deflate(raw):
+    c = zlib.compressobj(9, zlib.DEFLATED, -15, 9)
+    return c.compress(raw) + c.flush()
 
-    raw_path, lz_path, h_path = sys.argv[1:4]
+
+def _inflate(packed):
+    return zlib.decompress(packed, -15)
+
+
+def main():
+    args = sys.argv[1:]
+    codec = "lz"
+    if len(args) >= 2 and args[0] == "--codec":
+        codec = args[1]
+        args = args[2:]
+    if len(args) != 3 or codec not in ("lz", "deflate"):
+        sys.exit("usage: mkpayload.py [--codec lz|deflate] <payload.bin> <out.lz> <out.h>")
+
+    raw_path, lz_path, h_path = args
     raw = open(raw_path, "rb").read()
-    packed = lzpack.compress(raw)
+    pack, unpack = (_deflate, _inflate) if codec == "deflate" else \
+                   (lzpack.compress, lzpack.decompress)
+    packed = pack(raw)
 
     # Refuse to ship something that would not survive the round trip: a
     # corrupted payload would fail as a hang on a repair tech's console, with
     # nothing on screen to say why.
-    if lzpack.decompress(packed) != raw:
+    if unpack(packed) != raw:
         sys.exit("mkpayload: compressed image does not round-trip")
 
     open(lz_path, "wb").write(packed)
@@ -48,8 +66,8 @@ def main():
             f.write("".join("0x%02X," % b for b in packed[i:i + 16]) + "\n")
         f.write("};\n")
 
-    print("  packed %d -> %d bytes (%.1f%%)"
-          % (len(raw), len(packed), 100.0 * len(packed) / len(raw)))
+    print("  packed %d -> %d bytes (%.1f%%, %s)"
+          % (len(raw), len(packed), 100.0 * len(packed) / len(raw), codec))
 
 
 if __name__ == "__main__":

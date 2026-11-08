@@ -4,6 +4,36 @@
 
 See [the RAM test](ramtest.md).
 
+## The self-extracting loader
+
+TegraRcmSmash, which TegraRcmGUI drives, prepends a 66216-byte exploit
+prologue and silently truncates the buffer to 192 KiB, so a payload past
+130392 bytes reaches the console cut short. hwtest.bin is therefore
+`loader/`, about 1.8 KB of code at `0x40007000`, with the payload trailing
+it as a raw deflate stream (`tools/mkpayload.py --codec deflate`, zlib at
+level 9, about 62% of the linked image). The Makefile fails a `.bin` over
+`RCM_LIMIT`.
+
+`loader.c` boosts the BPMP, copies the stream back to front so it ends at
+`0x40038000`, expands it forward into `0x40008000` with `inflate.c` and
+jumps there. `inflate.c` is a small decoder after the shape of zlib's
+`puff.c`: canonical Huffman codes decoded a bit at a time, every table on
+the stack (`.bss` would sit where the output goes), no window of its own.
+It stops the loader on a damaged stream instead of jumping into it.
+
+Output and input share IRAM, so two things are checked at build time.
+`tools/check_inflate.py` replays the stream through zlib one input byte at
+a time and fails the build if the writer ever comes within 256 bytes of
+the first unread input byte; it prints the smallest gap it saw (about
+30 KB today). `loader/link.ld` asserts that the loader's code and
+constants end at or below `0x40008000`, where the output starts.
+
+The RAM test builds the same `loader.c` with `-DLDR_LZ` and keeps the BCL
+LZ77 image, checked by `ramtest/check_overlap.py`
+([the RAM test](ramtest.md)). hwtest.bin moved to deflate when the LZ
+image ran out of room under the limit: deflate packs it about a fifth
+tighter.
+
 ## The GUI's clocks
 
 hwtest.bin runs the probes with the BPMP at 408 MHz and the DRAM at its

@@ -265,9 +265,24 @@ void do_reboot(void)
 void uart_poll_reboot(void)
 {
     u8 c;
+#ifdef HWTEST_GUI
+    /* The GUI also takes "!..." command lines from a PC (gui/gui_push.c),
+     * which it does not read during a check; an R inside one ("!RUN") is
+     * not a reboot. */
+    static bool in_cmd;
+#endif
     while (DBG_RECV(&c)) {
+#ifdef HWTEST_GUI
+        if (c == '!')
+            in_cmd = true;
+        else if (c == '\n')
+            in_cmd = false;
+        if (c == 'R' && !in_cmd)
+            do_reboot();
+#else
         if (c == 'R')
             do_reboot();
+#endif
         uart_ungetc(c);
     }
 }

@@ -60,7 +60,8 @@ heap is linked, and after `hw_init` the stack grows down from
 `IPL_LOAD_ADDR`. The only DRAM it keeps, the SMMU directory and the
 framebuffer, is skipped by the sweeps ([below](#reaching-all-of-dram)).
 
-The `.bin` is self-extracting, with hwtest.bin's loader, because
+The `.bin` is self-extracting, with hwtest.bin's `loader/` built with
+`-DLDR_LZ` (hwtest.bin's own build expands deflate instead), because
 TegraRcmSmash prepends a 66216-byte prologue and silently truncates the
 buffer to 192 KiB; the Makefile fails above `RCM_LIMIT` = 130392 bytes
 ("universal RAM payload exceeds the RCM injector limit"). The stub moves

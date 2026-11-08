@@ -31,6 +31,7 @@ static lv_coord_t s_hdr_x;      /* where the next header button's text ends */
 static void *s_hdr_first;       /* the focus list node of the leftmost one   */
 static lv_obj_t *s_bar, *s_bar_batt, *s_bar_more;
 static char s_name[32];
+static serial_res_t s_serial = SERIAL_NO_STORAGE;
 
 lv_theme_t *gui_th(void)    { return s_th; }
 lv_group_t *gui_group(void) { return s_group; }
@@ -136,10 +137,11 @@ void gui_hide(lv_obj_t *obj, bool hide)
 
 /* The status bar names the console by the serial on its sticker. That lives
  * in the encrypted PRODINFO, readable only with sd:/switch/prod.keys (from
- * Lockpick_RCM); without the keys the bar shows nothing there. */
+ * Lockpick_RCM); without the keys the bar says so instead. */
 static void _console_name(void)
 {
-    if (!console_serial(s_name))
+    s_serial = console_serial(s_name);
+    if (s_serial != SERIAL_OK)
         s_name[0] = 0;
 }
 
@@ -698,10 +700,20 @@ void gui_statusbar_init(void)
     lv_obj_align(s_bar, NULL, LV_ALIGN_IN_BOTTOM_LEFT, 0, 0);
     lv_obj_set_click(s_bar, false);
 
+    const char *left = NULL;
+    char buf[64];
     if (s_name[0]) {
-        char buf[48];
         s_printf(buf, "#" GUI_HEX_ACCENT " " ICON_ID "#  %s", s_name);
-        lv_obj_t *l = gui_label(s_bar, &gui_font_20, GUI_COL_TEXT, buf);
+        left = buf;
+    } else if (s_serial == SERIAL_NO_KEYS) {
+        left = "#" GUI_HEX_WARN " " ICON_WARN "  No prod.keys on the SD card#";
+    } else if (s_serial == SERIAL_KEYS_UNREAD) {
+        left = "#" GUI_HEX_WARN " " ICON_WARN "  prod.keys could not be read#";
+    } else if (s_serial == SERIAL_BAD_KEYS) {
+        left = "#" GUI_HEX_WARN " " ICON_WARN "  prod.keys is not this console's#";
+    }
+    if (left) {
+        lv_obj_t *l = gui_label(s_bar, &gui_font_20, GUI_COL_TEXT, left);
         lv_obj_align(l, NULL, LV_ALIGN_IN_LEFT_MID, GUI_MARGIN, 0);
     }
 

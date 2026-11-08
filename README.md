@@ -5,8 +5,10 @@
 An active RCM (Recovery Mode) hardware diagnostic that probes the Switch from
 the BPMP (the Boot and Power Management Processor, the small ARM7 core that
 runs before the main CPU comes up), then reports identity / status / faults to
-the LCD and UART-B (Joy-Con right rail, 115200 8N1). The report can also be
-written to `backup/<emmc_serial>/hwtest.txt` on the SD card.
+the LCD and the debug console: UART-B on the Joy-Con right rail (115200 8N1),
+unless [`hwtest/hwtest.ini`](#the-debug-console-hwtesthwtestini) moves it. The
+report can also be written to `backup/<emmc_serial>/hwtest.txt` on the SD
+card.
 
 The intended audience is repair techs working on Erista or Mariko consoles
 (handheld, V2, OLED, Lite). The output is colour-coded so a unit with a
@@ -115,7 +117,8 @@ SD card
 |   `-- hwtest_ram.bin       build-ram/hwtest_ram.bin (only for the RAM test)
 `-- hwtest/
     |-- gui.bin              build-gui/gui.bin
-    `-- libsys_minerva.bso   build-gui/libsys_minerva.bso (optional, faster drawing)
+    |-- libsys_minerva.bso   build-gui/libsys_minerva.bso (optional, faster drawing)
+    `-- hwtest.ini           the debug console's port (optional, see below)
 ```
 
 `make sdzip` packs exactly that, to be unzipped at the root of the card; every
@@ -144,7 +147,7 @@ closing box needs a tap or POWER.
 |---|---|
 | **Home** | Health Check, Joy-Con, Touchscreen, Screen, Dock and RAM Test, and along the bottom Custom Check, Last Results, and Reboot / Power Off (each asks first). |
 | **Health Check** | The full sweep, with the steps ticked off. Then one row per part of the console saying in a few words whether it is fine; each opens to what was checked, what a problem means and what to try, and from there to the report pages behind it. The report is saved to the SD card. |
-| **Custom Check** | One checkbox per group of checks, then Run; what was not picked shows as "not checked". UART output picks where the debug console goes: UART-B on the right rail (the default), UART-C on the left rail (not on a Lite), UART-A on the board's test pads (cluster C: pad 3 TX, pad 2 RX), all 115200 8N1 at 1.8 V, or USB serial over the USB-C port, which Windows 10 and later, Linux and macOS use without a driver (USB ID 1209:0001) and which is open beside any of them anyway. |
+| **Custom Check** | One checkbox per group of checks, then Run; what was not picked shows as "not checked". UART output moves the debug console for the session: UART-B on the right rail, UART-C on the left rail (not on a Lite), UART-A on the board's test pads (cluster C: pad 3 TX, pad 2 RX), all 115200 8N1 at 1.8 V, or USB serial over the USB-C port, which Windows 10 and later, Linux and macOS use without a driver (USB ID 1209:0001) and which is open beside any of them anyway. |
 | **Joy-Con** | Both Joy-Cons (or a Lite's built-in controls): every button reachable on the rail (not SL/SR) lights up when pressed and stays marked, and each stick is drawn live and judged against the Joy-Con's own calibration, read from its flash (or against its own travel when it has none). A connection that drops and comes back is counted, which is what a worn rail looks like. |
 | **Rumble** | The left Joy-Con buzzes for half a second, then the right. One that stays still has a dead motor or driver. |
 | **Motion** | The Joy-Cons' accelerometer and gyroscope, live. A sensor that reads about 1 g and no rotation while the Joy-Con is held still passes; one that sends zeros or nothing fails. |
@@ -157,11 +160,12 @@ closing box needs a tap or POWER.
 | **RAM Test** | Starts `hwtest_ram.bin` from the card, as the text launcher's RAM test does. |
 
 The status bar shows the console's serial number when `sd:/switch/prod.keys`
-(from Lockpick_RCM) is on the card, and the battery as Nyx shows it.
+(from Lockpick_RCM) is on the card, and says in yellow when it is missing or
+unusable; the battery is on the right, as Nyx shows it.
 
-UART-B stays the debug console while the GUI runs, with the `R` reboot, unless
-Custom Check moves it. A rail's port stops being the console once a Joy-Con is
-attached there. `R` is also taken on UART-B while no Joy-Con has it, whichever
+The GUI's debug console starts on the port `hwtest/hwtest.ini` picks, UART-B
+when it does not say, with the `R` reboot, and Custom Check can move it. A
+rail's port stops being the console once a Joy-Con is attached there. `R` is also taken on UART-B while no Joy-Con has it, whichever
 port is picked. The USB serial port carries everything as well, from the
 GUI's start (it keeps the last 16 KiB until a PC opens it), and takes the
 commands that [push a build](#pushing-a-build-over-usb-host_toolshwtest_pushpy)
@@ -186,6 +190,30 @@ in [docs/terms.md](docs/terms.md).
 | Display | DSI panel ID + backlight PWM + GPIO state |
 | Inputs | FTS touch FW + electrical ITO open/short test + ALS + Joy-Con rails + buttons + AC adapter |
 | Raw state | GPIO pin census + UART debug port + reset reason + PMC scratch |
+
+## The debug console (`hwtest/hwtest.ini`)
+
+The debug console is UART-B on the Joy-Con right rail. A console whose right
+rail is damaged, or whose USB-C port does not work, can have it elsewhere
+with `hwtest/hwtest.ini` on the SD card:
+
+```ini
+# uart-b: the right Joy-Con rail (the default, also without this file)
+# uart-c: the left Joy-Con rail (not on a Lite)
+# uart-a: the board's test pads (cluster C: pad 3 TX, pad 2 RX)
+console=uart-b
+# THE GUI ONLY: 1 also sends its console over the USB-C port (the default), 0 leaves USB off
+gui_usb=1
+```
+
+All three UARTs run at 115200 8N1 with 1.8 V levels. Both stages read
+`console`: hwtest.bin when its text launcher takes over (it says
+`[boot] console moves to UART-A` on UART-B first), the GUI when it starts.
+`gui_usb` is the GUI's alone: hwtest.bin has no USB, so the USB serial port
+exists only once the GUI runs. Without a readable SD card nothing can be
+read, and the console stays on UART-B. `R` still reboots from UART-B
+whichever port is picked, as long as no Joy-Con has the right rail.
+`hwtest_push.py console uart-a` writes the file over USB.
 
 ## Host viewer (`host_tools/hwtest_viewer.py`)
 
@@ -219,10 +247,13 @@ python host_tools/hwtest_push.py release      # the four built files, run, then 
 python host_tools/hwtest_push.py log          # the debug console, live; reconnects across restarts
 python host_tools/hwtest_push.py ping         # which build is running
 python host_tools/hwtest_push.py cmd BT STATE # any console command, see docs/gui.md
+python host_tools/hwtest_push.py console uart-a   # write hwtest/hwtest.ini (--gui-usb 0|1), from the next start
+python host_tools/hwtest_push.py report       # copy the last saved report off the card (also: ls, get)
 ```
 
 The port is found by its USB ID (1209:0001; `--port` overrides). The GUI only
-writes the four files a release puts on the card, each checked by CRC-32,
+writes the four files a release puts on the card and `hwtest/hwtest.ini`,
+each checked by CRC-32,
 written beside the old one, read back and only then renamed over it, and then
 starts `bootloader/payloads/hwtest.bin` from the card, which brings up the new
 GUI. The first GUI with this has to reach the card by hand. The commands are
@@ -248,7 +279,7 @@ in [docs/gui.md](docs/gui.md#commands-from-the-pc).
 | [docs/bluetooth.md](docs/bluetooth.md) | The Bluetooth test: the host on the console's radio, pairing, what it took on real hardware, pairing mode from the rails |
 | [docs/dock.md](docs/dock.md) | The Dock Test's handshake and the TV picture |
 | [docs/ramtest.md](docs/ramtest.md) | The dedicated RAM test: starting it, training, menus, reading a failure |
-| [docs/internals.md](docs/internals.md) | The GUI's clocks and fonts, BDK's SDRAM parameter scratch |
+| [docs/internals.md](docs/internals.md) | The self-extracting loader, the GUI's clocks and fonts, BDK's SDRAM parameter scratch |
 | [docs/terms.md](docs/terms.md) | The terms and abbreviations used in the report, the README and these notes |
 
 ## Layout
@@ -257,6 +288,7 @@ in [docs/gui.md](docs/gui.md#commands-from-the-pc).
 hwtest.h             - shared header: logging + finding APIs, probe prototypes
 core.c               - page table, the sweep, step breadcrumbs, UART reboot hook
 main.c               - boot flow, text launcher hand-off, pager + UART command loop
+dbgcfg.c/.h          - hwtest/hwtest.ini: the debug console's port, for hwtest.bin and the GUI
 log.c                - logging to the LCD, the debug console and the report capture
 dx.c                 - diagnostic-finding registry consumed by the verdict
 report.c             - SD report writer (backup/<emmc_serial>/hwtest.txt)
@@ -278,7 +310,7 @@ dpout.c/.h           - DisplayPort out to the dock: DPAUX1, DPCD, EDID, SOR1 lin
 cpu_mbox.h           - BPMP <-> CPU0 mailbox, shared by both toolchains
 cpu_stub/            - AArch64 stub that does the PCIe half on CPU0
 emmcsn.c             - Hekate-style backup/<emmc_serial>/<sub>/<file> path
-loader/              - self-extracting stub: build/hwtest.bin is it plus the LZ-packed payload, under the 130392-byte RCM limit
+loader/              - self-extracting stub: build/hwtest.bin is it plus the deflate-packed payload, under the 130392-byte RCM limit
 ui_menu.c/.h         - physical-key launcher, custom probe selection, GUI and RAM payload loaders
 ui_theme.h           - shared LCD colors and menu geometry used by hwtest and RAM UI
 chain_reloc.S        - tiny upper-IRAM relocator used for the hwtest -> RAM handoff
@@ -289,7 +321,8 @@ memory_map.h         - BDK's memory map with the SDRAM parameter scratch moved p
 gui/                 - LVGL front end (`make gui`): screens, theme, plain-language texts, fonts
 tools/mkfont.py      - rasterises the GUI's fonts into LVGL's format
 tools/mksdzip.py     - packs the SD card zip (`make sdzip`)
-tools/mkpayload.py   - LZ-packs the linked payload for the loader (tools/lzpack.py is the compressor)
+tools/mkpayload.py   - packs the linked payload for the loader: deflate for hwtest.bin, LZ for the RAM test (tools/lzpack.py)
+tools/check_inflate.py - proves at build time that hwtest.bin's in-place expansion never overwrites unread input
 Makefile             - devkitARM normal payload, `make ram`, `make gui`, AArch64 CPU0-stub build support
 docs/                - technical notes
 third_party/hekate/  - pinned Hekate BDK git submodule

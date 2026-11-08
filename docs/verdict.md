@@ -474,8 +474,13 @@ counts categories. Categories are listed worst first, a soft one as
 "Working normally". A category's screen lists warn and fail checks first,
 with the gui_text.c sentences, or "This check failed." / "This check gave
 a warning." when there is none. A soft check reads "Not checked on this
-console." and an untested one "Not picked for this check.". The detail
-follows as "Technical: <detail>", except on ok and soft checks.
+console." and an untested one "Not picked for this check.". A check whose
+gui_text.c entry gives its own soft sentence (`soft_say`) shows that one
+instead, with the yellow warning mark, because the owner can fix it:
+`prodinfo` "no keys" reads "Not read: there is no usable
+sd:/switch/prod.keys on the SD card. Lockpick_RCM writes it; with it the
+serial number and the factory data are checked too." The detail follows
+as "Technical: <detail>", except on ok and soft checks.
 
 Text and GUI part ways in four places:
 
@@ -484,8 +489,10 @@ Text and GUI part ways in four places:
 - `cal0_hash` and `prodinfo` are both called "Factory data".
 - A soft WARN still counts as warn in the text verdict and turns its row
   yellow. Without prod.keys the Storage row reads `warn (no keys)`, unless
-  an earlier key supplies the reason. The GUI shows the same finding as
-  working normally, with a grey mark.
+  an earlier key supplies the reason. The GUI shows the Storage category
+  as working normally, since nothing is wrong with the hardware, but says
+  the keys are missing in the status bar, on every screen, and on the
+  Factory data row, marked as a warning.
 - In a Power-only run, `soc_pmic_otp` shows as "Not picked for this
   check." because its row did not run. The finding is still recorded,
   though, so a failure still carries its "Technical:" line.

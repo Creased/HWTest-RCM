@@ -192,7 +192,16 @@ void probe_dram(void);
 void probe_clocks(void);
 void probe_storage(void);
 void probe_serial(void);
-bool console_serial(char out[25]);  /* PRODINFO serial, needs prod.keys */
+/* The PRODINFO serial, which needs sd:/switch/prod.keys: SERIAL_OK, or why
+ * it could not be read. */
+typedef enum {
+    SERIAL_OK,
+    SERIAL_NO_KEYS,      /* no sd:/switch/prod.keys                        */
+    SERIAL_KEYS_UNREAD,  /* there, but it could not be read                */
+    SERIAL_BAD_KEYS,     /* read, but no usable bis_key_00 for this unit   */
+    SERIAL_NO_STORAGE,   /* no eMMC, or the SD card could not be read      */
+} serial_res_t;
+serial_res_t console_serial(char out[25]);
 void probe_partitions(void);
 void probe_emmc_health(void);
 void probe_gpt(void);
@@ -251,8 +260,13 @@ int  dbg_recv(u8 *c);
 #define DBG_RECV(c)      dbg_recv(c)
 void gui_log_capture(u32 color, const char *s, u32 n);
 #else
-#define DBG_SEND(buf, n) uart_send_crlf(UART_B, buf, n)
-#define DBG_RECV(c)      (uart_recv(UART_B, c, 1) == 1)
+/* The console's UART: UART_B, the right rail, unless hwtest/hwtest.ini
+ * picks the left rail or the test pads (main.c, dbgcfg.h). R is also
+ * taken on UART-B whichever it is. */
+extern u32 g_dbg_uart;
+int dbg_uart_recv(u8 *c);
+#define DBG_SEND(buf, n) uart_send_crlf(g_dbg_uart, buf, n)
+#define DBG_RECV(c)      dbg_uart_recv(c)
 #endif
 
 #endif /* HWTEST_H */

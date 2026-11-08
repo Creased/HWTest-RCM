@@ -146,6 +146,7 @@ const char *gui_dbg_name(gui_dbg_port_t p);
 void gui_dbg_usb_start(void);            /* the USB serial port beside it, at start */
 void gui_dbg_end(void);                  /* before handing over to another payload */
 u32  gui_dbg_read(u8 *buf, u32 max);     /* from the port the last byte came from  */
+bool gui_dbg_bulk(const u8 *buf, u32 n); /* a long answer: USB only when it is up  */
 void gui_cmd_poll(void);                 /* R, and the PC's commands: gui_push.c   */
 
 extern lv_style_t gui_st_mono;

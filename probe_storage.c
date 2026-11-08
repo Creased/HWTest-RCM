@@ -481,12 +481,23 @@ static void gpt_free_bounded(link_t *gpt)
 /* Just the serial, read the way probe_serial reads it, for the GUI's
  * header: no logging, no findings, and nothing decrypted is kept. Needs
  * the eMMC and SD up and sd:/switch/prod.keys; false without any of them. */
-bool console_serial(char out[25])
+serial_res_t console_serial(char out[25])
 {
     out[0] = 0;
     const char *key_err;
-    if (!g_emmc_ok || load_bis_keys_from_sd(&key_err))
-        return false;
+    if (!g_emmc_ok)
+        return SERIAL_NO_STORAGE;
+    int kr = load_bis_keys_from_sd(&key_err);
+    /* load_bis_keys_from_sd(): 1 no file; 2 out of memory, 3 read failed;
+     * 4..6 no or a malformed bis_key_00; 7, 8 no SD card. */
+    if (kr == 1)
+        return SERIAL_NO_KEYS;
+    if (kr == 2 || kr == 3)
+        return SERIAL_KEYS_UNREAD;
+    if (kr == 7 || kr == 8)
+        return SERIAL_NO_STORAGE;
+    if (kr)
+        return SERIAL_BAD_KEYS;
 
     LIST_INIT(gpt);
     emmc_gpt_parse(&gpt);
@@ -503,7 +514,7 @@ bool console_serial(char out[25])
     }
     gpt_free_bounded(&gpt);
     clear_loaded_bis_keyslots(true);
-    return out[0] != 0;
+    return out[0] ? SERIAL_OK : SERIAL_BAD_KEYS;
 }
 
 void probe_serial(void)

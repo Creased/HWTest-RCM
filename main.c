@@ -21,6 +21,7 @@
 
 #include "hwtest.h"
 #include "ui_menu.h"
+#include "dbgcfg.h"
 
 
 
@@ -163,9 +164,47 @@ static void render_page(int idx)
     g_pages[idx].fn();
 }
 
+u32 g_dbg_uart = UART_B;
+
+/* Boot progress on the console's UART: UART-B until hwtest/hwtest.ini
+ * moves it. */
 static void _boot_trace(const char *msg)
 {
-    uart_send_crlf(UART_B, (u8 *)msg, strlen(msg));
+    uart_send_crlf(g_dbg_uart, (u8 *)msg, strlen(msg));
+}
+
+int dbg_uart_recv(u8 *c)
+{
+    if (uart_recv(g_dbg_uart, c, 1) == 1)
+        return 1;
+    /* R from a bench on the right rail, whichever UART is the console. */
+    return g_dbg_uart != UART_B && uart_recv(UART_B, c, 1) == 1;
+}
+
+/* The console's UART from hwtest/hwtest.ini (dbgcfg.h), read once the text
+ * launcher takes over: the right rail unless the file picks the left rail
+ * or the test pads. Said on UART-B before the move. */
+static void _console_from_config(void)
+{
+    dbg_cfg_t cfg;
+    if (!sdmmc_get_sd_inserted() || sd_mount())
+        return;
+    dbg_cfg_read(&cfg);
+    sd_end();
+    char line[64];
+    if (cfg.bad[0]) {
+        s_printf(line, "[boot] console=%s unknown\n", cfg.bad);
+        _boot_trace(line);
+    }
+    if (cfg.uart < 0 || cfg.uart == UART_B ||
+        (cfg.uart == UART_C && fuse_read_hw_type() == FUSE_NX_HW_TYPE_HOAG))
+        return;
+    s_printf(line, "[boot] console moves to UART-%c\n", 'A' + cfg.uart);
+    _boot_trace(line);
+    dbg_uart_up(cfg.uart);
+    g_dbg_uart = cfg.uart;
+    s_printf(line, "\n=== hwtest === console on UART-%c\n", 'A' + cfg.uart);
+    DBG_SEND((u8 *)line, strlen(line));
 }
 
 void ipl_main(void)
@@ -265,6 +304,7 @@ void ipl_main(void)
     /* The GUI stage, when the SD card has one; returns only when it does
      * not (or VOL- is held), and the text launcher below takes over. */
     ui_boot_gui();
+    _console_from_config();
 
     /* Launcher. Keep it minimal: display plus VOL+/VOL-/POWER only.
      * Touch and diagnostic subsystems are initialized only by tests that need

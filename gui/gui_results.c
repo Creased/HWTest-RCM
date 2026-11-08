@@ -380,7 +380,11 @@ static void _detail_row(const char *key, st_t st, void *vctx)
     lv_obj_t *row = gui_focus_row(ctx->page, ctx->y, ctx->w);
     /* Mark and name are separate labels: the names, and the text under
      * them, line up 40 px in from the mark whatever its width. */
-    lv_obj_t *ml = gui_label(row, &gui_font_30, GUI_COL_TEXT, _mark(st));
+    /* A check that could not run for want of something the owner can
+     * provide is marked as a warning, so it is seen. */
+    bool ask = st == ST_SOFT && t && t->soft_say;
+    lv_obj_t *ml = gui_label(row, &gui_font_30, GUI_COL_TEXT,
+                             ask ? _mark(ST_WARN) : _mark(st));
     lv_obj_set_pos(ml, 16, 14);
     lv_obj_t *nl = gui_label(row, &gui_font_30, GUI_COL_TEXT, t ? t->name : key);
     lv_obj_set_pos(nl, 16 + 40, 14);
@@ -392,7 +396,7 @@ static void _detail_row(const char *key, st_t st, void *vctx)
     else if (st == ST_WARN)
         why = t && t->warn ? t->warn : "This check gave a warning.";
     else if (st == ST_SOFT)
-        why = "Not checked on this console.";
+        why = t && t->soft_say ? t->soft_say : "Not checked on this console.";
     else if (st == ST_UNTESTED)
         why = "Not picked for this check.";
     if (why) {

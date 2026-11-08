@@ -341,8 +341,9 @@ sink, partition); both meanings are listed.
 | **PRBS, xorshift** | Pseudo-random bit sequence, and the shift-and-XOR generator the RAM test makes it with |
 | **alias** | Two addresses that reach the same cells, the fault an address-decoder defect causes |
 | **carveout** | A DRAM region set aside at boot, which the RAM test skips |
-| **self-extracting loader** | `loader/`: a stub that unpacks the LZ-packed image in IRAM, so that the injected file stays under the 130392-byte RCM limit |
-| **LZ, LZ77, BCL, LZ4** | Compression: the payload packer is the LZ77 coder of the Basic Compression Library (BCL) that bdk carries; the Mariko DRAM tables are LZ4 |
+| **self-extracting loader** | `loader/`: a stub that unpacks the packed image in IRAM, so that the injected file stays under the 130392-byte RCM limit |
+| **deflate** | The compression of zip and gzip (RFC 1951); hwtest.bin's payload is packed with it, and `loader/inflate.c` unpacks it |
+| **LZ, LZ77, BCL, LZ4** | Compression: the RAM test's packer is the LZ77 coder of the Basic Compression Library (BCL) that bdk carries; the Mariko DRAM tables are LZ4 |
 | **relocator** | `chain_reloc`: a tiny copy loop in upper IRAM that moves a staged payload to `0x40010000` and starts it |
 
 ## Storage and the game card

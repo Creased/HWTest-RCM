@@ -138,7 +138,10 @@ static const gui_check_text_t s_checks[] = {
       "may come from another console.", NULL, NULL },
     { "prodinfo", "Factory data",
       "The factory data could not be read back correctly.",
-      NULL, "no keys" },
+      NULL, "no keys",
+      "Not read: there is no usable sd:/switch/prod.keys on the SD card. Lockpick_RCM "
+      "writes it; with it the serial number and the factory data are "
+      "checked too." },
     { "gpt", "Storage layout",
       NULL,
       "The table that describes the internal storage is damaged. The "

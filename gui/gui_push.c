@@ -6,7 +6,10 @@
  * can put a new build on the SD card and start it, with nobody at the
  * console (host_tools/hwtest_push.py drives it):
  *
- *   !PING                        +PONG hwtest GUI <version>
+ *   !PING                        +PONG hwtest GUI <version>, console on <port>
+ *   !LS <folder>                 +OK <folder>: name size, sub/, ...
+ *   !GET <path>                  +DATA <size> <crc32>, =<hex> lines, +END
+ *                                (backup/ and hwtest/ only, read only)
  *   !PUT <path> <size> <crc32>   +READY <size>, then exactly <size> raw
  *                                bytes; +OK <path> <size> <crc32> once
  *                                it is on the card and read back
@@ -17,7 +20,8 @@
  *                                the Bluetooth test, driven from the PC
  *
  * Anything that goes wrong answers -ERR and a reason. Only the four files
- * a release puts on the card can be written, each through a temporary file
+ * a release puts on the card, and hwtest/hwtest.ini (the console setting),
+ * can be written, each through a temporary file
  * that replaces it once it has been checked, so a transfer that dies half
  * way leaves the old one in place.
  */
@@ -28,12 +32,15 @@
 #define PUT_MAX       (8 * 1024 * 1024)
 #define PUT_IDLE_MS   5000      /* a transfer that stops this long fails */
 #define RUN_MAX       0x2FF00   /* what the chain loader can stage        */
+#define GET_MAX       (4 * 1024 * 1024)
+#define GET_LINE      48        /* file bytes per =<hex> line            */
 
 static const char *const s_files[] = {
     "hwtest/gui.bin",
     "hwtest/libsys_minerva.bso",
     "bootloader/payloads/hwtest.bin",
     "bootloader/payloads/hwtest_ram.bin",
+    "hwtest/hwtest.ini",                 /* the console setting, gui_dbg.c */
 };
 
 static char s_line[160];
@@ -51,6 +58,16 @@ static bool _allowed(const char *path)
         if (!strcmp(path, s_files[i]))
             return true;
     return false;
+}
+
+/* Read back only where hwtest itself writes: backup/ (the reports) and
+ * hwtest/ (screenshots, Dock Test logs, the settings). */
+static bool _readable(const char *path)
+{
+    if (strstr(path, ".."))
+        return false;
+    return !strcmp(path, "backup") || !strcmp(path, "hwtest") ||
+           !strncmp(path, "backup/", 7) || !strncmp(path, "hwtest/", 7);
 }
 
 static u32 _parse_u32(const char **p, u32 base)
@@ -157,6 +174,81 @@ static void _put(const char *args)
     gui_uart_puts(buf);
 }
 
+static void _ls(const char *path)
+{
+    static char buf[1024];
+    if (!_readable(path)) {
+        _reply("-ERR only backup/ and hwtest/ can be read\n");
+        return;
+    }
+    if (!g_sd_ok || sd_mount()) {
+        _reply("-ERR no SD card\n");
+        return;
+    }
+    DIR dir;
+    FILINFO fi;
+    if (f_opendir(&dir, path) != FR_OK) {
+        _reply("-ERR no such folder\n");
+        return;
+    }
+    s_printf(buf, "+OK %s:", path);
+    while (f_readdir(&dir, &fi) == FR_OK && fi.fname[0]) {
+        if (strlen(buf) + strlen(fi.fname) + 16 > sizeof(buf) - 8) {
+            strcat(buf, " ...");
+            break;
+        }
+        if (fi.fattrib & AM_DIR)
+            s_printf(buf + strlen(buf), " %s/", fi.fname);
+        else
+            s_printf(buf + strlen(buf), " %s %d", fi.fname, (u32)fi.fsize);
+    }
+    f_closedir(&dir);
+    strcat(buf, "\n");
+    _reply(buf);
+}
+
+/* +DATA <size> <crc32>, then the file as =<hex> lines, then +END. Hex
+ * keeps it plain text, so nothing on the way turns a byte into another. */
+static void _get(const char *path)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    char buf[2 * GET_LINE + 4];
+    if (!_readable(path)) {
+        _reply("-ERR only backup/ and hwtest/ can be read\n");
+        return;
+    }
+    if (!g_sd_ok || sd_mount()) {
+        _reply("-ERR no SD card\n");
+        return;
+    }
+    u32 size = 0;
+    u8 *data = sd_file_read(path, &size);
+    if (!data) {
+        _reply("-ERR no such file\n");
+        return;
+    }
+    if (size > GET_MAX) {
+        free(data);
+        _reply("-ERR too large\n");
+        return;
+    }
+    s_printf(buf, "+DATA %d %08X\n", size, crc32_calc(0, data, size));
+    _reply(buf);
+    for (u32 i = 0; i < size; i += GET_LINE) {
+        u32 n = size - i < GET_LINE ? size - i : GET_LINE, k = 0;
+        buf[k++] = '=';
+        for (u32 j = 0; j < n; j++) {
+            buf[k++] = hex[data[i + j] >> 4];
+            buf[k++] = hex[data[i + j] & 15];
+        }
+        buf[k++] = '\n';
+        if (!gui_dbg_bulk((const u8 *)buf, k))
+            break;
+    }
+    free(data);
+    _reply("+END\n");
+}
+
 static void _run(void)
 {
     char buf[96];
@@ -256,10 +348,15 @@ static void _command(const char *line)
 {
     char buf[96];
     if (!strcmp(line, "PING")) {
-        s_printf(buf, "+PONG hwtest GUI %s\n", GUI_VERSION);
+        s_printf(buf, "+PONG hwtest GUI %s, console on %s\n", GUI_VERSION,
+                 gui_dbg_name(gui_dbg_port()));
         _reply(buf);
     } else if (!strncmp(line, "PUT ", 4)) {
         _put(line + 4);
+    } else if (!strncmp(line, "LS ", 3)) {
+        _ls(line + 3);
+    } else if (!strncmp(line, "GET ", 4)) {
+        _get(line + 4);
     } else if (!strcmp(line, "RUN")) {
         _run();
     } else if (!strncmp(line, "BT ", 3)) {

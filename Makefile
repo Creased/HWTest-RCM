@@ -36,7 +36,7 @@ DEFAULT_BIN := $(DEFAULT_DIR)/$(TARGET).bin
 # Object list for the normal launcher payload.
 COMMON_OBJS = \
     start.o exception_handlers.o chain_reloc.o main.o core.o ui_menu.o stubs.o emmcsn.o \
-    log.o dx.o report.o verdict.o \
+    log.o dx.o report.o verdict.o dbgcfg.o \
     probe_soc.o probe_power.o probe_memclk.o probe_inputs.o probe_bt.o probe_audio.o probe_audio_beep.o \
     probe_wifi.o probe_display.o probe_storage.o probe_gamecard.o probe_lowlevel.o \
     gfx.o \
@@ -271,9 +271,9 @@ LDRDIR        := loader
 $(DEFAULT_DIR)/$(TARGET)_unc.bin: $(DEFAULT_DIR)/$(TARGET).elf
 	$(OBJCOPY) -O binary $< $@
 
-$(DEFAULT_DIR)/payload_lz.h: $(DEFAULT_DIR)/$(TARGET)_unc.bin
-	@python3 tools/mkpayload.py $< $(DEFAULT_DIR)/payload.lz $@
-	@python3 ramtest/check_overlap.py $(DEFAULT_DIR)/payload.lz $<
+$(DEFAULT_DIR)/payload_lz.h: $(DEFAULT_DIR)/$(TARGET)_unc.bin tools/mkpayload.py tools/check_inflate.py
+	@python3 tools/mkpayload.py --codec deflate $< $(DEFAULT_DIR)/payload.lz $@
+	@python3 tools/check_inflate.py $(DEFAULT_DIR)/payload.lz $<
 
 LDR_CFLAGS := $(ARCH) -Os -g -nostdlib -ffunction-sections -fdata-sections               -fomit-frame-pointer -std=gnu11 -I$(BDKDIR) -I$(DEFAULT_DIR)               -I$(LDRDIR) -DBL_MAGIC=$(IPL_MAGIC)
 LDR_LDFLAGS := $(ARCH) -nostartfiles -Wl,--nmagic,--gc-sections                -Xlinker --defsym=LDR_LOAD_ADDR=$(LDR_LOAD_ADDR) -T $(LDRDIR)/link.ld
@@ -282,10 +282,10 @@ $(DEFAULT_DIR)/ldr_loader.o: $(LDRDIR)/loader.c $(DEFAULT_DIR)/payload_lz.h
 	$(CC) $(LDR_CFLAGS) -c -o $@ $<
 $(DEFAULT_DIR)/ldr_start.o: $(HEKATE)/loader/start.S
 	$(CC) $(LDR_CFLAGS) -c -o $@ $<
-$(DEFAULT_DIR)/ldr_lz.o: $(BDKDIR)/libs/compr/lz.c
+$(DEFAULT_DIR)/ldr_inflate.o: $(LDRDIR)/inflate.c $(LDRDIR)/inflate.h
 	$(CC) $(LDR_CFLAGS) -c -o $@ $<
 
-LDR_OBJS := $(DEFAULT_DIR)/ldr_start.o $(DEFAULT_DIR)/ldr_loader.o $(DEFAULT_DIR)/ldr_lz.o
+LDR_OBJS := $(DEFAULT_DIR)/ldr_start.o $(DEFAULT_DIR)/ldr_loader.o $(DEFAULT_DIR)/ldr_inflate.o
 
 $(DEFAULT_DIR)/loader.elf: $(LDR_OBJS) $(LDRDIR)/link.ld
 	$(CC) $(LDR_LDFLAGS) -o $@ $(LDR_OBJS) -lgcc
@@ -325,7 +325,7 @@ VPATH += gui $(LVGLDIR)/lv_core $(LVGLDIR)/lv_draw $(LVGLDIR)/lv_fonts \
 
 GUI_OBJS = \
     gui_start.o exception_handlers.o chain_reloc.o core.o ui_menu.o stubs.o emmcsn.o \
-    log.o dx.o report.o verdict.o \
+    log.o dx.o report.o verdict.o dbgcfg.o \
     probe_soc.o probe_power.o probe_memclk.o probe_inputs.o probe_bt.o probe_audio.o probe_audio_beep.o \
     probe_wifi.o probe_display.o probe_storage.o probe_gamecard.o probe_lowlevel.o \
     gfx.o \

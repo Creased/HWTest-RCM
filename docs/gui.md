@@ -17,8 +17,8 @@ and the GUI's clocks and fonts in [Internals](internals.md).
 ## Hand-over from hwtest.bin
 
 hwtest.bin itself reaches the console through `loader/`, a self-extracting
-LZ stub, because TegraRcmSmash silently drops everything past 130392 bytes
-of payload. gui.bin never goes through it: hwtest.bin reads it whole off
+stub ([Internals](internals.md#the-self-extracting-loader)), because
+TegraRcmSmash silently drops everything past 130392 bytes of payload. gui.bin never goes through it: hwtest.bin reads it whole off
 the card. `main.c` calls `ui_boot_gui()` (`ui_menu.c`) once the display is
 up, the "hwtest - initialising" splash drawn and the backlight started,
 before the text launcher. It returns only when the GUI does not start, and
@@ -122,8 +122,12 @@ most every 2 s), `gui_cmd_poll()` (`R` and the PC's commands, see
 serial port), a VOL sample and a 500 us sleep.
 
 The status bar along the bottom shows on the left the console's serial
-from PRODINFO, which decrypts only with `sd:/switch/prod.keys`; without
-the keys that side is empty. On the right, refreshed every 5 s, the
+from PRODINFO, which decrypts only with `sd:/switch/prod.keys`. Without
+it that side says why, in yellow (`console_serial()` tells them apart):
+"No prod.keys on the SD card", "prod.keys could not be read" or
+"prod.keys is not this console's" (no usable `bis_key_00`, or CAL0 does
+not decrypt with it). It stays empty when the eMMC or the SD card did not
+come up. On the right, refreshed every 5 s, the
 battery as Nyx shows it: the MAX17050's `RepSOC` to a tenth of a percent,
 the symbol red at 15% and below, a bolt while the BQ24193 reports a charge
 status, the current (green into the battery, red out of it) and the cell
@@ -428,12 +432,16 @@ The right half, "UART output", picks the debug console's port.
 
 ## The debug console
 
-The text payload's console is UART-B on the right rail, for good. The
-GUI's can be moved from Custom Check, one port at a time, for the rest of
-the session. The USB serial port also runs beside whichever port is picked,
-from the first lines of `ipl_main` (`gui_dbg_usb_start()`), so a PC on the
-USB-C port gets everything, start-up included, and can send the same
-commands, with no choice made on the console:
+The console starts on the port `hwtest/hwtest.ini` picks
+(`dbgcfg.c`, shared with hwtest.bin; see
+[the README](../README.md#the-debug-console-hwtesthwtestini)), UART-B when
+the file is not there or does not say, and Custom Check can move it, one
+port at a time, for the rest of the session. The USB serial port also runs
+beside whichever port is picked, from the first lines of `ipl_main`
+(`gui_dbg_usb_start()`), so a PC on the USB-C port gets everything,
+start-up included, and can send the same commands, with no choice made on
+the console. `gui_usb=0` in the file turns it off; it is read only once
+the GUI is up, so the start-up lines have gone over USB by then:
 
 | Port | Where |
 |---|---|
@@ -459,6 +467,16 @@ charge-enable PCC3 driven high, which bridge the rail's pads to the SoC,
 then its pinmux and clock; for UART-B main.c did the same. Nothing of it
 is undone on moving away: the old UART stays configured, and UART-C's 5 V
 and charge-enable stay on. USB stays up beside the new port.
+
+`gui_dbg_init()` reads the file once the rails are set up, after
+`jc_init_hw()`. A `console=` value it does not know is reported as "gui:
+hwtest/hwtest.ini: console=<value> unknown" and the console stays where it
+is; `gui_usb=0` sends "gui: gui_usb=0, USB serial off" and stops USB; a
+port that cannot be had (UART-C on a Lite, or a rail a Joy-Con has taken)
+gives "gui: <port> is not there, the console stays on <port>". The text
+launcher reads the same file in `main.c` (`_console_from_config()`), once
+`ui_boot_gui()` has returned, and moves its own console with the same
+`dbg_uart_up()`; the GUI's `gui_usb` means nothing to it.
 
 Moving sends "gui: debug console moves to <port>" on the old port and
 "=== hwtest GUI === debug console on <port>" on the new one. Either is
@@ -519,8 +537,10 @@ outside a command line reboots, a `!` starts one
 ([Commands from the PC](#commands-from-the-pc)), anything else is ignored.
 During the health check `uart_poll_reboot()` (`core.c`) reads it instead,
 before every page and step and in the probes' long waits
-(`msleep_poll()`), and takes only `R`; nothing reads it while anything
-else blocks the loop, a screenshot included.
+(`msleep_poll()`), and takes only `R`, though not inside a `!` command
+line, so a PC's `!RUN` sent during a check does not reboot the console
+(the command itself is lost); nothing reads it while anything else blocks
+the loop, a screenshot included.
 
 `do_reboot()` prints "Rebooting (PMIC power cycle)...", gives the line
 50 ms, sets `MAX77620_ONOFFCNFG2_SFT_RST_WK` and writes
@@ -598,15 +618,17 @@ answer is one line, `+...` or `-ERR <reason>`:
 
 | Command | Answer, and what it does |
 |---|---|
-| `!PING` | `+PONG hwtest GUI <version>` |
+| `!PING` | `+PONG hwtest GUI <version>, console on <port>` |
 | `!PUT <path> <size> <crc32 hex>` | `+READY <size>`, then exactly `<size>` raw bytes; `+OK <path> <size> <crc>` once the file is on the card |
+| `!LS <folder>` | `+OK <folder>: <name> <size> ... <sub>/ ...` on one line; only `backup` and `hwtest` and what is under them |
+| `!GET <path>` | `+DATA <size> <crc32 hex>`, the file as `=<hex>` lines of 48 bytes, then `+END`; only under `backup/` and `hwtest/`, up to 4 MiB. The lines go over USB alone when it is up, paced by the PC |
 | `!RUN` | `+OK starting hwtest.bin, <n> bytes`, then `bootloader/payloads/hwtest.bin` is started from the card, which brings up the `hwtest/gui.bin` now there |
 | `!BT OPEN`, `SCAN`, `LIST`, `CONNECT <n>`, `DISCONNECT`, `STATE`, `CLOSE`, `RAILPAIR` | the [Bluetooth test](bluetooth.md#from-a-pc), without the confirmation box |
 
 `!PUT` writes only the four files a release puts on the card
 (`hwtest/gui.bin`, `hwtest/libsys_minerva.bso`,
-`bootloader/payloads/hwtest.bin`, `bootloader/payloads/hwtest_ram.bin`),
-up to 8 MiB. Nothing is drawn while the bytes come, since at 115200 a
+`bootloader/payloads/hwtest.bin`, `bootloader/payloads/hwtest_ram.bin`)
+and `hwtest/hwtest.ini`, up to 8 MiB. Nothing is drawn while the bytes come, since at 115200 a
 frame's worth would overrun a UART's FIFO; a transfer that stops for 5 s
 fails. The CRC-32 (bdk's `crc32_calc`, the same as zlib's) is checked, the
 file is written as `<path>.new`, read back and checked again, and only then
@@ -620,7 +642,13 @@ goes over in about a second.
 USB ID: `release` puts the four built files on the card (hwtest.bin last),
 runs it, waits for the port to come back and pings the new build; `log`
 streams the console and reconnects across restarts; `cmd` sends any
-command and can follow the log after it.
+command and can follow the log after it; `console uart-b|uart-c|uart-a
+[--gui-usb 0|1]` writes `hwtest/hwtest.ini`; `ls`, `get` and `report`
+(the last saved `backup/<eMMC serial>/hwtest.txt`) read the card back.
+Only `+...` and `-ERR` lines count as answers, since a report's page
+headers start with `---`. Every wait has a deadline as
+well as a quiet spell, since the GUI logs its frame times every couple of
+seconds while it draws.
 
 ## Touchscreen test
 

@@ -22,6 +22,7 @@
  */
 #include "gui.h"
 #include "usbser.h"
+#include "../dbgcfg.h"
 
 static gui_dbg_port_t s_port = DBG_UART_B;
 static bool s_taken[2];          /* UART-B, UART-C: a Joy-Con (a Lite's controls) owns it */
@@ -65,54 +66,53 @@ static bool _rail_attached(gui_dbg_port_t p)
     return on;
 }
 
-/* The port set up as main.c sets UART-B up for the console: the controller
- * at 115200 with no line inversion (the Joy-Con driver inverts a rail's TX),
- * its RX pin owned by the UART and pulled up, as a bench adapter leaves the
- * line floating between bytes, and on the left rail the 5 V and the
- * charge-enable that bridge the rail's pads to the SoC (main.c does the
- * right rail's). Then whatever the line caught while it settled is
- * drained. */
+/* The port set up as main.c sets UART-B up for the console (dbgcfg.c,
+ * shared with hwtest.bin): 115200 with no line inversion (the Joy-Con
+ * driver inverts a rail's TX), RX pulled up, and on the left rail the 5 V
+ * and the charge-enable that bridge its pads to the SoC. */
 static void _uart_up(gui_dbg_port_t p)
 {
-    u32 u = s_uart[p];
-
-    if (p == DBG_UART_A) {
-        pinmux_config_uart(UART_A);
-        clock_enable_uart(UART_A);
-    } else if (p == DBG_UART_C) {
-        regulator_5v_enable(REGULATOR_5V_JC_L);
-        PINMUX_AUX(PINMUX_AUX_SPDIF_IN) = PINMUX_PULL_DOWN | 1;
-        gpio_direction_output(GPIO_PORT_CC, GPIO_PIN_3, GPIO_HIGH);
-        gpio_config(GPIO_PORT_D, GPIO_PIN_1, GPIO_MODE_SPIO);
-        gpio_config(GPIO_PORT_D, GPIO_PIN_0, GPIO_MODE_SPIO);
-        pinmux_config_uart(UART_C);
-        clock_enable_uart(UART_C);
-    } else {
-        gpio_config(GPIO_PORT_G, GPIO_PIN_1, GPIO_MODE_SPIO);
-    }
-    uart_init(u, 115200, UART_AO_TX_AO_RX);
-    uart_invert(u, false, UART_INVERT_TXD | UART_INVERT_RTS);
-    PINMUX_AUX(PINMUX_AUX_UARTX_RX(u)) = PINMUX_INPUT_ENABLE | PINMUX_PULL_UP;
-
-    usleep(2000);
-    u8 c;
-    while (uart_recv(u, &c, 1) == 1)
-        ;
+    dbg_uart_up(s_uart[p]);
 }
 
 /* After jc_init_hw(), which re-muxed both rails for Joy-Cons: with nothing
- * on the right rail, UART-B goes back to being the console. A Lite's
- * controls are on UART-C, and bdk leaves its UART-B alone. */
+ * on the right rail, UART-B is brought back up (for R, and as the console
+ * when it is picked). A Lite's controls are on UART-C, and bdk leaves its
+ * UART-B alone. Then hwtest/hwtest.ini, as hwtest.bin reads it (dbgcfg.h):
+ * console= picks the UART, the right rail when the file does not say, and
+ * gui_usb=0, the GUI's own key, turns off the USB serial port that runs
+ * beside it. */
 void gui_dbg_init(bool lite)
 {
     s_lite = lite;
     s_taken[DBG_UART_C] = lite;
-    if (lite)
-        return;
-    if (_rail_attached(DBG_UART_B))
-        s_taken[DBG_UART_B] = true;
-    else
-        _uart_up(DBG_UART_B);
+    if (!lite) {
+        if (_rail_attached(DBG_UART_B))
+            s_taken[DBG_UART_B] = true;
+        else
+            _uart_up(DBG_UART_B);
+    }
+
+    dbg_cfg_t cfg = { -1, -1, "" };
+    if (g_sd_ok && !sd_mount())
+        dbg_cfg_read(&cfg);
+    char line[96];
+    if (cfg.bad[0]) {
+        s_printf(line, "gui: " DBG_CFG_PATH ": console=%s unknown\n", cfg.bad);
+        dbg_send((u8 *)line, strlen(line));
+    }
+    if (cfg.gui_usb == 0 && s_usb) {
+        dbg_send((const u8 *)"gui: gui_usb=0, USB serial off\n", 31);
+        usbser_stop();
+        s_usb = false;
+    }
+    gui_dbg_port_t want = cfg.uart == UART_A ? DBG_UART_A :
+                          cfg.uart == UART_C ? DBG_UART_C : DBG_UART_B;
+    if (want != s_port && !gui_dbg_set(want)) {
+        s_printf(line, "gui: %s is not there, the console stays on %s\n",
+                 s_name[want], s_name[s_port]);
+        dbg_send((u8 *)line, strlen(line));
+    }
 }
 
 /* Before each Joy-Con poll. The driver releases both rails' TX pins to look
@@ -139,6 +139,24 @@ void gui_dbg_poll(void)
 }
 
 /* The USB serial port beside the console, from the GUI's start. */
+/* A long answer to a PC's command (a file, gui_push.c): over USB alone
+ * when it is up, since at 115200 it would hold a bench UART for minutes,
+ * and paced by the PC, whose queue drops what it cannot hold. False when
+ * the PC stops taking it. */
+bool gui_dbg_bulk(const u8 *buf, u32 n)
+{
+    if (!s_usb) {
+        dbg_send(buf, n);
+        return true;
+    }
+    usbser_send(buf, n);
+    u32 t0 = get_tmr_ms();
+    while (!usbser_tx_empty())
+        if (get_tmr_ms() - t0 > 2000)
+            return false;
+    return true;
+}
+
 void gui_dbg_usb_start(void)
 {
     s_usb = usbser_start();

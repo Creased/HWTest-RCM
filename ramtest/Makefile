@@ -130,7 +130,7 @@ $(OUT)/payload_lz.h: $(UNC_BIN) $(ROOT)/tools/mkpayload.py $(ROOT)/tools/lzpack.
 
 LDR_CFLAGS := $(ARCH) -Os -g -nostdlib -ffunction-sections -fdata-sections \
     -fomit-frame-pointer -std=gnu11 -I$(BDKDIR) -I$(OUT) -I$(LDRDIR) \
-    -DBL_MAGIC=$(IPL_MAGIC)
+    -DBL_MAGIC=$(IPL_MAGIC) -DLDR_LZ
 LDR_LDFLAGS := $(ARCH) -nostartfiles -Wl,--nmagic,--gc-sections \
     -Xlinker --defsym=LDR_LOAD_ADDR=$(LDR_LOAD_ADDR) -T $(LDRDIR)/link.ld
 

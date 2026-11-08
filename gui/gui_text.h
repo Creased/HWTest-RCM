@@ -13,6 +13,8 @@ typedef struct {
     const char *fail;    /* a FAIL in plain words (NULL: never fails)    */
     const char *soft;    /* a WARN whose reason starts with this is only */
                          /* "not checked", not something to worry about */
+    const char *soft_say;/* what that "not checked" means (NULL: the     */
+                         /* plain "Not checked on this console.")        */
 } gui_check_text_t;
 
 const gui_check_text_t *gui_check_text(const char *key);

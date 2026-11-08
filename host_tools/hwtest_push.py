@@ -9,7 +9,12 @@ on the SD card and started from the PC with nobody at the console:
     hwtest_push.py log [--seconds N] [--out FILE]   the debug log, live
     hwtest_push.py ping                              which build is running
     hwtest_push.py cmd BT SCAN [--follow N]          any command, then the log
+    hwtest_push.py console uart-b|uart-c|uart-a [--gui-usb 0|1]
+                                                     write hwtest/hwtest.ini
     hwtest_push.py put SRC DEST [SRC DEST ...]       files onto the SD card
+    hwtest_push.py ls backup                         a folder (backup/, hwtest/)
+    hwtest_push.py get PATH [DEST]                   a file off the card
+    hwtest_push.py report [--out FILE]               the last saved report
     hwtest_push.py run                               start hwtest.bin again
     hwtest_push.py release [--build DIR]             all four built files,
                                                      then run, then the log
@@ -67,10 +72,12 @@ class Console:
         except Exception:
             pass
 
-    def lines(self, timeout):
-        """Lines as they come, until `timeout` seconds pass with none."""
-        last = time.time()
-        while time.time() - last < timeout:
+    def lines(self, timeout, total=None):
+        """Lines as they come, until `timeout` seconds pass with none, or
+        `total` seconds in all: the GUI logs every couple of seconds while
+        it draws, so a quiet spell alone may never come."""
+        last = start = time.time()
+        while time.time() - last < timeout and                 (total is None or time.time() - start < total):
             chunk = self.ser.read(4096)
             if chunk:
                 last = time.time()
@@ -80,9 +87,10 @@ class Console:
                 yield line.rstrip(b"\r").decode("ascii", "replace")
 
     def answer(self, timeout):
-        """The next +... or -... line; log lines met on the way are shown."""
-        for line in self.lines(timeout):
-            if line.startswith("+") or line.startswith("-"):
+        """The next +... or -ERR line within `timeout` seconds; log lines
+        met on the way (a report's "--- Page ---" among them) are shown."""
+        for line in self.lines(timeout, total=timeout):
+            if line.startswith("+") or line.startswith("-ERR"):
                 return line
             if self.echo and line:
                 print("  | " + line)
@@ -145,13 +153,67 @@ def follow(con, seconds, out_path=None):
     """The log for `seconds`, printed and appended to out_path."""
     out = open(out_path, "a", encoding="utf-8") if out_path else None
     end = time.time() + seconds
-    for line in con.lines(timeout=max(0.5, end - time.time())):
+    for line in con.lines(timeout=seconds, total=seconds):
         print("  | " + line)
         if out:
             out.write("%s %s\n" % (time.strftime("%H:%M:%S"), line))
             out.flush()
         if time.time() >= end:
             break
+
+
+def get(con, path):
+    """A file off the SD card (backup/ or hwtest/), as bytes."""
+    ans = con.command("GET " + path, timeout=15)
+    if not ans or not ans.startswith("+DATA"):
+        sys.exit("%s: %s" % (path, ans or "no answer"))
+    _, size, crc = ans.split()
+    size, crc = int(size), int(crc, 16)
+    data = bytearray()
+    for line in con.lines(timeout=5, total=60 + size / 20000):
+        if line.startswith("="):
+            data += bytes.fromhex(line[1:])
+        elif line.startswith("+END"):
+            break
+    if len(data) != size or (zlib.crc32(data) & 0xFFFFFFFF) != crc:
+        sys.exit("%s: got %d of %d bytes, or a bad CRC" % (path, len(data), size))
+    return bytes(data)
+
+
+def cmd_ls(args):
+    con = open_console(args, echo=False)
+    print(con.command("LS " + args.path) or "no answer")
+    con.close()
+
+
+def cmd_get(args):
+    con = open_console(args, echo=False)
+    data = get(con, args.path)
+    con.close()
+    dest = args.dest or os.path.basename(args.path)
+    if dest == "-":
+        sys.stdout.write(data.decode("utf-8", "replace"))
+    else:
+        open(dest, "wb").write(data)
+        print("%s -> %s, %d bytes" % (args.path, dest, len(data)))
+
+
+def cmd_report(args):
+    """backup/<eMMC serial>/hwtest.txt, the last report either stage saved."""
+    con = open_console(args, echo=False)
+    ans = con.command("LS backup") or ""
+    if not ans.startswith("+OK"):
+        sys.exit("backup: %s" % (ans or "no answer"))
+    dirs = [w[:-1] for w in ans.split(":", 1)[1].split() if w.endswith("/")]
+    for d in dirs:
+        path = "backup/%s/hwtest.txt" % d
+        if ("hwtest.txt" not in (con.command("LS backup/" + d) or "")):
+            continue
+        data = get(con, path)
+        out = args.out or "hwtest_report_%s.txt" % d
+        open(out, "wb").write(data)
+        print("%s -> %s, %d bytes" % (path, out, len(data)))
+    con.close()
 
 
 def cmd_cmd(args):
@@ -177,7 +239,7 @@ def cmd_put(args):
     con.close()
 
 
-def run_and_reconnect(con, args, follow):
+def run_and_reconnect(con, args, follow_s):
     try:
         ans = con.command("RUN")
     except serial.SerialException:
@@ -197,10 +259,39 @@ def run_and_reconnect(con, args, follow):
     new = Console(port)
     ans = new.command("PING", timeout=10)
     print("now running: %s" % (ans or "no answer"))
-    if follow:
-        for line in new.lines(timeout=follow):
-            print("  | " + line)
+    if follow_s:
+        follow(new, follow_s)
     new.close()
+
+
+CONSOLE_INI = """# hwtest settings (hwtest/hwtest.ini), read at start-up.
+#
+# console: the debug console's UART, for hwtest.bin and the GUI.
+#   uart-b  the right Joy-Con rail (the default, also without this file)
+#   uart-c  the left Joy-Con rail (not on a Lite)
+#   uart-a  the board's test pads (cluster C: pad 3 TX, pad 2 RX)
+# All 115200 8N1 at 1.8 V.
+console=%s
+#
+# gui_usb: THE GUI ONLY (hwtest.bin has no USB). 1 also sends the GUI's
+# console over the USB-C port, a serial port on the PC (the default);
+# 0 leaves USB off.
+gui_usb=%d
+"""
+
+
+def cmd_console(args):
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".ini", delete=False,
+                                     newline="\n") as f:
+        f.write(CONSOLE_INI % (args.port_name, args.gui_usb))
+        path = f.name
+    con = open_console(args)
+    put(con, path, "hwtest/hwtest.ini")
+    con.close()
+    os.unlink(path)
+    print("console=%s gui_usb=%d from the next start (run, or reboot)"
+          % (args.port_name, args.gui_usb))
 
 
 def cmd_run(args):
@@ -235,6 +326,17 @@ def main():
     p.add_argument("--out", help="append the followed log to this file")
     p = sub.add_parser("put", help="files onto the SD card")
     p.add_argument("files", nargs="+", metavar="SRC DEST")
+    p = sub.add_parser("ls", help="list a folder on the card (backup/, hwtest/)")
+    p.add_argument("path")
+    p = sub.add_parser("get", help="copy a file off the card (backup/, hwtest/)")
+    p.add_argument("path")
+    p.add_argument("dest", nargs="?", help="local file, - for the screen")
+    p = sub.add_parser("report", help="copy the last saved report off the card")
+    p.add_argument("--out", help="local file (default hwtest_report_<serial>.txt)")
+    p = sub.add_parser("console", help="write hwtest/hwtest.ini: the console's UART")
+    p.add_argument("port_name", choices=["uart-b", "uart-c", "uart-a"])
+    p.add_argument("--gui-usb", type=int, choices=[0, 1], default=1,
+                   help="the GUI only: also over USB serial (default 1)")
     p = sub.add_parser("run", help="start hwtest.bin from the card again")
     p.add_argument("--follow", type=float, default=15, help="log seconds after")
     p = sub.add_parser("release", help="push the build, run it, show the log")
@@ -242,7 +344,8 @@ def main():
     p.add_argument("--follow", type=float, default=15, help="log seconds after")
     args = ap.parse_args()
     {"log": cmd_log, "ping": cmd_ping, "cmd": cmd_cmd, "put": cmd_put,
-     "run": cmd_run, "release": cmd_release}[args.cmd](args)
+     "console": cmd_console, "run": cmd_run, "release": cmd_release,
+     "ls": cmd_ls, "get": cmd_get, "report": cmd_report}[args.cmd](args)
 
 
 if __name__ == "__main__":
