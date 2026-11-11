@@ -543,7 +543,8 @@ int dpout_probe_sink(dpout_sink_t *s)
  * bit and its byte in the drive registers from that pad number (dp_lt.c
  * set_lt_config, sor.c tegra_sor_get_pd_tx_bitmap). coreboot drives SOR0
  * with the crossbar left in bypass, which is a different mapping. */
-static const u8 s_xbar[5] = { 2, 1, 0, 3, 4 };
+static u8 s_xbar[5] = { 2, 1, 0, 3, 4 };    /* dpout_lane_test may exchange [0] and [1] */
+static bool s_pol_invert;                   /* dpout_lane_test: SOR_XBAR_POL on lanes 0-2  */
 /* By pad: its byte in DC/PR/POSTCURSOR, and its PD_TXD power bit. */
 static const u8 s_pad_shift[4] = { 16, 8, 0, 24 };
 static const u8 s_pad_pd[4] = { BIT(2), BIT(1), BIT(0), BIT(3) };
@@ -1074,7 +1075,23 @@ static void _sor_xbar(void)
         val |= (u32)s_xbar[i] << (2 + 3 * i);
     }
     _sor_field(SOR_XBAR_CTRL, mask, val);
-    SOR(SOR_XBAR_POL) = 0;
+    /* XBAR_POL: one polarity bit per link 0 channel in bits 0-4 (link 1 in
+     * 5-9). The test inverts channels 0-2, which covers the two DP lanes
+     * whether the register counts channels before or after the crossbar
+     * (lanes 0 and 1 sit on pads 2 and 1); channel 2 carries nothing on a
+     * two-lane link. */
+    SOR(SOR_XBAR_POL) = s_pol_invert ? 0x07 : 0;
+}
+
+void dpout_lane_test(bool invert, bool swap)
+{
+    s_pol_invert = invert;
+    static const u8 normal[5] = { 2, 1, 0, 3, 4 };
+    memcpy(s_xbar, normal, sizeof(s_xbar));
+    if (swap) {
+        s_xbar[0] = normal[1];
+        s_xbar[1] = normal[0];
+    }
 }
 
 /* The termination calibration, as L4T does before the pads come up: the
@@ -1766,6 +1783,12 @@ static int _video_start(dpout_video_t *v, const dpout_sink_t *s, u32 fb)
     _vlog(v, line);
     _vlog(v, _mariko() ? "SOR1 macro up on its feedback clock, lanes powered (Mariko prods)"
                        : "SOR1 macro up on its feedback clock, lanes powered (Erista prods)");
+    if (s_pol_invert || s_xbar[0] != 2) {
+        s_printf(line, "BENCH TEST from hwtest.ini: lanes %s%s%s (xbar lane 0 -> pad %d, lane 1 -> pad %d)",
+                 s_pol_invert ? "inverted" : "", s_pol_invert && s_xbar[0] != 2 ? " and " : "",
+                 s_xbar[0] != 2 ? "exchanged" : "", s_xbar[0], s_xbar[1]);
+        _vlog(v, line);
+    }
 
     /* The sink awake, then the link. */
     b = POWER_D0;

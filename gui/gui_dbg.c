@@ -23,6 +23,7 @@
 #include "gui.h"
 #include "usbser.h"
 #include "../dbgcfg.h"
+#include "../dpout.h"
 
 static gui_dbg_port_t s_port = DBG_UART_B;
 static bool s_taken[2];          /* UART-B, UART-C: a Joy-Con (a Lite's controls) owns it */
@@ -93,12 +94,19 @@ void gui_dbg_init(bool lite)
             _uart_up(DBG_UART_B);
     }
 
-    dbg_cfg_t cfg = { -1, -1, "" };
+    dbg_cfg_t cfg = { -1, -1, -1, -1, "" };
     if (g_sd_ok && !sd_mount())
         dbg_cfg_read(&cfg);
     char line[96];
     if (cfg.bad[0]) {
         s_printf(line, "gui: " DBG_CFG_PATH ": console=%s unknown\n", cfg.bad);
+        dbg_send((u8 *)line, strlen(line));
+    }
+    if (cfg.dp_pol > 0 || cfg.dp_swap > 0) {  /* bench tests of the DisplayPort lanes */
+        dpout_lane_test(cfg.dp_pol > 0, cfg.dp_swap > 0);
+        s_printf(line, "gui: " DBG_CFG_PATH ": DP lanes %s%s%s for the Dock Test\n",
+                 cfg.dp_pol > 0 ? "inverted" : "", cfg.dp_pol > 0 && cfg.dp_swap > 0 ? " and " : "",
+                 cfg.dp_swap > 0 ? "exchanged" : "");
         dbg_send((u8 *)line, strlen(line));
     }
     if (cfg.gui_usb == 0 && s_usb) {

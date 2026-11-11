@@ -50,7 +50,7 @@ static bool _blank(char c) { return c == ' ' || c == '\t'; }
 
 void dbg_cfg_read(dbg_cfg_t *c)
 {
-    c->uart = c->gui_usb = -1;
+    c->uart = c->gui_usb = c->dp_pol = c->dp_swap = -1;
     c->bad[0] = 0;
     u32 size = 0;
     char *t = sd_file_read(DBG_CFG_PATH, &size);
@@ -83,6 +83,10 @@ void dbg_cfg_read(dbg_cfg_t *c)
             }
         } else if (_is(t + k, ke - k, "gui-usb") && w >= 8) {
             c->gui_usb = s_word_val[w];
+        } else if (_is(t + k, ke - k, "dp-pol") && w >= 8) {
+            c->dp_pol = s_word_val[w];
+        } else if (_is(t + k, ke - k, "dp-swap") && w >= 8) {
+            c->dp_swap = s_word_val[w];
         }
         i = e + 1;
     }

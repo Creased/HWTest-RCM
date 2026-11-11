@@ -9,6 +9,11 @@
  *   gui_usb=1        THE GUI ONLY (hwtest.bin has no USB): 1 also sends the
  *                    GUI's console over the USB-C port, a serial port on
  *                    the PC; 0 leaves USB off
+ *   dp_pol=0         THE DOCK TEST ONLY: 1 drives both DisplayPort lanes
+ *                    with inverted polarity (SOR_XBAR_POL), a bench test
+ *                    for a console whose DP pairs are swapped; 0 normal
+ *   dp_swap=0        THE DOCK TEST ONLY: 1 exchanges DP lanes 0 and 1 on
+ *                    the pads (the crossbar); 0 normal
  */
 #ifndef HWTEST_DBGCFG_H
 #define HWTEST_DBGCFG_H
@@ -20,6 +25,8 @@
 typedef struct {
     int uart;           /* UART_A, UART_B or UART_C; -1 not set           */
     int gui_usb;        /* 0 or 1; -1 not set                             */
+    int dp_pol;         /* 0 or 1; -1 not set: DP lanes inverted (test)   */
+    int dp_swap;        /* 0 or 1; -1 not set: DP lanes exchanged (test)  */
     char bad[16];       /* a console= value not understood, or ""         */
 } dbg_cfg_t;
 

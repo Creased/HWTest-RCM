@@ -85,5 +85,11 @@ int  dpout_video_start(dpout_video_t *v, const dpout_sink_t *s, u32 fb);
 void dpout_video_stop(void);
 bool dpout_video_on(void);
 void dpout_set_logger(void (*fn)(const char *));   /* the breadcrumbs */
+/* Bench tests of the lanes, from hwtest.ini (dp_pol, dp_swap): both lanes
+ * driven with inverted polarity, and / or lanes 0 and 1 exchanged on the
+ * pads. For a console whose DisplayPort pairs are suspected swapped: a
+ * Nintendo dock's STDP2550 needs the right polarity, a Realtek converter
+ * corrects it on its own. Set before the Dock Test runs. */
+void dpout_lane_test(bool invert, bool swap);
 
 #endif

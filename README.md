@@ -204,6 +204,12 @@ with `hwtest/hwtest.ini` on the SD card:
 console=uart-b
 # THE GUI ONLY: 1 also sends its console over the USB-C port (the default), 0 leaves USB off
 gui_usb=1
+# THE DOCK TEST ONLY, bench tests of the DisplayPort lanes (both default 0):
+# dp_pol=1 drives both lanes with inverted polarity, dp_swap=1 exchanges lanes 0 and 1.
+# For a console that trains Realtek docks (OLED, clones) but not a Nintendo dock's
+# STDP2550: if a Nintendo dock trains with dp_pol=1, the console's DP pairs are swapped.
+dp_pol=0
+dp_swap=0
 ```
 
 All three UARTs run at 115200 8N1 with 1.8 V levels. Both stages read
