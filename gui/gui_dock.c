@@ -558,12 +558,19 @@ static void _tv_link(void)
             s_printf(line, "gui: tv: failed at step %d: %s (%d us)\n", r, tv.why, us);
         } else {
             bool frames = tv.dc_frames != 0, under = (tv.dc_int & BIT(8)) != 0;
+            /* The STDP2550 (branch OUI 0080E1: the V1 / V2 Nintendo docks)
+             * never sets DPCD 205 bit 0, even while it shows the picture
+             * (the Erista on a known-good dock and a working Mariko on
+             * another, 2026-11-11): its sync bit says nothing, so it does
+             * not colour the line. The Realtek converters do set it. */
+            bool no_sync_bit = k.branch_oui[0] == 0x00 && k.branch_oui[1] == 0x80 &&
+                               k.branch_oui[2] == 0xE1;
+            bool link_ok = (tv.in_sync || no_sync_bit) && !tv.margin_errors;
             s_printf(buf + strlen(buf), "\n#%s %s  Link:# %dx %s Gbps%s, swing %d, %d errors%s.",
-                     tv.in_sync && !tv.margin_errors ? GUI_HEX_OK : GUI_HEX_FAIL,
-                     tv.in_sync && !tv.margin_errors ? ICON_OK : ICON_FAIL,
+                     link_ok ? GUI_HEX_OK : GUI_HEX_FAIL, link_ok ? ICON_OK : ICON_FAIL,
                      tv.lanes, tv.rate == 0x14 ? "5.4" : tv.rate == 0x0A ? "2.7" : "1.62",
-                     tv.assr ? ", ASSR" : "", tv.vs[0],
-                     tv.margin_errors, tv.in_sync ? "" : ", NOT in sync");
+                     tv.assr ? ", ASSR" : "", tv.vs[0], tv.margin_errors,
+                     tv.in_sync ? "" : no_sync_bit ? ", no sync bit" : ", NOT in sync");
             /* 74.25 MHz wanted; within 1 percent is right. */
             bool pclk_ok = tv.pclk_khz > 73500 && tv.pclk_khz < 75000;
             s_printf(buf + strlen(buf), "\n#%s %s  Head:# %d frames/100 ms, %d.%02d MHz%s, SOR %s.",

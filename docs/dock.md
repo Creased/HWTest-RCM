@@ -412,12 +412,18 @@ Otherwise:
 | Line | Shows | Green when |
 |---|---|---|
 | Sink | DPCD revision; downstream port (DP, VGA, HDMI or other); the TV's name from the EDID's name descriptor (`0xFC`), its three-letter maker code without one, or "no EDID." | always |
-| Link | lanes and rate, ", ASSR", lane 0's swing, the margin check's errors, ", NOT in sync" | port 0 in sync and no margin errors |
+| Link | lanes and rate, ", ASSR", lane 0's swing, the margin check's errors, ", NOT in sync" (", no sync bit" on an STDP2550) | no margin errors, and port 0 in sync unless the converter has no sync bit |
 | Head | frames per 100 ms, pixel clock in MHz, ", UNDERFLOW" or ", NOT 74.25", "SOR sees it" or "sees nothing" | frames counted, no underflow, pixel clock within 1 percent (73.5 to 75 MHz, exclusive) |
 
 In sync is DPCD `205` bit 0, read 85 ms after the attach and again a moment
 later; either counts, because some converters drop sync for a moment when
-video starts and lock again (the Ugreen dock did, every time). The frames
+video starts and lock again (the Ugreen dock did, every time). The STDP2550
+of the V1 / V2 Nintendo docks (branch OUI `0080E1`) never sets the bit, not
+even while it shows the picture: an Erista on a known-good dock and a working
+Mariko on another both trained 2 lanes at HBR2, swing 2, 0 errors, picture
+on, with `205` reading `00` (2026-11-11). For that branch the line says
+", no sync bit" and the bit does not colour it; the Realtek converters do set
+it, and for them "NOT in sync" still counts. The frames
 are vsyncs counted on host1x syncpoint 11, which needs no interrupt logic;
 the pixel clock is the SOR's `DP_DEBUG_MVID` against `N_VAL` (`DP_MN0`) of
 the link symbol clock; the underflow is window A's, DC `INT_STATUS` bit 8.
