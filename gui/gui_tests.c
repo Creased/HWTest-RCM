@@ -57,6 +57,8 @@ typedef struct {
     gui_stick_t stick;
     jc_cal_t cal;            /* from its flash, when cal_ok               */
     bool cal_ok;
+    bool cal_tried;          /* read once it answered: done, whatever came */
+    u32  cal_at;             /* when it was last asked whether it answers  */
 } jc_side_t;
 
 static jc_side_t s_jc[2];
@@ -245,24 +247,6 @@ static void _jc_side_update(int side, bool conn, u16 sx, u16 sy, u32 buttons,
             s->ever = true;
             s->batt = batt;
             _jc_status(s);
-            /* Its calibration, from its flash, so the stick is judged as
-             * the firmware judges it. A Lite's controls and third-party
-             * pads have none; they are judged on their own travel. */
-            if (!lite && !s->cal_ok)
-                s->cal_ok = gui_jc_cal_read(side, &s->cal);
-            if (s->cal_ok) {
-                gui_stick_set_cal(&s->stick, s->cal.cx, s->cal.cy,
-                                  s->cal.xmin, s->cal.xmax, s->cal.ymax, s->cal.ymin);
-                char raw[96];
-                s_printf(raw, "gui: jc %c cal %s centre %d,%d travel l%d r%d u%d d%d\n",
-                         side ? 'R' : 'L', s->cal.user ? "user" : "factory",
-                         s->cal.cx, s->cal.cy, s->cal.xmin, s->cal.xmax,
-                         s->cal.ymax, s->cal.ymin);
-                gui_uart_puts(raw);
-            } else {
-                gui_uart_puts(side ? "gui: jc R cal: none read\n"
-                                   : "gui: jc L cal: none read\n");
-            }
         } else {
             /* bdk's driver drops a Joy-Con it got no report from for 1.8 s
              * or whose rail says it is gone, and brings it up again; what
@@ -276,6 +260,31 @@ static void _jc_side_update(int side, bool conn, u16 sx, u16 sy, u32 buttons,
     }
     if (!conn)
         return;
+    /* Its calibration, from its flash, so the stick is judged as the
+     * firmware judges it; a Lite's controls and third-party pads have none
+     * and are judged on their own travel. Read once the Joy-Con answers for
+     * itself: back from a sensor screen the driver calls it connected while
+     * it still starts it over, and a read then found nothing. */
+    if (!lite && !s->cal_tried && get_tmr_ms() - s->cal_at >= 500) {
+        s->cal_at = get_tmr_ms();
+        if (gui_jc_answers(side)) {
+            s->cal_tried = true;
+            s->cal_ok = gui_jc_cal_read(side, &s->cal);
+            if (s->cal_ok) {
+                gui_stick_set_cal(&s->stick, s->cal.cx, s->cal.cy,
+                                  s->cal.xmin, s->cal.xmax, s->cal.ymax, s->cal.ymin);
+                char raw[96];
+                s_printf(raw, "gui: jc %c cal %s centre %d,%d travel l%d r%d u%d d%d\n",
+                         side ? 'R' : 'L', s->cal.user ? "user" : "factory",
+                         s->cal.cx, s->cal.cy, s->cal.xmin, s->cal.xmax,
+                         s->cal.ymax, s->cal.ymin);
+                gui_uart_puts(raw);
+            } else {
+                gui_uart_puts(side ? "gui: jc R cal: none read\n"
+                                   : "gui: jc L cal: none read\n");
+            }
+        }
+    }
     /* The Lite's two sticks sit half a turn apart: against a Joy-Con's,
      * the left one reads Y upside down and the right one X backwards, as
      * switchroot's joycon-serdev driver maps them. */

@@ -52,7 +52,57 @@ It does so two ways:
   reads are short exchanges done this way; Motion and IR Camera own their
   rails for as long as they are open. When such a screen closes, the
   driver, which was not told, finds the Joy-Con silent and brings it up
-  again, which takes a few seconds.
+  again. Left as it was, at 3 Mbaud with its HID connection, a Joy-Con
+  does not hear the restart's 1 Mbaud handshake until it drops the
+  connection itself, 2 s after its last request, and a failed restart
+  waits 1.8 s for the next: the third one got through, 3.6 s on. So the
+  screen gives each running Joy-Con back as the driver's restart expects
+  it (`gui_jc_rail_end`): HID disconnect (`0x11`), then the driver's rate
+  command (`0x20`) with 1 Mbaud instead of 3, `40 42 0F 00`, its two
+  checksums bdk's CRC-8 (polynomial `0x8D`) over the payload and over the
+  header from the command to the payload's checksum (`DD`, `EB`; the same
+  sums give the 3 Mbaud packet's `BD`, `B1`). The Joy-Con answers at the
+  old rate. Nothing is written to its flash.
+
+The driver's connected flags (`conn_l`, `conn_r`) say less than they seem
+to. Each report from either Joy-Con copies both from the driver's per-side
+`connected`, which only a detach clears (`_jc_parse_wired_hid`): a Joy-Con
+the driver is starting over after a 1.8 s silence reads as connected as
+soon as the other one reports. So the GUI asks the Joy-Con itself before
+relying on it: `gui_jc_answers` owns the side, sends one input request and
+waits 40 ms for an input report (`0x30`, `0x21` or `0x31`), then releases
+it.
+
+The sensor screens never poll the driver: with one rail owned, the driver
+would find that Joy-Con's reports missing and start it over at 1 Mbaud. So
+each rail is handled on its own (`gui_jc_rail_*`). Its detect line is read
+every 150 ms (`gui_rail_attached`, the driver's PH6 or PE6 read with the TX
+pin let go, after the UART's last byte; a rail found taken is kept off by
+the debug console). A Joy-Con the driver had up and that answers is taken
+as it is. One slid on (after 300 ms to seat), or one that does not answer,
+is started by the GUI itself (`gui_jc_bring_up`). It is asked first at
+3 Mbaud (`gui_jc_answers`): one the driver had up that missed the screen's
+first check, or one an earlier try got as far as the HID connection, is up
+already and taken as it is, as a 1 Mbaud handshake would not reach it.
+Otherwise it is started with the driver's own sequence and bytes: the rail's 5 V and charge enable on if they are off,
+the UART at 1 Mbaud inverted with manual RTS, up to 10 rounds of wake
+(`A1 A2 A3 A4`) and handshake (`A5`), the type (a Hori pad is not taken),
+3 Mbaud, HID disconnect until it answers `0xF`, HID connect, and a report
+every 15 ms. Its spacing is the driver's too: 4 ms after the handshake,
+5 ms after a HID disconnect and 2 ms after the others before the reply is
+read, as with manual RTS the Joy-Con holds its reply until then. Sent
+sooner, the next command was ignored: on the bench a handshake answered at
+once and the type request that followed got nothing. The report rate's
+reply is not waited for, as the driver does not wait for it either; it
+can come later, among the reports. The Joy-Con counts as up once it
+answers an input request (`gui_jc_answers`, three tries), as the driver
+counts one connected at its first report: the screen's first command,
+sent straight after the HID connection, went unanswered. A start that gets no answer is tried again every 500 ms; after
+8 tries the rail reads as not answering, and it is still tried every
+second for as long as the Joy-Con is on it, as the driver keeps trying. A
+Joy-Con that leaves is let go; one that goes silent while up is started
+again, twice in a row at most, then left alone until it is reseated (5 s
+of running clears the count). The other rail goes on untouched throughout.
 
 `gui_jc_subcmd` sends output report `0x01`: neutral rumble bytes, the
 subcommand at byte 10, its arguments from byte 11, always 49 bytes
@@ -147,9 +197,13 @@ never came back reads `Not attached` again.
 
 ### The calibration from the flash
 
-At a connect, unless one has already been read on this screen, and never
-on a Lite, `gui_jc_cal_read` reads the stick calibration from the
-Joy-Con's SPI flash, so the stick is judged as the firmware judges it.
+Once per screen and side, never on a Lite, `gui_jc_cal_read` reads the
+stick calibration from the Joy-Con's SPI flash, so the stick is judged as
+the firmware judges it. It waits until the connected side answers for
+itself (`gui_jc_answers`, asked every 500 ms): back from a sensor screen
+the driver calls a Joy-Con connected while it still starts it over, and a
+read then found nothing. Once it has answered, the read is not repeated,
+whatever it found.
 Each read is subcommand `0x10` with a 4-byte little-endian address and a
 length; the reply must repeat those five bytes at byte 15, and the data
 follows at byte 20. In order:
@@ -297,19 +351,24 @@ Each Joy-Con's accelerometer and gyroscope arrive in every input report
 once subcommand `0x40` turns them on. The driver never asks and parses only
 buttons and sticks, so `gui/gui_jcmotion.c` takes both rails over:
 
-1. At open, `gui_jc_state()` says which sides are connected; a side absent
-   then shows `Not attached: attach it and come back` and is not picked up
-   later, as the driver is not polled again.
-2. Per connected side: `gui_jc_own`, then `0x40` with argument 1. The
-   status reads `Connected, sensor on`, or WARN
+1. Each side's rail is handled on its own, as described under
+   [Talking to a Joy-Con](#talking-to-a-joy-con): a side shows
+   `Not attached: slide it onto the rail`, `Attached, connecting`,
+   `It went silent, connecting again`, or WARN
+   `Attached, but it does not answer: reseat it` or
+   `It keeps going silent: reseat it`, and a Joy-Con slid on, off or
+   back is picked up without touching the other side.
+2. A side whose Joy-Con is up: `0x40` with argument 1, and its readings
+   start from nothing. The status reads `Connected, sensor on`, or WARN
    `The sensor did not answer` when it is not acknowledged, and polling
    goes on regardless.
-3. Every 15 ms: an input request to each side, then its reports are
-   drained. A `0x30` report holds up to three 12-byte samples from byte 13
-   (accelerometer X, Y, Z then gyroscope X, Y, Z, signed 16-bit), 5 ms
-   apart; the last complete one is used.
-4. On leaving: `0x40` with argument 0, `gui_jc_release`, and the resume
-   window of the Joy-Con Test.
+3. Every 15 ms: an input request to each side that is up, then its reports
+   are drained. A `0x30` report holds up to three 12-byte samples from
+   byte 13 (accelerometer X, Y, Z then gyroscope X, Y, Z, signed 16-bit),
+   5 ms apart; the last complete one is used. A side with no report for
+   3 s is started again.
+4. On leaving: `0x40` with argument 0 to each side that is up, the rails
+   released, and the resume window of the Joy-Con Test.
 
 The raw units are dekuNukem's: 4096 counts per g (the +/-8 g range) and
 70 mdps per count (the +/-2000 dps range). The code converts with
@@ -335,7 +394,8 @@ per side:
 
 The debug console gets `gui: motion L sensor on` (or `no answer`), then
 the first sample with a non-zero accelerometer, in raw counts, as
-`gui: motion L first sample acc X Y Z gyr X Y Z`.
+`gui: motion L first sample acc X Y Z gyr X Y Z`, and
+`gui: motion L left its rail` or `gui: motion L silent, starting it again`.
 
 ## IR Camera
 
@@ -343,8 +403,14 @@ The right Joy-Con carries a 320 x 240 infrared camera behind its own
 controller, the NFC/IR MCU, driven through output report `0x11` and read
 through input report `0x31`. bdk never touches it. `gui/gui_jcir.c` owns
 the right rail and runs the sequence from CTCaer's jc_toolkit on the wire,
-with jc_toolkit's checks on each reply. Without a right Joy-Con at open it
-says so and does nothing. The left Joy-Con is not polled while it runs.
+with jc_toolkit's checks on each reply. The right rail is handled as the
+sensor screens handle theirs (see
+[Talking to a Joy-Con](#talking-to-a-joy-con)): without a Joy-Con up the
+status reads `Waiting for the right Joy-Con, which has the camera: slide it
+onto its rail.`, `Attached, connecting`, or WARN `Attached, but it does not
+answer: reseat it`, and the camera starts at step 1 once it is up, at open
+or whenever it is slid on. Taken off, it goes back to waiting. The left
+Joy-Con is not polled while the screen is open.
 
 | Step | Sent | Waits for |
 |---|---|---|
@@ -396,7 +462,9 @@ gives the controller's own brightness figure (byte 53) as a share of 255
 and the frame count. The verdict, the first that applies:
 
 * WARN `No frames are coming. Is it still on the rail?` after 3 s without
-  a fragment.
+  a fragment. After 6 s the Joy-Con is started again and the camera with
+  it, twice in a row at most (`It stopped sending, connecting again`, then
+  WARN `It keeps stopping: reseat it`).
 * OK `The camera sees.` once the brightness figure at a completed frame is
   above 5 of 255, which the screen shows as 2% or more. It latches until a
   restart.
@@ -408,31 +476,50 @@ and the frame count. The verdict, the first that applies:
 
 On leaving, the controller is suspended (`0x22` with 0), subcommand `0x03`
 with `0x30` asks for ordinary reports again, the rail is released and the
-Joy-Con Test's resume window starts. The screen sends nothing of its own
-to the debug console; only the framing line appears.
+Joy-Con Test's resume window starts. The debug console gets
+`gui: ir: the right Joy-Con is up, the camera starts`,
+`gui: ir: the right Joy-Con left its rail` and
+`gui: ir: no frames for 6 s, starting the Joy-Con again`, besides the
+framing line.
 
 ## Attach glow
 
 `_jc_attach_watch` (`gui/gui_main.c`) runs inside every `_jc_poll`: from
 the keypad read while Joy-Con navigation is on, and through `gui_jc_state()`
-on the Joy-Con Test, the Screen test and as Motion and IR Camera open. A
-side whose rail was found empty (not connected, battery byte 0) and then
-connects is shown. The battery byte is the point: bdk clears it only when
-the rail reads empty, so the driver bringing a Joy-Con up again after a
-timeout or a sensor screen does not glow. Nothing is shown in the first
-3 s after `jc_init_hw` (`JC_ATTACH_QUIET_MS`), so Joy-Cons already on the
-rails when the GUI starts are not greeted. Not on a Lite.
+on the Joy-Con Test and the Screen test; Motion and IR Camera never poll
+the driver, so a Joy-Con slid on there does not glow. A side whose rail was
+found empty (not connected, battery byte 0) and then connects is shown, and
+`gui: jc L attached` (or `R`) goes to the debug console. The battery byte
+is the point: bdk clears it only when the rail reads empty, so the driver
+bringing a Joy-Con up again after a timeout or a sensor screen does not
+glow. Nothing is shown in the first 3 s after `jc_init_hw`
+(`JC_ATTACH_QUIET_MS`), so Joy-Cons already on the rails when the GUI
+starts are not greeted. Not on a Lite.
 
 The watcher reads the body colour from flash `0x6050` (three bytes, under
 `gui_jc_own`, up to about 256 ms) and keeps grey (`82 82 82`) when nothing
 answers or the bytes are all `0xFF`, never written. `gui/gui_jcattach.c`
 lifts a colour whose luminance, `(3R + 6G + B) / 10`, is below `0x60`
 towards white, at most half way, so a black Joy-Con still shows on the
-dark background. The glow is a 96 px strip on that side's screen edge, on
-LVGL's top layer: alpha 150 of 255 at the edge, falling as the square of
-what is left of the 96 px, to zero at its inner end, and softened over
-160 px at the top and bottom. It fades in over 300 ms, rests 700 ms, fades
-out and is deleted.
+dark background. The glow is a 96 px strip on that side's screen edge:
+alpha 150 of 255 at the edge, falling as the square of what is left of the
+96 px, to zero at its inner end, and softened over 160 px at the top and
+bottom. It fades in over 300 ms, rests 700 ms and fades out.
+
+LVGL does not draw it. The GUI redraws whole rows, so a glow the screen's
+height drawn by LVGL made every step of the fade a full-screen redraw
+(about 250 ms on a Mariko), and the GUI lagged through it. The strip is a
+display controller window of its own instead, laid over the GUI's window A
+at depth 0: window B for the left Joy-Con, C for the right, each drawn once
+into a buffer of its own (B8G8R8A8, pitch) with the registers hekate sets
+for its log window D. The display controller blends it through its alpha
+channel (source factor K1 times the source alpha, destination one minus
+that), and the fade only changes K1, one register write per step; at the
+end the window is switched off. The panel scans portrait and the GUI is
+turned onto it (the VIC's 270, as Nyx does), so the GUI's left edge is the
+panel's last 96 rows and its right edge the first 96; the strips run
+across the panel. The TV and screenshots take the GUI's own buffer and do
+not show the glow.
 
 ## What the tests change
 
@@ -447,7 +534,9 @@ out and is deleted.
 * Nothing is written to a Joy-Con's flash: the only flash access is
   subcommand `0x10`, a read.
 
-The rails' 5 V comes from `jc_init_hw` at GUI start. While it is polled,
+The rails' 5 V comes from `jc_init_hw` at GUI start; a sensor screen
+starting a Joy-Con switches its rail's 5 V and charge enable on again if
+they are off. While it is polled,
 bdk's driver also looks at each Joy-Con's battery level every 5 s and, when
 the charge mode should change, sends subcommand `0x51`: a full Joy-Con gets
 its rail's 5 V switched off, a low one charges at 100 mA. The tests neither
@@ -461,6 +550,21 @@ there for the session, so with the default console on UART-B and a right
 Joy-Con attached none of these lines reaches the bench, the left side's
 included. Which port carries them is in
 [Rails and Joy-Cons](gui.md#rails-and-joy-cons).
+
+A sensor screen starting a Joy-Con itself logs each try that gets nowhere,
+the first ten and then every tenth, as
+`gui: jc L try 3 stopped at handshake: 0 bytes back, last 00 00 00`: the
+step it stopped at (handshake, type, Hori pad, 3 Mbaud, HID disconnect,
+HID connect or first report), the bytes the Joy-Con sent during the try and
+the first twelve of them, and the command, subcommand and status of its
+last reply. One that comes up logs `gui: jc L started at try 4`, or
+`gui: jc L was up already, taken at try 4`. As the screen closes, each
+running Joy-Con logs `gui: jc L back to the driver at 1 Mbaud`, or
+`with its rate unchanged` when the rate change got no acknowledgement,
+then in brackets the HID disconnect's status (`0F`: no connection left)
+and what came back after the rate change: its bytes, the first twelve, and
+the last reply's command, subcommand and status. On the bench the rate
+change was never acknowledged.
 
 ## In the health check
 

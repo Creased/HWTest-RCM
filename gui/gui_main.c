@@ -288,6 +288,7 @@ static void _jc_attach_watch(const jc_gamepad_rpt_t *jc)
             s_jc_gone[side] = true;
         if (conn[side] && !s_jc_was[side] && s_jc_gone[side]) {
             s_jc_gone[side] = false;
+            gui_uart_puts(side ? "gui: jc R attached\n" : "gui: jc L attached\n");
             if (get_tmr_ms() >= s_jc_quiet_until) {
                 /* Grey for a pad that has no colour. */
                 u8 body[3] = { 0x82, 0x82, 0x82 };

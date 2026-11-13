@@ -45,6 +45,12 @@ bool gui_jc_cal_read(int side, jc_cal_t *out);
  * none was ever written. */
 bool gui_jc_colour_read(int side, u8 *rgb);
 
+/* Whether the Joy-Con really is up: one status request of its own, and an
+ * input report back within 40 ms. The driver's connected flags cannot say:
+ * a Joy-Con it is starting over reads as connected as soon as the other one
+ * reports (bdk joycon.c copies both flags from either one's reports). */
+bool gui_jc_answers(int side);
+
 /* Rumble on (a strong, steady buzz) or off. The Joy-Con keeps the last
  * setting, so one report each way is enough. It plays nothing until rumble
  * has been enabled, which the driver does once, at the first connection:
@@ -65,6 +71,41 @@ void gui_jc_rumble(int side, bool on);
 
 void gui_jc_own(int side);
 void gui_jc_release(int side);
+
+/* Starts a Joy-Con on its rail as bdk's driver does (1 Mbaud handshake,
+ * its type, 3 Mbaud, a fresh HID connection, the report rate), without the
+ * driver: true when it is up. A Hori pad is not taken. */
+bool gui_jc_bring_up(int side);
+
+/* A sensor screen's rail. The screen does not poll the driver: with one
+ * rail owned the driver would find that Joy-Con's reports missing and start
+ * it over, and its connected flags cannot tell one Joy-Con from the other
+ * (gui_jc_answers). So each rail is handled on its own: its detect line is
+ * watched, a Joy-Con slid on is started here (gui_jc_bring_up), one that
+ * leaves is let go, and the other rail goes on untouched. */
+enum { JCR_OFF, JCR_UP, JCR_RUN, JCR_STUCK };
+enum { JCR_EV_NONE, JCR_EV_UP, JCR_EV_GONE, JCR_EV_STATE };
+
+typedef struct {
+    int  state;           /* JCR_*: none, starting, owned and up, stuck     */
+    u8   tries;           /* start-ups that got no answer, up to 255        */
+    u8   drops;           /* went silent while up, in a row                 */
+    u32  rail_at, next_at, run_at;
+} jc_rail_t;
+
+/* At the screen's start: true when a Joy-Con the driver had up is now
+ * owned (the screen starts its sensor). */
+bool gui_jc_rail_start(jc_rail_t *r, int side);
+/* Each tick: JCR_EV_UP when one was just started and is owned now,
+ * JCR_EV_GONE when it left its rail (owned no more), JCR_EV_STATE when the
+ * state changed otherwise (for the screen's status line). */
+int  gui_jc_rail_tick(jc_rail_t *r, int side);
+/* It went silent while up: started again, or given up after a few times
+ * (JCR_STUCK with drops, until it is reseated). A Joy-Con that never
+ * answered reads JCR_STUCK too after a few tries, and is still tried. */
+void gui_jc_rail_lost(jc_rail_t *r);
+/* The way out: back to the driver. True when the rail was in use. */
+bool gui_jc_rail_end(jc_rail_t *r, int side);
 
 /* One output report; byte 1, the packet id, is filled in. */
 void gui_jc_send(int side, u8 *rpt, u32 len);

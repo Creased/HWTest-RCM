@@ -30,6 +30,7 @@
 #define MO_POLL_MS  15
 #define MO_REST_MS  600
 #define MO_SILENT_MS 1500
+#define MO_LOST_MS  3000                 /* silent this long: started over */
 
 #define SUBCMD_IMU   0x40
 
@@ -38,11 +39,12 @@ enum { V_NONE, V_READING, V_OK, V_SILENT, V_STOPPED };
 typedef struct {
     lv_obj_t *status, *needle, *tip, *verdict, *num, *mark[3];
     lv_point_t pts[2];       /* the needle's, which lv_line keeps pointing at */
-    bool owned;              /* this side is polled by this screen        */
+    jc_rail_t rail;          /* its rail: owned and up when JCR_RUN       */
     bool ok, moved;
     u32  first_at;           /* when polling began                        */
     u32  rest_since;         /* reading about 1 g and still since...      */
     u32  data_at;            /* the last report with a sample that was not all zero */
+    u32  rpt_at;             /* the last report of any kind               */
     int  said;               /* the verdict on screen (V_*)...            */
     u32  said_at;            /* ...and when it was last written           */
     s32  acc[3], gyr[3];     /* the newest sample, raw                    */
@@ -170,15 +172,88 @@ static void _mo_judge(mo_side_t *s, u32 now)
     }
 }
 
+/* A side's readings forgotten: a Joy-Con taken (again) starts afresh. */
+static void _mo_reset(mo_side_t *s)
+{
+    memset(s->acc, 0, sizeof(s->acc));
+    memset(s->gyr, 0, sizeof(s->gyr));
+    s->ok = false;
+    s->moved = false;
+    s->rest_since = 0;
+    s->data_at = 0;
+    s->said = V_NONE;
+    lv_label_set_text(s->verdict, "");
+    _mo_show(s);
+}
+
+static void _mo_status(mo_side_t *s, const char *text)
+{
+    if (strcmp(lv_label_get_text(s->status), text))
+        lv_label_set_text(s->status, text);
+}
+
+/* What the panel says while its rail has no Joy-Con up. */
+static void _mo_rail_status(mo_side_t *s)
+{
+    switch (s->rail.state) {
+    case JCR_OFF:
+        _mo_status(s, "Not attached: slide it onto the rail");
+        break;
+    case JCR_UP:
+        _mo_status(s, s->rail.drops ? "It went silent, connecting again"
+                                    : "Attached, connecting");
+        break;
+    case JCR_STUCK:
+        _mo_status(s, s->rail.drops
+            ? "#" GUI_HEX_WARN " " ICON_WARN "  It keeps going silent:# reseat it"
+            : "#" GUI_HEX_WARN " " ICON_WARN "  Attached, but it does not answer:# reseat it");
+        break;
+    }
+}
+
+/* Its Joy-Con up and owned: sensor on, readings from scratch. */
+static void _mo_sensor_on(int side)
+{
+    mo_side_t *s = &s_mo[side];
+    _mo_reset(s);
+    s->first_at = s->rpt_at = get_tmr_ms();
+    static const u8 on = 1;
+    bool answered = gui_jc_subcmd(side, SUBCMD_IMU, &on, 1, NULL);
+    _mo_status(s, answered ? "#" GUI_HEX_OK " Connected#, sensor on"
+                           : "#" GUI_HEX_WARN " " ICON_WARN "  The sensor did not answer#");
+    /* For the bench: the left Joy-Con's side of this reaches the debug
+     * UART while the adapter holds the right rail. */
+    gui_uart_puts(side ? (answered ? "gui: motion R sensor on\n" : "gui: motion R no answer\n")
+                       : (answered ? "gui: motion L sensor on\n" : "gui: motion L no answer\n"));
+}
+
 static void _mo_tick(void *param)
 {
+    /* Each rail on its own: a Joy-Con slid on is started, one slid off is
+     * let go, and the other side carries on. */
+    for (int side = 0; side < 2; side++) {
+        mo_side_t *s = &s_mo[side];
+        int ev = gui_jc_rail_tick(&s->rail, side);
+        if (ev == JCR_EV_UP) {
+            _mo_sensor_on(side);
+        } else if (ev != JCR_EV_NONE) {
+            if (ev == JCR_EV_GONE)
+                gui_uart_puts(side ? "gui: motion R left its rail\n"
+                                   : "gui: motion L left its rail\n");
+            _mo_rail_status(s);
+        }
+    }
+    /* Read after the rails: a Joy-Con started just now stamped its readings
+     * later than a time read before, and the difference, unsigned, wrapped
+     * round to a silence of years (on the bench: "It keeps going silent"
+     * the moment a Joy-Con came up). */
     u32 now = get_tmr_ms();
     for (int side = 0; side < 2; side++)
-        if (s_mo[side].owned)
+        if (s_mo[side].rail.state == JCR_RUN)
             gui_jc_poll(side);
     for (int side = 0; side < 2; side++) {
         mo_side_t *s = &s_mo[side];
-        if (!s->owned)
+        if (s->rail.state != JCR_RUN)
             continue;
         u8 rpt[JC_RPT_LEN];
         bool got = false;
@@ -197,6 +272,7 @@ static void _mo_tick(void *param)
             got = true;
         }
         if (got) {
+            s->rpt_at = now;
             if (!s->data_at && (s->acc[0] || s->acc[1] || s->acc[2])) {
                 char raw[96];
                 s_printf(raw, "gui: motion %c first sample acc %d %d %d gyr %d %d %d\n",
@@ -205,12 +281,19 @@ static void _mo_tick(void *param)
                 gui_uart_puts(raw);
             }
             _mo_show(s);
+        } else if (now - s->rpt_at > MO_LOST_MS) {
+            /* On its rail and silent: started again, this side alone. */
+            gui_uart_puts(side ? "gui: motion R silent, starting it again\n"
+                               : "gui: motion L silent, starting it again\n");
+            gui_jc_rail_lost(&s->rail);
+            _mo_rail_status(s);
+            continue;
         }
         _mo_judge(s, now);
     }
 }
 
-static void _mo_side_build(lv_obj_t *win, int side, lv_coord_t x0, bool conn)
+static void _mo_side_build(lv_obj_t *win, int side, lv_coord_t x0)
 {
     mo_side_t *s = &s_mo[side];
     memset(s, 0, sizeof(*s));
@@ -265,27 +348,6 @@ static void _mo_side_build(lv_obj_t *win, int side, lv_coord_t x0, bool conn)
     /* Everything is there now: the needle, the marks and the numbers at
      * rest, until the first report. */
     _mo_show(s);
-
-    /* One line: the ring sits right under it. */
-    if (!conn) {
-        lv_label_set_text(s->status, "Not attached: attach it and come back");
-        return;
-    }
-    gui_jc_own(side);
-    s->owned = true;
-    s->first_at = get_tmr_ms();
-    static const u8 on = 1;
-    bool answered = gui_jc_subcmd(side, SUBCMD_IMU, &on, 1, NULL);
-    if (answered) {
-        lv_label_set_text(s->status, "#" GUI_HEX_OK " Connected#, sensor on");
-    } else {
-        lv_label_set_text(s->status, "#" GUI_HEX_WARN " " ICON_WARN
-            "  The sensor did not answer#");
-    }
-    /* For the bench: the left Joy-Con's side of this reaches the debug
-     * UART while the adapter holds the right rail. */
-    gui_uart_puts(side ? (answered ? "gui: motion R sensor on\n" : "gui: motion R no answer\n")
-                       : (answered ? "gui: motion L sensor on\n" : "gui: motion L no answer\n"));
 }
 
 static void _mo_leave(void)
@@ -294,14 +356,15 @@ static void _mo_leave(void)
         lv_task_del(s_mo_task);
     s_mo_task = NULL;
     static const u8 off = 0;
+    bool used = false;
     for (int side = 0; side < 2; side++) {
-        if (!s_mo[side].owned)
-            continue;
-        gui_jc_subcmd(side, SUBCMD_IMU, &off, 1, NULL);
-        gui_jc_release(side);
-        s_mo[side].owned = false;
-        gui_jc_test_resumed();
+        mo_side_t *s = &s_mo[side];
+        if (s->rail.state == JCR_RUN)
+            gui_jc_subcmd(side, SUBCMD_IMU, &off, 1, NULL);
+        used |= gui_jc_rail_end(&s->rail, side);
     }
+    if (used)
+        gui_jc_test_resumed();
 }
 
 void gui_jc_motion(void)
@@ -329,11 +392,18 @@ void gui_jc_motion(void)
     st_needle.line.width = 6;
     st_needle.line.opa = LV_OPA_COVER;
 
-    /* What is on the rails now; from here on the driver is not polled. */
-    jc_gamepad_rpt_t *jc = gui_jc_state();
-    bool l = jc && jc->conn_l, r = jc && jc->conn_r;
-    _mo_side_build(win, 0, GUI_MARGIN, l);
-    _mo_side_build(win, 1, GUI_RIGHT - MO_PANEL_W, r);
+    _mo_side_build(win, 0, GUI_MARGIN);
+    _mo_side_build(win, 1, GUI_RIGHT - MO_PANEL_W);
+
+    /* What is on the rails: one the driver has up is taken as it is, one
+     * that does not answer yet is started here, and from now on each rail
+     * is watched on its own. */
+    for (int side = 0; side < 2; side++) {
+        if (gui_jc_rail_start(&s_mo[side].rail, side))
+            _mo_sensor_on(side);
+        else
+            _mo_rail_status(&s_mo[side]);
+    }
 
     if (s_mo_task)
         lv_task_del(s_mo_task);

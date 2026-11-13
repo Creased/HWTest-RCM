@@ -140,6 +140,21 @@ void gui_dbg_rails(void)
     }
 }
 
+/* A Joy-Con on a rail, by its detect line, for a sensor screen: it stops
+ * polling the driver while it owns a rail (gui_jcwire.h). What the rail's
+ * UART is sending goes out first, since its TX pin is let go for the read. */
+bool gui_rail_attached(int side)
+{
+    if (s_lite)
+        return false;
+    gui_dbg_port_t p = side ? DBG_UART_B : DBG_UART_C;
+    uart_wait_xfer(s_uart[p], UART_TX_IDLE);
+    bool on = _rail_attached(p);
+    if (on)
+        s_taken[p] = true;          /* the console keeps off a Joy-Con's UART */
+    return on;
+}
+
 void gui_dbg_poll(void)
 {
     if (s_usb)

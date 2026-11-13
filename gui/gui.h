@@ -138,6 +138,7 @@ typedef enum {
 } gui_dbg_port_t;
 void gui_dbg_init(bool lite);            /* after jc_init_hw()                     */
 void gui_dbg_rails(void);                /* before each Joy-Con poll               */
+bool gui_rail_attached(int side);        /* 0 left, 1 right: its detect line       */
 void gui_dbg_poll(void);                 /* every loop pass                        */
 bool gui_dbg_set(gui_dbg_port_t p);      /* false: that port did not come up       */
 gui_dbg_port_t gui_dbg_port(void);

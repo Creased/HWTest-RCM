@@ -20,6 +20,7 @@
 #define FRAG_LEN     300                 /* pixels in one 0x31 report    */
 #define MCU_RPT_LEN  362                 /* a 0x31 report                */
 #define IR_TRY_MS    64                  /* a reply's allowance          */
+#define IR_STALL_MS  6000                /* no frames: started over      */
 #define IR_STEPS     8
 #define IR_TEXT_X    (GUI_MARGIN + IMG_W + GUI_GAP)
 #define IR_TEXT_W    (GUI_RIGHT - IR_TEXT_X)
@@ -320,6 +321,10 @@ static void _frame_done(u32 now)
     _text();
 }
 
+static jc_rail_t s_ir_rail;          /* the right rail */
+static void _ir_down(void);
+static void _start(void);
+
 static void _pump(u32 now)
 {
     static u8 rpt[MCU_RPT_LEN];
@@ -354,13 +359,77 @@ static void _pump(u32 now)
         s.stalled = true;
         _text();
     }
+    if (now - s.last_frag_at > IR_STALL_MS) {
+        gui_uart_puts("gui: ir: no frames for 6 s, starting the Joy-Con again\n");
+        gui_jc_rail_lost(&s_ir_rail);
+        _ir_down();
+    }
+}
+
+
+static void _ir_say(const char *text)
+{
+    if (strcmp(lv_label_get_text(s_status), text))
+        lv_label_set_text(s_status, text);
+}
+
+/* What the status line says while the right rail has no Joy-Con up. */
+static void _ir_rail_say(void)
+{
+    switch (s_ir_rail.state) {
+    case JCR_OFF:
+        _ir_say("Waiting for the right Joy-Con, which has the camera: slide it onto "
+                "its rail.");
+        break;
+    case JCR_UP:
+        _ir_say(s_ir_rail.drops ? "It stopped sending, connecting again"
+                                : "Attached, connecting");
+        break;
+    case JCR_STUCK:
+        _ir_say(s_ir_rail.drops
+            ? "#" GUI_HEX_WARN " " ICON_WARN "  It keeps stopping:# reseat it"
+            : "#" GUI_HEX_WARN " " ICON_WARN "  Attached, but it does not answer:# reseat it");
+        break;
+    }
+}
+
+/* Its Joy-Con up and owned: the camera's start-up from the top. */
+static void _ir_up(void)
+{
+    gui_uart_puts("gui: ir: the right Joy-Con is up, the camera starts\n");
+    s.owned = true;
+    _start();
+}
+
+/* Not owned any more: left its rail, or started again. */
+static void _ir_down(void)
+{
+    s.owned = false;
+    s.state = IR_OFF;
+    lv_label_set_text(s_detail, "");
+    lv_label_set_text(s_verdict, "");
+    _ir_rail_say();
 }
 
 static void _ir_tick(void *param)
 {
-    if (s.state >= IR_FAILED)
+    int ev = gui_jc_rail_tick(&s_ir_rail, IR_SIDE);
+    if (ev == JCR_EV_UP) {
+        _ir_up();
+        return;
+    }
+    if (ev == JCR_EV_GONE) {
+        gui_uart_puts("gui: ir: the right Joy-Con left its rail\n");
+        _ir_down();
+        return;
+    }
+    if (ev == JCR_EV_STATE)
+        _ir_rail_say();
+    if (s_ir_rail.state != JCR_RUN)
         return;
     u32 now = get_tmr_ms();
+    if (s.state >= IR_FAILED)
+        return;
     if (s.state == IR_STREAM) {
         _pump(now);
         return;
@@ -451,10 +520,10 @@ static void _ir_leave(void)
         static const u8 std = JC_IN_STD;
         _suspend();
         gui_jc_subcmd(IR_SIDE, 0x03, &std, 1, NULL);   /* ordinary reports again */
-        gui_jc_release(IR_SIDE);
-        s.owned = false;
-        gui_jc_test_resumed();
     }
+    if (gui_jc_rail_end(&s_ir_rail, IR_SIDE))
+        gui_jc_test_resumed();
+    s.owned = false;
     s.state = IR_OFF;
 }
 
@@ -470,16 +539,6 @@ void gui_jc_ir(void)
         lv_obj_t *l = gui_hint(win, GUI_CONTENT_W * 2 / 3,
             "Not available on a Switch Lite: it has no Joy-Con rails, and the "
             "camera is in the right Joy-Con.");
-        lv_obj_set_pos(l, GUI_MARGIN, GUI_TOP);
-        return;
-    }
-
-    /* What is on the right rail now; from here on the driver is not polled. */
-    jc_gamepad_rpt_t *jc = gui_jc_state();
-    if (!jc || !jc->conn_r) {
-        lv_obj_t *l = gui_hint(win, GUI_CONTENT_W * 2 / 3,
-            "The camera is in the right Joy-Con. Slide it onto its rail, then "
-            "open this screen again.");
         lv_obj_set_pos(l, GUI_MARGIN, GUI_TOP);
         return;
     }
@@ -515,10 +574,17 @@ void gui_jc_ir(void)
         "and both take a few seconds to come back afterwards.");
     lv_obj_align(help, NULL, LV_ALIGN_IN_BOTTOM_LEFT, IR_TEXT_X, -(GUI_H - GUI_BOTTOM));
 
-    gui_jc_own(IR_SIDE);
-    s.owned = true;
+    /* The camera starts once the right Joy-Con is up: at once when the
+     * driver has it up, else once it is started here, slid on or not. */
+    s.owned = false;
     s.size = 0;
-    _start();
+    memset(s_frame, 0, sizeof(s_frame));
+    _blit();
+    _text();
+    if (gui_jc_rail_start(&s_ir_rail, IR_SIDE))
+        _ir_up();
+    else
+        _ir_rail_say();
 
     if (s_ir_task)
         lv_task_del(s_ir_task);
