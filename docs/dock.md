@@ -153,8 +153,14 @@ reply to the message", "the reply could not be read".
    generic adapter let a wrong one through.
 9. **Waiting for the TV's hot plug detect.** The dock's HDMI side raises
    HPD a moment after the lanes are set, so up to 1.5 s for the HPD line or
-   `DP_STATUS`'s signal bit (7). It never fails. Anything but a Nintendo
-   dock is done here.
+   `DP_STATUS`'s signal bit (7), and up to 5 s for anything but a Nintendo
+   dock: a generic dock (a VIA Labs `2109:0103` adapter) raised it later
+   than 1.5 s. It never fails. Anything but a Nintendo dock is done here. A run
+   that ends with DisplayPort mode on and HPD low leaves the screen
+   watching: when the HPD line comes up, with `DP_STATUS` still showing the
+   mode on, the TV row turns green and the picture is tried as at the end of
+   a run (`gui: dock: HPD came up after the run, the picture follows`).
+   Run, Reset Chip and leaving the screen stop the watch.
 10. **Reading the dock as HOS does.** Steps 10 to 12 are the Nintendo
     dock's own messages, unstructured VDMs on its SVID, after DisplayPort
     is up. HOS's usb sysmodule (22.1.0, read in IDA) docks with three reads
@@ -428,7 +434,7 @@ Otherwise:
 | Line | Shows | Green when |
 |---|---|---|
 | Sink | DPCD revision; downstream port (DP, VGA, HDMI or other); the TV's name from the EDID's name descriptor (`0xFC`), its three-letter maker code without one, or "no EDID." | always |
-| Link | lanes and rate, ", ASSR", lane 0's swing, the margin check's errors, ", NOT in sync" (", no sync bit" on an STDP2550) | no margin errors, and port 0 in sync unless the converter has no sync bit |
+| Link | lanes and rate, ", ASSR", lane 0's swing, the margin check's errors, ", NOT in sync" (", no sync bit" on an STDP2550 or a generic dock's Synaptics converter) | no margin errors, and port 0 in sync unless the converter has no sync bit |
 | Head | frames per 100 ms, pixel clock in MHz, ", UNDERFLOW" or ", NOT 74.25", "SOR sees it" or "sees nothing" | frames counted, no underflow, pixel clock within 1 percent (73.5 to 75 MHz, exclusive) |
 
 In sync is DPCD `205` bit 0, read 85 ms after the attach and again a moment
@@ -437,9 +443,14 @@ video starts and lock again (the Ugreen dock did, every time). The STDP2550
 of the V1 / V2 Nintendo docks (branch OUI `0080E1`) never sets the bit, not
 even while it shows the picture: an Erista on a known-good dock and a working
 Mariko on another both trained 2 lanes at HBR2, swing 2, 0 errors, picture
-on, with `205` reading `00` (2026-11-11). For that branch the line says
-", no sync bit" and the bit does not colour it; the Realtek converters do set
-it, and for them "NOT in sync" still counts. The frames
+on, with `205` reading `00` (2026-11-11). The Synaptics converter of a
+generic dock (branch OUI `90CC24`, ID `SYNAR`, behind a VIA Labs
+`2109:0103` alternate mode controller) does the same: four runs on a Mariko,
+2 lanes at HBR2, swing 0, 0 errors, the picture on the monitor, `205`
+reading `00` every time (2026-11-13). For those two branches the line says
+", no sync bit" and the bit does not colour it; the Realtek converters and
+the OLED dock's (`0010FA`, `cHDMIb`) do set it, and for them "NOT in sync"
+still counts. The frames
 are vsyncs counted on host1x syncpoint 11, which needs no interrupt logic;
 the pixel clock is the SOR's `DP_DEBUG_MVID` against `N_VAL` (`DP_MN0`) of
 the link symbol clock; the underflow is window A's, DC `INT_STATUS` bit 8.
@@ -565,9 +576,10 @@ DisplayPort pin assignment, and the live view says so. It is tested only
 through that step: the DisplayPort row warns "NOT configured by the
 controller" when `DP_STATUS`'s pin-configuration bit stays clear.
 
-The hot plug wait gives up after 1.5 s without failing, so "nothing on the
-dock's HDMI" is a warning, not a fault, and a TV that raises HPD after it
-gets no picture. The hub is confirmed by the dock's reply alone.
+The hot plug wait gives up after 1.5 s (5 s for anything but a Nintendo
+dock) without failing, so "nothing on the dock's HDMI" is a warning, not a
+fault; a TV that raises HPD after it still gets its picture while the
+screen stays open. The hub is confirmed by the dock's reply alone.
 
 The mode is always CEA 1280x720 at 60 Hz: the EDID is read for the TV's
 maker and name only, not to choose it. The picture's report reads what

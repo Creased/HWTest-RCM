@@ -31,6 +31,8 @@ static dock_t s_dock;
 static pd_reset_t s_rst;
 static bool s_resetting;
 static bool s_ran;             /* a handshake ran: the dock is stopped on leave */
+static bool s_tv_wait;         /* done with DisplayPort up, no HPD yet: the picture
+                                * follows when it comes */
 static lv_obj_t *s_reset;
 static void _tv_link(void);
 static void _reset_report(void);
@@ -371,6 +373,7 @@ static void _dk_tick(void *param)
         if (s_dock.state == DOCK_DONE || s_dock.state == DOCK_FAILED) {
             /* Over: the alerts are the view's again, Run is back. */
             bool tv = s_dock.state == DOCK_DONE && s_dock.dp_on && s_dock.hpd;
+            s_tv_wait = s_dock.state == DOCK_DONE && s_dock.dp_on && !s_dock.hpd;
             s_running = false;
             s_ran = true;
             gui_hide(s_start, false);
@@ -406,6 +409,16 @@ static void _dk_tick(void *param)
         }
         if (!s_running)
             s_sticky = s_prev.alert & s_snap.alert;
+        /* HPD after the run's wait, DisplayPort mode still on: the TV row
+         * turns green and the picture is tried, as at the end of a run. */
+        if (s_tv_wait && !s_running && !s_resetting && s_snap.hpd
+            && (s_snap.dp_status & PD_DP_EN)) {
+            s_tv_wait = false;
+            s_dock.hpd = true;
+            _rows();
+            gui_uart_puts("gui: dock: HPD came up after the run, the picture follows\n");
+            _tv_link();
+        }
         _view();
         if (s_running)
             _rows();
@@ -457,6 +470,7 @@ static lv_res_t _act_reset(lv_obj_t *b)
     if (s_running || s_resetting)
         return LV_RES_OK;
     dpout_video_stop();             /* the reset takes DisplayPort down */
+    s_tv_wait = false;
     s_resetting = true;
     pd_reset_start(&s_rst);
     if (s_rst.log_new) {
@@ -581,13 +595,22 @@ static void _tv_link(void)
             s_printf(line, "gui: tv: failed at step %d: %s (%d us)\n", r, tv.why, us);
         } else {
             bool frames = tv.dc_frames != 0, under = (tv.dc_int & BIT(8)) != 0;
-            /* The STDP2550 (branch OUI 0080E1: the V1 / V2 Nintendo docks)
-             * never sets DPCD 205 bit 0, even while it shows the picture
-             * (the Erista on a known-good dock and a working Mariko on
-             * another, 2026-11-11): its sync bit says nothing, so it does
-             * not colour the line. The Realtek converters do set it. */
-            bool no_sync_bit = k.branch_oui[0] == 0x00 && k.branch_oui[1] == 0x80 &&
-                               k.branch_oui[2] == 0xE1;
+            /* Converters that never set DPCD 205 bit 0, even while they show
+             * the picture: the STDP2550 (branch OUI 0080E1, the V1 / V2
+             * Nintendo docks; the Erista on a known-good dock and a working
+             * Mariko on another, 2026-11-11) and the Synaptics one in a
+             * generic dock (90CC24 'SYNAR', VIA Labs 2109:0103; four runs,
+             * the picture on the monitor, 2026-11-13). Their sync bit
+             * says nothing, so it does not colour the line. The Realtek
+             * converters and the OLED dock's do set it. */
+            static const u8 no_sync_ouis[][3] = {
+                { 0x00, 0x80, 0xE1 },
+                { 0x90, 0xCC, 0x24 },
+            };
+            bool no_sync_bit = false;
+            for (u32 i = 0; i < ARRAY_SIZE(no_sync_ouis); i++)
+                if (!memcmp(k.branch_oui, no_sync_ouis[i], 3))
+                    no_sync_bit = true;
             bool link_ok = (tv.in_sync || no_sync_bit) && !tv.margin_errors;
             s_printf(buf + strlen(buf), "\n#%s %s  Link:# %dx %s Gbps%s, swing %d, %d errors%s.",
                      link_ok ? GUI_HEX_OK : GUI_HEX_FAIL, link_ok ? ICON_OK : ICON_FAIL,
@@ -626,6 +649,7 @@ static lv_res_t _act_start(lv_obj_t *b)
     if (s_running)
         return LV_RES_OK;
     dpout_video_stop();             /* the handshake sets DisplayPort up anew */
+    s_tv_wait = false;
     s_running = true;
     s_ran = false;
     dock_start(&s_dock);
@@ -643,6 +667,7 @@ static void _dk_leave(void)
     if (s_dk_task)
         lv_task_del(s_dk_task);
     s_dk_task = NULL;
+    s_tv_wait = false;
     dpout_video_stop();             /* before the dock's DisplayPort mode goes */
     if (s_running || s_ran) {
         dock_stop(&s_dock);

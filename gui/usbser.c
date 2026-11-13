@@ -168,12 +168,14 @@ static const usbser_ctrl_t *s_ctrl;
 static usbser_state_t s_state = USBSER_OFF;
 static u8 s_tx[TX_SIZE], s_rx[RX_SIZE];
 static u32 s_tx_head, s_tx_tail, s_rx_head, s_rx_tail;   /* free-running */
+static bool s_tx_stuck;     /* a full queue waited in vain: no waits until the PC reads */
 
 usbser_state_t usbser_state(void) { return s_state; }
 
 static void _reset_port(void)
 {
     s_dtr = false;
+    s_tx_stuck = false;
     s_tx_head = s_tx_tail = s_rx_head = s_rx_tail = 0;
 }
 
@@ -262,20 +264,28 @@ void usbser_poll(void)
         chunk[i] = s_tx[(s_tx_tail + i) % TX_SIZE];
     s_ctrl->tx(chunk, len);
     s_tx_tail += len;
+    s_tx_stuck = false;
 }
 
 static void _tx_put(u8 c)
 {
-    if (s_tx_head - s_tx_tail == TX_SIZE && s_state != USBSER_OPEN) {
+    if (s_tx_head - s_tx_tail == TX_SIZE && (s_state != USBSER_OPEN || s_tx_stuck)) {
         s_tx_tail++;                    /* no PC reading: the oldest goes */
     } else if (s_tx_head - s_tx_tail == TX_SIZE) {
-        /* Full: the PC gets a moment to take some, then it is dropped. */
+        /* Full: the PC gets a moment to take some. If it takes nothing,
+         * the waiting stops until it reads again, and the oldest goes as
+         * when no PC has the port open. A PC that cannot read while the
+         * port still looks open (the console the USB host for a generic
+         * dock, 2026-11-13) otherwise cost 20 ms a character: the Dock
+         * Test's picture log held the GUI for 21 s. */
         u32 t0 = get_tmr_ms();
         while (s_tx_head - s_tx_tail == TX_SIZE && s_state == USBSER_OPEN &&
                get_tmr_ms() - t0 < TX_DRAIN_MS)
             usbser_poll();
-        if (s_tx_head - s_tx_tail == TX_SIZE)
-            return;
+        if (s_tx_head - s_tx_tail == TX_SIZE) {
+            s_tx_stuck = true;
+            s_tx_tail++;
+        }
     }
     s_tx[s_tx_head++ % TX_SIZE] = c;
 }

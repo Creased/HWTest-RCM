@@ -570,7 +570,12 @@ Output is queued from the moment the port is up and sent once DTR is set:
 before a program opens the port, and after it closes it, the queue keeps
 the newest 16 KiB, so a PC that opens the port late still reads the
 start-up. While a program holds the port and the queue is full, a byte
-waits up to 20 ms for the PC, then is dropped. A newline goes out as CR LF.
+waits up to 20 ms for the PC. If the PC took nothing in that time, the
+waiting stops until it reads again, and the oldest bytes make room as
+when no program holds the port: a PC that cannot read while the port
+still looks open (the console is the USB host for a dock) cost 20 ms a
+byte, and the Dock Test's picture log held the GUI for 21 s. A newline
+goes out as CR LF.
 Each transfer is kept one byte short of a full packet, so it ends on a
 short one and the PC hands it over at once. The queue is cleared when the
 port starts and when a PC goes away.

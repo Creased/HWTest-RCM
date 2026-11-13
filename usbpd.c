@@ -95,6 +95,8 @@
 #define STEP_TIMEOUT_MS     2500
 #define HOS_READ_TIMEOUT_MS 5000    /* HOS's wait for each dock read's reply   */
 #define HPD_WAIT_MS         1500    /* the dock's HDMI side raises HPD after the lanes */
+#define HPD_WAIT_OTHER_MS   5000    /* longer for anything else: a VIA Labs adapter
+                                     * (2109:0103) raised it after 1.5 s */
 
 /* VENDOR_CONFIG */
 #define VENDOR_CONFIG_OCP_DISABLE  BIT(2)
@@ -969,7 +971,8 @@ void dock_step(dock_t *d)
          * set: a grace period before saying nothing is on it. */
         d->dp_status = d->dp;
         d->hpd = _hpd();
-        if (d->hpd || (d->dp & PD_DP_SIGNAL_ON) || get_tmr_ms() - d->since > HPD_WAIT_MS) {
+        if (d->hpd || (d->dp & PD_DP_SIGNAL_ON) ||
+            get_tmr_ms() - d->since > (d->nin_dock ? HPD_WAIT_MS : HPD_WAIT_OTHER_MS)) {
             if (d->nin_dock)
                 _send_nd(d, ND_READ, ND_CMD_STATE, NULL, DOCK_QUERY_SENT);
             else
