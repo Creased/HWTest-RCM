@@ -115,6 +115,7 @@ ICONS = [
     ("SDCARD",      0xF0C7),  # floppy-o (FA 4 has no SD card)
     ("HEART",       0xF21E),  # heartbeat
     ("TV",          0xF26C),  # television: the dock
+    ("KEY",         0xF084),  # key: Lockpick_RCM
 ]
 # 0xC0 up, where LVGL's own symbols live when built without UTF-8: below it,
 # 0x80-0xBF, a leading byte is a button-matrix control code (tab names,

@@ -220,12 +220,21 @@ The next screen switch gives everything back.
 
 ## Screens and navigation
 
-Home is laid out as Nyx's: square buttons for Health Check, Joy-Con,
-Touchscreen, Screen, Dock and, past a divider, RAM Test, which leaves for
-its own payload; along the bottom Custom Check, Last Results (only once a
+Home is laid out as Nyx's, with its tiles in two rows: Health Check,
+Joy-Con and Touchscreen, then Screen, Dock and Game Card, three across, and
+past a divider the two that leave for payloads of their own, RAM Test over
+Lockpick_RCM. The four columns share the width between the margins
+(276 px each, 13 px apart, 34 px about the divider), the tiles are 210 px
+high, and the two rows sit midway between the tab bar and the bottom row;
+a tile's icon and caption sit about its middle in Nyx's proportions.
+Lockpick_RCM is greyed out (the theme's inactive button, its text grey)
+when it is not on the SD card, and then neither a touch nor VOL+ / VOL-
+reaches it. Along the bottom: Custom Check, Last Results (only once a
 check has run this boot), Reboot and Power Off. Focus starts on Health
-Check. Power Off asks first, then writes `MAX77620_ONOFFCNFG1_PWR_OFF`, the
-same power-off as the text launcher's, which does not ask. Reboot asks
+Check; VOL+ / VOL- go through the six tests row by row, then RAM Test and
+Lockpick_RCM, then the bottom row. Power Off asks first, then writes
+`MAX77620_ONOFFCNFG1_PWR_OFF`, the same power-off as the text launcher's,
+which does not ask. Reboot asks
 first ("The console powers off and on again."), then calls `do_reboot()`
 (see [The R reboot](#the-r-reboot)). The tab left of Home, named
 "hwtest <version>" after `GUI_VERSION` (`git describe --tags --always` at
@@ -693,6 +702,23 @@ between two samples that the finger did not cross. Accuracy and pressure
 are not checked, and only the first contact draws: a sample from a second
 one takes a screenshot.
 
+## Game Card
+
+Whether a cartridge is in the slot, live: the slot's card-detect line,
+read every 100 ms, as the health check reads it (see
+[Game card reader](gamecard.md)). The line is wired straight to the slot,
+so it reads with the reader unpowered: no rail goes on and nothing is sent
+to the reader or to a cartridge. While the screen is open the pad
+(`CAM_I2C_SDA`, booted as I2CVI) is a pulled-up input and PS3 a GPIO
+input; leaving puts the pad back. A change counts once two readings in a
+row agree, as a cartridge going in can make the contact chatter. The
+screen shows "A cartridge is in the slot" or "The slot is empty" and how
+many times one went in and came out since it opened, and the debug
+console gets `gui: gamecard screen, ...` at the start and
+`gui: gamecard inserted` or `gui: gamecard taken out` at each change.
+The title is not shown: reading anything from a cartridge needs the
+reader's firmware, and loading that burns OTP fuses in the reader.
+
 ## Screen test
 
 Six pages: White, Red, Green, Blue, Black, then Backlight, white while the
@@ -761,6 +787,27 @@ card." or "hwtest_ram.bin on the SD card is damaged. Copy it again."; the
 clocks stay up. The USB serial port is stopped before the hand-off
 (`gui_dbg_end()`, see [USB serial](#usb-serial)).
 
+## Lockpick_RCM
+
+A shortcut to Lockpick_RCM, which saves the console's keys to the SD card
+as `switch/prod.keys`, the file the health check takes the eMMC's BIS key
+from (see [Storage](storage.md)). It is looked for in
+`bootloader/payloads/`, then at the card's root, under the names the packs
+give it: `Lockpick_RCM.bin` (deejay87's Universal Pack and Lockpick_RCM's
+releases) and `Lockpick_RCM_Pro.bin` (HATS); FAT matches the names in any
+case. Home checks when it is built, so a card changed while hwtest runs
+shows on the next return to Home. The tile asks first ("Start
+Lockpick_RCM?": hwtest closes, the keys go to `switch/prod.keys`, coming
+back takes a restart). Start hands over as the RAM Test does:
+`payload_load()` with those paths (the file at least 256 bytes and, padded
+to 16, no larger than the 196,352 bytes from `0x40010000` to the
+relocator), `gui_dbg_end()`, the clocks back to the boot speed, then
+`ram_payload_run()`, which stages it and runs it at `0x40010000` as RCM
+runs a payload. `gui: starting <path>, <n> bytes` goes to the debug console
+first. On a failure the card is initialised again and a message box says
+"The SD card could not be read.", "Lockpick_RCM is not on the SD card any
+more." or that it is too large or too small to run.
+
 ## Debug console lines
 
 ```
@@ -777,6 +824,9 @@ gui: report: <n> pages, <n> labels, <n> px, built in <n> ms
 gui: debug console moves to <port>
 === hwtest GUI === debug console on <port>
 gui: push wrote <path>, <n> bytes      a !PUT, see Commands from the PC
+gui: gamecard screen, ...              the Game Card screen opening, see Game Card
+gui: gamecard inserted / taken out     a change on that screen
+gui: starting <path>, <n> bytes        Lockpick_RCM handed over, see Lockpick_RCM
 gui: bt <step>                         the Bluetooth test, see bluetooth.md
 gui: bt> <what> <code> len <n>: ...    its trace
 Rebooting (PMIC power cycle)...

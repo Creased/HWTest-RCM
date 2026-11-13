@@ -258,7 +258,8 @@ WARN from this probe is downgraded to "not checked". The category's
 all-good text, "Internal storage and SD card are healthy.", does not
 mention the reader. Its readings include "Game card slot", taken from the
 `Card detect` line (`slot empty` or `cartridge seated`); none of the ASIC
-lines is shown as a reading. The GUI has no interactive game card test.
+lines is shown as a reading. The GUI's Game Card screen reads the same
+line live (see [The Game Card screen](#the-game-card-screen)).
 In the GUI the group is "Storage and game card reader"; the text menu's
 Custom list calls it "Storage / gamecard".
 
@@ -284,6 +285,14 @@ Custom list calls it "Storage / gamecard".
   contact, its line to PS3 (an open line reads 1 through the pull-up), or
   the strap to ground inside that cartridge's shell. It sets no verdict
   and does not affect the ASIC test.
+
+## The Game Card screen
+
+The GUI's Game Card screen (a tile on Home) reads the same
+card-detect line live, every 100 ms, with the same pad and GPIO setup and
+nothing powered, and says whether a cartridge is in the slot and how many
+times one went in and came out. It never runs the ASIC test or anything
+past the line; see [Game Card](gui.md#game-card).
 
 ## What it cannot tell
 

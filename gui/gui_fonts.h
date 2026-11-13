@@ -59,6 +59,7 @@ extern lv_font_t gui_icons_100;
 #define ICON_SDCARD     "\xE9"
 #define ICON_HEART      "\xEA"
 #define ICON_TV         "\xEB"
+#define ICON_KEY        "\xEC"
 
 void gui_fonts_init(void);
 

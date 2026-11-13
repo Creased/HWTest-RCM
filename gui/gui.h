@@ -97,8 +97,8 @@ lv_obj_t *gui_label_wrap(lv_obj_t *parent, const lv_font_t *font,
                          lv_color_t col, lv_coord_t w, const char *text);
 lv_obj_t *gui_hint(lv_obj_t *parent, lv_coord_t w, const char *text);
 lv_obj_t *gui_big_button(lv_obj_t *parent, lv_coord_t x, lv_coord_t y,
-                         lv_coord_t w, const char *icon, const char *caption,
-                         lv_action_t action);
+                         lv_coord_t w, lv_coord_t h, const char *icon,
+                         const char *caption, lv_action_t action);
 lv_obj_t *gui_text_button(lv_obj_t *parent, const char *text, lv_action_t action);
 lv_obj_t *gui_button(lv_obj_t *parent, const char *text, lv_action_t action);
 lv_obj_t *gui_page(lv_obj_t *parent, lv_coord_t x, lv_coord_t y,
@@ -205,6 +205,9 @@ void gui_jc_attach_show(int side, const u8 *body); /* the edge glow, gui_jcattac
 void gui_touch_test(void);
 void gui_screen_test(void);
 void gui_dock_test(void);
+void gui_gamecard_test(void);            /* the slot's card detect, live */
+bool gui_lockpick_found(void);           /* Lockpick_RCM.bin on the SD card */
+void gui_lockpick(void);                 /* asks, then starts it */
 void gui_ram_test(void);
 void gui_screenshot(void);               /* two fingers, from gui_main.c */
 void gui_results(void);

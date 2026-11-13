@@ -463,25 +463,36 @@ lv_obj_t *gui_win_btn(lv_obj_t *win, const char *text, lv_action_t action)
 /* Nyx's home screen button: 256 px square, a 120 px symbol, the caption
  * under it, both in the theme colour. */
 lv_obj_t *gui_big_button(lv_obj_t *parent, lv_coord_t x, lv_coord_t y,
-                         lv_coord_t w, const char *icon, const char *caption,
-                         lv_action_t action)
+                         lv_coord_t w, lv_coord_t h, const char *icon,
+                         const char *caption, lv_action_t action)
 {
     lv_obj_t *b = lv_btn_create(parent, NULL);
     lv_btn_set_layout(b, LV_LAYOUT_OFF);
-    lv_obj_set_size(b, w, w);
+    lv_obj_set_size(b, w, h);
     lv_obj_set_pos(b, x, y);
-    lv_btn_set_action(b, LV_BTN_ACTION_CLICK, action);
 
-    /* Nyx's proportions at 256 px, kept when the square is smaller; the
-     * icon and caption faces are cut for the home row's 180 px tiles. */
+    /* Nyx's proportions at 256 px, taken from the shorter side and kept
+     * about the middle, so a wide or a tall tile carries its icon and
+     * caption as a square one does; the icon and caption faces are cut for
+     * the home tiles. A tile with no action is greyed out (the theme's
+     * inactive button, its text grey), and neither taken by a touch nor
+     * reached by VOL+/VOL- or the stick. */
+    const char *hex = action ? GUI_HEX_ACCENT : "777777";
+    lv_coord_t s = w < h ? w : h;
     char buf[48];
-    s_printf(buf, "#" GUI_HEX_ACCENT " %s#", icon);
+    s_printf(buf, "#%s %s#", hex, icon);
     lv_obj_t *ic = gui_label(b, &gui_icons_100, GUI_COL_TEXT, buf);
-    lv_obj_align(ic, NULL, LV_ALIGN_CENTER, 0, -(w * 28 / 256));
-    s_printf(buf, "#" GUI_HEX_ACCENT " %s#", caption);
+    lv_obj_align(ic, NULL, LV_ALIGN_CENTER, 0, -(s * 28 / 256));
+    s_printf(buf, "#%s %s#", hex, caption);
     lv_obj_t *cap = gui_label(b, &gui_font_25, GUI_COL_TEXT, buf);
-    lv_obj_align(cap, NULL, LV_ALIGN_IN_TOP_MID, 0, w * 174 / 256);
+    lv_obj_align(cap, NULL, LV_ALIGN_IN_TOP_MID, 0, h / 2 + s * 46 / 256);
 
+    if (!action) {
+        lv_btn_set_state(b, LV_BTN_STATE_INA);
+        lv_obj_set_click(b, false);
+        return b;
+    }
+    lv_btn_set_action(b, LV_BTN_ACTION_CLICK, action);
     lv_group_add_obj(s_group, b);
     return b;
 }

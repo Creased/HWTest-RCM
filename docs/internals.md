@@ -148,14 +148,22 @@ LVGL's built-in styles before anything copies them (the hint style puts 1
 back).
 
 bdk's LVGL is built without UTF-8 (`LV_TXT_UTF8 0`) and treats every byte
-as one letter, so the 44 icons (`ICON_*`) are mapped onto single bytes
-from 0xC0 to 0xEB: below that, a leading byte in 0x80-0xBF is a
+as one letter, so the 45 icons (`ICON_*`) are mapped onto single bytes
+from 0xC0 to 0xEC: below that, a leading byte in 0x80-0xBF is a
 button-matrix control code (tab names, message box buttons) and is never
 drawn as a letter. The set is the `ICONS` table in `tools/mkfont.py`: its
 order assigns the bytes from `ICON_FIRST` (0xC0) and its names become
 `ICON_<NAME>`, so an icon is added by appending to it and regenerating,
-with room for 20 more up to 0xFF. (`SAVE` and `SDCARD` are the same
-floppy-o glyph, FA 4 having no SD card.) The 30 and 20 px icon faces are
+with room for 19 more up to 0xFF. (`SAVE` and `SDCARD` are the same
+floppy-o glyph, FA 4 having no SD card.) The last, `KEY` (FA's key,
+U+F084, Lockpick_RCM's tile), was appended without a full regeneration,
+the text fonts' sources not being at hand: rendered from Font Awesome
+4.7's TTF by PIL's FreeType at mkfont.py's sizes and centring (the 20 and
+30 px faces' sizes and centre rows measured off the circle already in
+them) and added after the existing glyphs, which stay as they were. PIL
+hints harder than mkfont.py's light hinting, a difference too small to
+see at these sizes; a regeneration with mkfont.py renders it like the
+others. The 30 and 20 px icon faces are
 generated at the cell height of the text font of the same size and
 chained onto it with `lv_font_add()` by `gui_fonts_init()`, which is
 hand-written in `gui_main.c` and called from `gui_theme_init()`, so one

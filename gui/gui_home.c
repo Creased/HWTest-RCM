@@ -1,9 +1,9 @@
 /*
  * hwtest GUI - the main screen.
  *
- * Laid out as Nyx's Home tab: the name and a tagline, a row of square
- * buttons (the health check first, then the hands-on tests, and past a
- * divider the RAM test, which leaves for its own payload) and flat text
+ * Laid out as Nyx's Home tab: tiles (the health check first, then the
+ * hands-on tests, two rows of three, and past a divider the RAM test and
+ * Lockpick_RCM, which leave for payloads of their own) and flat text
  * buttons along the bottom, with Reboot and Power Off asking first.
  */
 #include "gui.h"
@@ -23,7 +23,9 @@ static lv_res_t _act_touch(lv_obj_t *b)   { gui_show(gui_touch_test); return LV_
 static lv_res_t _act_screen(lv_obj_t *b)  { gui_show(gui_screen_test); return LV_RES_OK; }
 static lv_res_t _act_dock(lv_obj_t *b)    { gui_show(gui_dock_test); return LV_RES_OK; }
 static lv_res_t _act_ram(lv_obj_t *b)     { gui_show(gui_ram_test); return LV_RES_OK; }
+static lv_res_t _act_gc(lv_obj_t *b)      { gui_show(gui_gamecard_test); return LV_RES_OK; }
 static lv_res_t _act_results(lv_obj_t *b) { gui_show(gui_results); return LV_RES_OK; }
+static lv_res_t _act_lockpick(lv_obj_t *b) { gui_lockpick(); return LV_RES_OK; }
 
 static lv_res_t _power_action(lv_obj_t *btns, const char *txt)
 {
@@ -60,26 +62,26 @@ void gui_home(void)
 {
     lv_obj_t *tab = gui_main_new();
 
-    lv_obj_t *brand = gui_label(tab, &gui_font_30, GUI_COL_TEXT,
-                                "#" GUI_HEX_ACCENT " hwtest#");
-    lv_obj_set_pos(brand, GUI_MARGIN, TAB_Y(108));
-    lv_obj_t *tag = gui_hint(tab, 0, "HARDWARE HEALTH CHECK FOR THE NINTENDO SWITCH");
-    lv_obj_set_pos(tag, GUI_MARGIN, TAB_Y(148));
-
-    /* Nyx's row of square buttons, six across: from the left margin 13 px
-     * apart, the divider in a wider 32 px gap before the last, which ends on
-     * the right margin and leaves for its own payload. Nyx's 256 px tile and
-     * its 16/36 px gaps, scaled to fit six between the margins. */
-    const lv_coord_t bw = 180, step = bw + 13;
-    lv_coord_t y = TAB_Y(240);
-    lv_obj_t *check = gui_big_button(tab, GUI_MARGIN, y, bw, ICON_HEALTH,
+    /* Nyx's tiles in two rows: the six tests three across, 13 px apart from
+     * the left margin, and past the divider, in a wider 34 px gap, the two
+     * that leave for payloads of their own, ending on the right margin: the
+     * RAM Test, and Lockpick_RCM, greyed out when it is not on the SD card.
+     * Four columns share the width between the margins; the two rows sit
+     * midway between the tab bar and the bottom row. */
+    const lv_coord_t bw = (GUI_CONTENT_W - 2 * 13 - 34) / 4, bh = 210;
+    const lv_coord_t step = bw + 13, row = bh + 13;
+    lv_coord_t y = TAB_Y(104);
+    lv_obj_t *check = gui_big_button(tab, GUI_MARGIN, y, bw, bh, ICON_HEALTH,
                                      "Health Check", _act_check);
-    gui_big_button(tab, GUI_MARGIN + step, y, bw, ICON_GAMEPAD, "Joy-Con", _act_joycon);
-    gui_big_button(tab, GUI_MARGIN + 2 * step, y, bw, ICON_TOUCH, "Touchscreen", _act_touch);
-    gui_big_button(tab, GUI_MARGIN + 3 * step, y, bw, ICON_SCREEN, "Screen", _act_screen);
-    gui_big_button(tab, GUI_MARGIN + 4 * step, y, bw, ICON_TV, "Dock", _act_dock);
-    gui_divider(tab, GUI_RIGHT - bw - 16, TAB_Y(220), bw + 40);
-    gui_big_button(tab, GUI_RIGHT - bw, y, bw, ICON_RAM, "RAM Test", _act_ram);
+    gui_big_button(tab, GUI_MARGIN + step, y, bw, bh, ICON_GAMEPAD, "Joy-Con", _act_joycon);
+    gui_big_button(tab, GUI_MARGIN + 2 * step, y, bw, bh, ICON_TOUCH, "Touchscreen", _act_touch);
+    gui_big_button(tab, GUI_MARGIN, y + row, bw, bh, ICON_SCREEN, "Screen", _act_screen);
+    gui_big_button(tab, GUI_MARGIN + step, y + row, bw, bh, ICON_TV, "Dock", _act_dock);
+    gui_big_button(tab, GUI_MARGIN + 2 * step, y + row, bw, bh, ICON_CHIP, "Game Card", _act_gc);
+    gui_divider(tab, GUI_RIGHT - bw - 17, y - 20, row + bh + 40);
+    gui_big_button(tab, GUI_RIGHT - bw, y, bw, bh, ICON_RAM, "RAM Test", _act_ram);
+    gui_big_button(tab, GUI_RIGHT - bw, y + row, bw, bh, ICON_KEY, "Lockpick_RCM",
+                   gui_lockpick_found() ? _act_lockpick : NULL);
 
     /* The bottom row: the flat buttons' text lines up with the margins and
      * their boxes end where every window's content ends (the tab page runs

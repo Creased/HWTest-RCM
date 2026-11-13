@@ -293,23 +293,20 @@ void ui_boot_gui(void)
     ((void (*)(u32, u32))dst)(GUI_ARGS_MAGIC, panel);
 }
 
-/* The RAM test's payload, read off the SD card. NULL when it cannot be, with
- * *err saying why: 1 no SD card, 2 no file, 3 a file of the wrong size. The
- * SD card is unmounted again on every failure. */
-void *ram_payload_load(const char **used, u32 *size, int *err)
+/* A payload read off the SD card, from the first of the paths that holds
+ * one. NULL when it cannot be, with *err saying why: 1 no SD card, 2 no
+ * file, 3 a file of the wrong size. The SD card is unmounted again on every
+ * failure. */
+void *payload_load(const char *const *paths, u32 n, const char **used, u32 *size,
+                   int *err)
 {
-    static const char *paths[] = {
-        "bootloader/payloads/hwtest_ram.bin",
-        "hwtest_ram.bin",
-        "/hwtest_ram.bin",
-    };
     void *buf = NULL;
 
     *err = 1;
     if (sd_mount())
         return NULL;
 
-    for (u32 i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+    for (u32 i = 0; i < n; i++) {
         buf = sd_file_read(paths[i], size);
         if (buf) {
             *used = paths[i];
@@ -327,7 +324,18 @@ void *ram_payload_load(const char **used, u32 *size, int *err)
     return buf;
 }
 
-/* Run a payload ram_payload_load() returned. Does not return. */
+/* The RAM test's payload. */
+void *ram_payload_load(const char **used, u32 *size, int *err)
+{
+    static const char *const paths[] = {
+        "bootloader/payloads/hwtest_ram.bin",
+        "hwtest_ram.bin",
+        "/hwtest_ram.bin",
+    };
+    return payload_load(paths, sizeof(paths) / sizeof(paths[0]), used, size, err);
+}
+
+/* Run a payload payload_load() returned. Does not return. */
 void ram_payload_run(void *buf, u32 size)
 {
     /* Match the safe ordering used by Hekate payload launching: shut down SD
