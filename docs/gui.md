@@ -622,6 +622,7 @@ answer is one line, `+...` or `-ERR <reason>`:
 | `!PUT <path> <size> <crc32 hex>` | `+READY <size>`, then exactly `<size>` raw bytes; `+OK <path> <size> <crc>` once the file is on the card |
 | `!LS <folder>` | `+OK <folder>: <name> <size> ... <sub>/ ...` on one line; only `backup` and `hwtest` and what is under them |
 | `!GET <path>` | `+DATA <size> <crc32 hex>`, the file as `=<hex>` lines of 48 bytes, then `+END`; only under `backup/` and `hwtest/`, up to 4 MiB. The lines go over USB alone when it is up, paced by the PC |
+| `!RMLOGS` | `+OK removed <n>`: every Dock Test log, `hwtest/tvlink_*.txt`, deleted and nothing else (`-ERR removed <n>, the rest would not go` if some stay) |
 | `!RUN` | `+OK starting hwtest.bin, <n> bytes`, then `bootloader/payloads/hwtest.bin` is started from the card, which brings up the `hwtest/gui.bin` now there |
 | `!BT OPEN`, `SCAN`, `LIST`, `CONNECT <n>`, `DISCONNECT`, `STATE`, `CLOSE`, `RAILPAIR` | the [Bluetooth test](bluetooth.md#from-a-pc), without the confirmation box |
 

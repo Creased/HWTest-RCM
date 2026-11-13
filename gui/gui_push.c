@@ -10,6 +10,8 @@
  *   !LS <folder>                 +OK <folder>: name size, sub/, ...
  *   !GET <path>                  +DATA <size> <crc32>, =<hex> lines, +END
  *                                (backup/ and hwtest/ only, read only)
+ *   !RMLOGS                      +OK removed <n>: every hwtest/tvlink_*.txt
+ *                                (the Dock Test's logs) deleted, nothing else
  *   !PUT <path> <size> <crc32>   +READY <size>, then exactly <size> raw
  *                                bytes; +OK <path> <size> <crc32> once
  *                                it is on the card and read back
@@ -207,6 +209,53 @@ static void _ls(const char *path)
     _reply(buf);
 }
 
+/* The Dock Test's logs, hwtest/tvlink_*.txt, and nothing else: a clean
+ * folder before a new round of dock tests (!LS shows 1 KB of it at most).
+ * The names are gathered a batch at a time with the folder closed, then
+ * deleted. */
+static void _rmlogs(void)
+{
+    static char names[16][40];
+    char buf[64];
+    u32 removed = 0;
+    bool stuck = false;
+    if (!g_sd_ok || sd_mount()) {
+        _reply("-ERR no SD card\n");
+        return;
+    }
+    for (;;) {
+        DIR dir;
+        FILINFO fi;
+        u32 n = 0;
+        if (f_opendir(&dir, "hwtest") != FR_OK)
+            break;
+        while (n < ARRAY_SIZE(names) && f_readdir(&dir, &fi) == FR_OK && fi.fname[0]) {
+            u32 len = strlen(fi.fname);
+            if (!(fi.fattrib & AM_DIR) && !strncmp(fi.fname, "tvlink_", 7) &&
+                len > 11 && len < sizeof(names[0]) - 8 && !strcmp(fi.fname + len - 4, ".txt"))
+                s_printf(names[n++], "hwtest/%s", fi.fname);
+        }
+        f_closedir(&dir);
+        if (!n)
+            break;
+        u32 before = removed;
+        for (u32 i = 0; i < n; i++)
+            if (f_unlink(names[i]) == FR_OK)
+                removed++;
+        if (removed == before) {
+            stuck = true;       /* none of them went: stop rather than loop */
+            break;
+        }
+    }
+    if (stuck)
+        s_printf(buf, "-ERR removed %d, the rest would not go\n", removed);
+    else
+        s_printf(buf, "+OK removed %d\n", removed);
+    _reply(buf);
+    s_printf(buf, "gui: push removed %d Dock Test logs\n", removed);
+    gui_uart_puts(buf);
+}
+
 /* +DATA <size> <crc32>, then the file as =<hex> lines, then +END. Hex
  * keeps it plain text, so nothing on the way turns a byte into another. */
 static void _get(const char *path)
@@ -357,6 +406,8 @@ static void _command(const char *line)
         _ls(line + 3);
     } else if (!strncmp(line, "GET ", 4)) {
         _get(line + 4);
+    } else if (!strcmp(line, "RMLOGS")) {
+        _rmlogs();
     } else if (!strcmp(line, "RUN")) {
         _run();
     } else if (!strncmp(line, "BT ", 3)) {

@@ -14,6 +14,7 @@ on the SD card and started from the PC with nobody at the console:
     hwtest_push.py put SRC DEST [SRC DEST ...]       files onto the SD card
     hwtest_push.py ls backup                         a folder (backup/, hwtest/)
     hwtest_push.py get PATH [DEST]                   a file off the card
+    hwtest_push.py clearlogs                         delete the Dock Test logs
     hwtest_push.py report [--out FILE]               the last saved report
     hwtest_push.py run                               start hwtest.bin again
     hwtest_push.py release [--build DIR]             all four built files,
@@ -186,6 +187,12 @@ def cmd_ls(args):
     con.close()
 
 
+def cmd_clearlogs(args):
+    con = open_console(args, echo=False)
+    print(con.command("RMLOGS", timeout=120) or "no answer")
+    con.close()
+
+
 def cmd_get(args):
     con = open_console(args, echo=False)
     data = get(con, args.path)
@@ -331,6 +338,7 @@ def main():
     p = sub.add_parser("get", help="copy a file off the card (backup/, hwtest/)")
     p.add_argument("path")
     p.add_argument("dest", nargs="?", help="local file, - for the screen")
+    sub.add_parser("clearlogs", help="delete the Dock Test logs (hwtest/tvlink_*.txt)")
     p = sub.add_parser("report", help="copy the last saved report off the card")
     p.add_argument("--out", help="local file (default hwtest_report_<serial>.txt)")
     p = sub.add_parser("console", help="write hwtest/hwtest.ini: the console's UART")
@@ -345,7 +353,8 @@ def main():
     args = ap.parse_args()
     {"log": cmd_log, "ping": cmd_ping, "cmd": cmd_cmd, "put": cmd_put,
      "console": cmd_console, "run": cmd_run, "release": cmd_release,
-     "ls": cmd_ls, "get": cmd_get, "report": cmd_report}[args.cmd](args)
+     "ls": cmd_ls, "get": cmd_get, "report": cmd_report,
+     "clearlogs": cmd_clearlogs}[args.cmd](args)
 
 
 if __name__ == "__main__":

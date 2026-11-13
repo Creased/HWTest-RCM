@@ -255,6 +255,7 @@ python host_tools/hwtest_push.py ping         # which build is running
 python host_tools/hwtest_push.py cmd BT STATE # any console command, see docs/gui.md
 python host_tools/hwtest_push.py console uart-a   # write hwtest/hwtest.ini (--gui-usb 0|1), from the next start
 python host_tools/hwtest_push.py report       # copy the last saved report off the card (also: ls, get)
+python host_tools/hwtest_push.py clearlogs    # delete the Dock Test logs (hwtest/tvlink_*.txt)
 ```
 
 The port is found by its USB ID (1209:0001; `--port` overrides). The GUI only
