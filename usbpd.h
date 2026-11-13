@@ -148,6 +148,10 @@ typedef enum {
     DOCK_DP_HPD_WAIT,     /* a moment for the TV's hot plug detect         */
     DOCK_QUERY_SENT,      /* the dock's state                             */
     DOCK_QUERY_ACC,
+    DOCK_R0B_SENT,        /* its 0B and 18 values: HOS reads all three     */
+    DOCK_R0B_ACC,
+    DOCK_R18_SENT,
+    DOCK_R18_ACC,
     DOCK_LED_SENT,        /* its light                                    */
     DOCK_LED_ACC,
     DOCK_HUB_SENT,        /* its USB hub                                  */
@@ -180,12 +184,17 @@ typedef struct {
     u16  dp_status;
     bool hpd;
     u8   dock_state[4];
+    u8   dock_0b[4], dock_18[4];   /* HOS reads them too; meaning unknown */
     bool dock_old_fw;
     bool led_lit, hub_up;
+    const char *hos_reject;   /* the HOS read not answered: "state", "0B"  */
+                              /* or "18" (HOS would not dock); NULL if none */
+    const char *nd_silent;    /* the dock message that got no reply:       */
+                              /* "light" or "hub"; NULL if none            */
     dock_state_t failed_state; /* the step, when DOCK_FAILED              */
     const char *failed_at;    /* its name                                 */
     char fail[96];            /* and why                                  */
-    char log[96];             /* the last breadcrumb for the debug UART   */
+    char log[192];            /* the last breadcrumbs for the debug UART  */
     bool log_new;
 } dock_t;
 

@@ -155,13 +155,25 @@ reply to the message", "the reply could not be read".
    HPD a moment after the lanes are set, so up to 1.5 s for the HPD line or
    `DP_STATUS`'s signal bit (7). It never fails. Anything but a Nintendo
    dock is done here.
-10. **Asking the dock's state.** Steps 10 to 12 are the Nintendo dock's own
-    messages, unstructured VDMs on its SVID. Command `0x16`, a read; a
-    `0x17` reply carries four state bytes, bit 1 of the third marking old
-    dock firmware. Another reply is no failure.
+10. **Reading the dock as HOS does.** Steps 10 to 12 are the Nintendo
+    dock's own messages, unstructured VDMs on its SVID, after DisplayPort
+    is up. HOS's usb sysmodule (22.1.0, read in IDA) docks with three reads
+    and nothing else: command `0x16` (the state; a `0x17` reply carries four
+    bytes, bit 1 of the third marking old dock firmware), then `0x0B` and
+    `0x18` (L4T sends neither; their meaning is not known). It waits 5 s for
+    each, and a missing reply, or one that is not the dock's to that
+    command, leaves the port not docked. The test does the same, in that
+    order with the same wait, and either ends the run as done with "HOS
+    does not dock without it" on the last row and a red verdict: the
+    picture is still tried, for what it shows about the lanes.
 11. **Lighting the dock.** Command `0x01`, a write, fade 64 and duty 128
     (full brightness, a short fade in). Then 500 ms for the hub's own
-    power-up.
+    power-up. HOS never sends the light or the hub (step 12) to dock;
+    other services ask for them later, through the cradle service, and L4T
+    waits for their replies without a limit. So no reply within 2.5 s ends
+    the run as done with a warning, and the picture follows: dock clones
+    carry Nintendo's ids (`057E:2003`) without its light and hub controller,
+    and one stopped here on "no reply to the message" before (2026-11-13).
 12. **Powering the dock's hub.** Command `0x20`, a write. While the `0x21`
     reply says busy, 250 ms and ask again: the code's ten-try limit never
     binds, because every resend resets the count. A reply without the busy
@@ -205,7 +217,7 @@ failed one the reason, and those after it "not reached".
 | Dock mode | "entered" (Nintendo dock), "DisplayPort offered" (anything else) | |
 | DisplayPort | lanes and pins, "configured by the controller", ", mode not on" when `DP_STATUS` bit 15 is clear | `DP_STATUS` bit 1 clear: "NOT configured" |
 | TV on the dock | "a TV is on the dock's HDMI (HPD high)", when HPD is high or `DP_STATUS` bit 7 set | neither: "nothing on the dock's HDMI (HPD low)" |
-| Dock light and hub | light on or off, hub up or "not confirmed", the four state bytes, "(old dock firmware)" | hub not confirmed |
+| Dock light and hub | light on or off, hub up or "not confirmed" (or "no reply to its light (hub) message (a clone?)"), then the state, `0B` and `18` replies as hex, "(old dock firmware)"; a failure "no answer to the dock's state (0B, 18) read: HOS waits 5 s for it and does not dock without it" | hub not confirmed, or the light or hub unanswered |
 
 For a Nintendo charger the Dock mode, DisplayPort and TV rows say "not a
 dock"; for anything but a Nintendo dock the last row says "not a Nintendo
@@ -214,7 +226,11 @@ the SoC's link is trained on at most 2.
 
 The verdict is "Stopped while" the step, then the reason, on a failure.
 Done, it is "The dock answers all the way through: power, its own mode,
-DisplayPort, light and hub." for a Nintendo dock, or a warning: "A
+DisplayPort, light and hub." for a Nintendo dock, a failure "HOS would not
+dock with it: power, its own mode and DisplayPort answered, the state (0B,
+18) read HOS waits for did not.", or a warning: "Nintendo's ids, not all of
+a Nintendo dock: power, its own mode and DisplayPort answered, its light
+and hub messages did not, as on dock clones.", "A
 Nintendo charger, not a dock: the port and its controller negotiated with
 it." or "Not a Nintendo dock: it negotiated power and DisplayPort as a
 generic adapter." The hint then reads "Done. Run does it again; ..." or

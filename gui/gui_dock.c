@@ -202,7 +202,7 @@ static void _rows(void)
     dock_state_t st = d->state;
     /* Which step each state belongs to. */
     static const u8 step_of[] = {
-        0, 0, 1, 2, 2, 3, 3, 4, 4, 4, 4, 4, 4, 5, 5, 6, 7, 7, 7, 7, 7, 7, 8, 8
+        0, 0, 1, 2, 2, 3, 3, 4, 4, 4, 4, 4, 4, 5, 5, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8
     };
     bool failed = st == DOCK_FAILED, done = st == DOCK_DONE;
     u32 now = step_of[failed ? d->failed_state : st];
@@ -276,12 +276,26 @@ static void _rows(void)
                 break;
             case 7:
                 if (!d->nin_dock) { mark = MARK_NONE; text = "not a Nintendo dock"; break; }
-                s_printf(buf, "light %s, hub %s, state %02X %02X %02X %02X%s",
-                         d->led_lit ? "on" : "off", d->hub_up ? "up" : "not confirmed",
+                if (d->hos_reject) {
+                    s_printf(buf, "no answer to the dock's %s read: HOS waits 5 s for it "
+                             "and does not dock without it", d->hos_reject);
+                    text = buf;
+                    mark = MARK_FAIL;
+                    break;
+                }
+                if (d->nd_silent)
+                    s_printf(buf, "no reply to its %s message (a clone?); ", d->nd_silent);
+                else
+                    s_printf(buf, "light %s, hub %s; ", d->led_lit ? "on" : "off",
+                             d->hub_up ? "up" : "not confirmed");
+                s_printf(buf + strlen(buf), "state %02X%02X%02X%02X, 0B %02X%02X%02X%02X, "
+                         "18 %02X%02X%02X%02X%s",
                          d->dock_state[0], d->dock_state[1], d->dock_state[2], d->dock_state[3],
+                         d->dock_0b[0], d->dock_0b[1], d->dock_0b[2], d->dock_0b[3],
+                         d->dock_18[0], d->dock_18[1], d->dock_18[2], d->dock_18[3],
                          d->dock_old_fw ? " (old dock firmware)" : "");
                 text = buf;
-                if (!d->hub_up)
+                if (d->nd_silent || !d->hub_up)
                     mark = MARK_WARN;
                 break;
             }
@@ -305,7 +319,16 @@ static void _rows(void)
                  d->failed_at, d->fail);
         lv_label_set_text(s_verdict, buf);
     } else if (done) {
-        if (d->nin_dock)
+        if (d->nin_dock && d->hos_reject) {
+            s_printf(buf, "#" GUI_HEX_FAIL " " ICON_FAIL "  HOS would not dock with it:# "
+                     "power, its own mode and DisplayPort answered, the %s read HOS waits "
+                     "for did not.", d->hos_reject);
+            lv_label_set_text(s_verdict, buf);
+        } else if (d->nin_dock && d->nd_silent)
+            lv_label_set_text(s_verdict, "#" GUI_HEX_WARN " " ICON_WARN "  Nintendo's ids, not "
+                "all of a Nintendo dock:# power, its own mode and DisplayPort answered, its "
+                "light and hub messages did not, as on dock clones.");
+        else if (d->nin_dock)
             lv_label_set_text(s_verdict, "#" GUI_HEX_OK " " ICON_OK "  The dock answers all the "
                 "way through:# power, its own mode, DisplayPort, light and hub.");
         else if (d->nin_charger)

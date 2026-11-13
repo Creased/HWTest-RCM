@@ -76,6 +76,8 @@
 #define ND_BUSY             1
 #define ND_CMD_LED          0x01
 #define ND_CMD_STATE        0x16
+#define ND_CMD_0B           0x0B    /* read by HOS after the state; not in L4T */
+#define ND_CMD_18           0x18    /* the same                                */
 #define ND_CMD_HUB          0x20
 
 /* What is asked for, as L4T asks: the dock's 15 V at 1.2 A, which is the
@@ -91,6 +93,7 @@
 #define PINMUX_AUX_HDMI_INT_DP_HPD  0x19C
 
 #define STEP_TIMEOUT_MS     2500
+#define HOS_READ_TIMEOUT_MS 5000    /* HOS's wait for each dock read's reply   */
 #define HPD_WAIT_MS         1500    /* the dock's HDMI side raises HPD after the lanes */
 
 /* VENDOR_CONFIG */
@@ -494,7 +497,9 @@ static const char *s_state_name[] = {
     "reading DisplayPort support", "asking for DisplayPort mode",
     "reading DisplayPort mode", "entering DisplayPort", "configuring DisplayPort",
     "waiting for the TV's hot plug detect",
-    "asking the dock's state", "reading the dock's state", "lighting the dock",
+    "asking the dock's state", "reading the dock's state",
+    "asking the dock's 0B value", "reading the dock's 0B value",
+    "asking the dock's 18 value", "reading the dock's 18 value", "lighting the dock",
     "the dock's light", "powering the dock's hub", "the dock's hub",
     "done", "failed",
 };
@@ -520,6 +525,23 @@ static void _fail(dock_t *d, const char *why)
     d->failed_at = dock_state_name(d->state);
     s_printf(d->fail, "%s", why);
     _go(d, DOCK_FAILED);
+}
+
+/* The HOS read a state belongs to. */
+static const char *_hos_read_name(dock_state_t s)
+{
+    return s <= DOCK_QUERY_ACC ? "state" : s <= DOCK_R0B_ACC ? "0B" : "18";
+}
+
+/* One of HOS's three reads went unanswered, or was answered with something
+ * else: HOS would not take the dock as docked. The run ends here, done, so
+ * the picture is still tried. */
+static void _hos_reject(dock_t *d)
+{
+    d->hos_reject = _hos_read_name(d->state);
+    _go(d, DOCK_DONE);
+    s_printf(d->log + strlen(d->log), "gui: dock: no answer to the dock's %s read; "
+             "HOS does not dock without it\n", d->hos_reject);
 }
 
 static bool _take(dock_t *d, u16 bit)
@@ -817,10 +839,27 @@ void dock_step(dock_t *d)
     case DOCK_SVID_SENT:
     case DOCK_MODE_SENT:
     case DOCK_QUERY_SENT:
+    case DOCK_R0B_SENT:
+    case DOCK_R18_SENT:
     case DOCK_LED_SENT:
     case DOCK_HUB_SENT:
         if (_take(d, PD_AL_VDM_RECEIVED)) {
             _cmd_go(d, ACCEPT_VDM_CMD, d->state + 1);
+        } else if (d->state >= DOCK_QUERY_SENT && d->state <= DOCK_R18_SENT) {
+            /* HOS's three reads: its usb sysmodule waits 5 s for each and
+             * does not dock without all three. */
+            if (get_tmr_ms() - d->since > HOS_READ_TIMEOUT_MS)
+                _hos_reject(d);
+        } else if (_timed_out(d) && d->state >= DOCK_LED_SENT) {
+            /* The light and the hub: HOS never needs them to dock (other
+             * services ask for them later), and L4T waits for their
+             * replies without a limit. A dock that does not answer them
+             * (a clone with Nintendo's ids and no such controller) is done
+             * here, with DisplayPort up, and the picture follows. */
+            d->nd_silent = d->state == DOCK_LED_SENT ? "light" : "hub";
+            _go(d, DOCK_DONE);
+            s_printf(d->log + strlen(d->log), "gui: dock: no reply to the dock's %s "
+                     "message\n", d->nd_silent);
         } else if (_timed_out(d)) {
             _fail(d, "no reply to the message");
         }
@@ -939,22 +978,36 @@ void dock_step(dock_t *d)
         break;
 
     case DOCK_QUERY_ACC:
+    case DOCK_R0B_ACC:
+    case DOCK_R18_ACC: {
+        /* HOS's reads, in its order (usb sysmodule 22.1.0): the reply must
+         * be the dock's, to the same command; HOS takes anything else as
+         * no answer. */
+        static const u8 cmd_of[3] = { ND_CMD_STATE, ND_CMD_0B, ND_CMD_18 };
+        u32 k = (d->state - DOCK_QUERY_ACC) / 2;
+        u8 *keep = k == 0 ? d->dock_state : k == 1 ? d->dock_0b : d->dock_18;
         r = _cmd_done(d);
         if (r <= 0) {
             if (r < 0) _fail(d, "the reply could not be read");
             break;
         }
         _read_vdm(vdm);
-        if (vdm[6] == ND_DOCK && vdm[7] == ND_CMD_STATE + 1) {
-            memcpy(d->dock_state, vdm + 9, 4);
-            d->dock_old_fw = (vdm[11] & 0x02) != 0;
+        if (vdm[6] != ND_DOCK || vdm[7] != cmd_of[k] + 1) {
+            _hos_reject(d);
+            break;
         }
-        {
+        memcpy(keep, vdm + 9, 4);
+        if (k == 0)
+            d->dock_old_fw = (vdm[11] & 0x02) != 0;
+        if (k < 2) {
+            _send_nd(d, ND_READ, cmd_of[k + 1], NULL, d->state + 1);
+        } else {
             /* The light: full brightness, a short fade in. */
             static const u8 led[4] = { 64, 0, 0, 128 };   /* fade, off, on, duty */
             _send_nd(d, ND_WRITE, ND_CMD_LED, led, DOCK_LED_SENT);
         }
         break;
+    }
 
     case DOCK_LED_ACC:
         if (!d->led_lit) {
