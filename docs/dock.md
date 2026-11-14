@@ -70,9 +70,8 @@ same from its usb sysmodule. The screen advances it every 40 ms, and each
 wait gives up after 2.5 s unless said otherwise.
 
 Run disappears while the handshake goes and comes back when it ends;
-there is no cancel, and Reset Chip is refused meanwhile. Two waits have no
-end: with no cable the first step waits for ever, and a dock whose hub
-keeps answering busy keeps step 12 going for ever. Leaving the screen ends
+there is no cancel, and Reset Chip is refused meanwhile. One wait has no
+end: with no cable the first step waits for ever. Leaving the screen ends
 the run, with the clean-up given at the end of
 [The rows and the verdict](#the-rows-and-the-verdict).
 
@@ -83,11 +82,13 @@ the Nintendo dock's offer: it gets the 15 V profile, drawing 1.2 A, the
 `BQ24193`'s limit at that voltage. Two profiles starting with 5 V 0.5 A
 and any other second one fail as "it offers power profiles, but none this
 console takes". Any other source gets its most powerful fixed 5, 9, 12 or
-15 V profile at 3 A or less (more than 3 A is passed over), with the same
-failure when none qualifies. The current drawn is the profile's less a
+15 V profile from 100 mA to 3 A (anything outside is passed over), with the
+same failure when none qualifies. The current drawn is the profile's less a
 reserve for a USB device (4.5 W worth above 5 V, 2.5 W at 5 V), capped at
 1.2 A at 15 V, 1.5 A at 12 V and 2 A below, rounded down to the charger's
-steps (100, 150, 500, 900, 1200, 1500, 2000, 3000 mA). The request object
+steps (100, 150, 500, 900, 1200, 1500, 2000, 3000 mA); a profile with less
+than 100 mA left after the reserve (none at all included) gets the lowest,
+100 mA. The request object
 carries the profile's current as its maximum and this as the operating
 current.
 
@@ -95,11 +96,12 @@ current.
 
 A command goes to the command register (`0x05`) and is done when the
 alert's command-done bit (2) comes up with `STATUS1`'s busy bit (13) clear
-and its last-command field (bits 4-6) at 0, "complete". No done bit in
-time fails the step as "no answer to" the command, another result as
-"... was refused (last command ...)" with the command and the result:
-aborted, invalid, rejected, terminated, or "?" for the codes it has no
-name for. The command is one of "sink ready", "the data role swap",
+and its last-command field (bits 4-6) at 0, "complete". A done bit seen
+while busy is still set is kept until busy clears. No done bit in time, or
+a busy that does not clear in time, fails the step as "no answer to" the
+command, another result as "... was refused (last command ...)" with the
+command and the result: aborted, invalid, rejected, terminated, or "?" for
+the codes it has no name for. The command is one of "sink ready", "the data role swap",
 "DisplayPort mode" and "the DisplayPort configuration".
 
 A message (a VDM) goes to `OUTGOING_VDM` (`0x60`) and out with `SEND_VDM`
@@ -181,8 +183,8 @@ reply to the message", "the reply could not be read".
     carry Nintendo's ids (`057E:2003`) without its light and hub controller,
     and one stopped here on "no reply to the message" before (2026-11-13).
 12. **Powering the dock's hub.** Command `0x20`, a write. While the `0x21`
-    reply says busy, 250 ms and ask again: the code's ten-try limit never
-    binds, because every resend resets the count. A reply without the busy
+    reply says busy, 250 ms and ask again, ten times at most; a dock still
+    busy after that leaves the hub unconfirmed. A reply without the busy
     bit marks the hub up; any other leaves it unconfirmed.
 
 ### Three kinds of device
@@ -479,8 +481,9 @@ failure code, not the numbering of the list under
 Steps 1 and 6 exist in the code but cannot occur here: the start only
 follows a probe that got an answer, and the macro's bring-up has no failure
 path. There is no step 10. Step 2 at the first rate comes before the
-regulators are looked at, so it reports both off. A failed start stays as
-far as it got until the next stop.
+regulators are looked at, so it reports both off. A start that fails at
+step 3, 4 or 5 turns `PLLDP` and `PLLD2` off again at once; one that fails
+later stays as far as it got until the next stop.
 
 ### The log
 

@@ -756,6 +756,13 @@ static int _plld2_on(void)
                      2, 45, 9, 7424);
 }
 
+/* Both off again (the next start's _pllss_on locks them again). */
+static void _plls_off(void)
+{
+    CLOCK(PLLD2_BASE_REG) &= ~PLLSS_BASE_ENABLE;
+    CLOCK(PLLDP_BASE_REG) &= ~PLLSS_BASE_ENABLE;
+}
+
 /* ---- the second head's partition and clock -------------------------------- */
 
 static int _disb_on(void)
@@ -1719,16 +1726,21 @@ static int _video_start(dpout_video_t *v, const dpout_sink_t *s, u32 fb)
     /* The pads' regulators, then the clocks: the macro's reference, the
      * pixel clock, the head, SOR1. */
     _rails_on(v);
+    /* A failure here comes before stage 1, so the stop would not undo it:
+     * the PLLs go off at once instead of staying on after the screen. */
     if (_plldp_on()) {
         s_printf(v->why, "PLLDP did not lock");
+        _plls_off();
         return 3;
     }
     if (_plld2_on()) {
         s_printf(v->why, "PLLD2 did not lock");
+        _plls_off();
         return 4;
     }
     if (_disb_on()) {
         s_printf(v->why, "the DISB partition did not power up");
+        _plls_off();
         return 5;
     }
     _sor1_block_on();
@@ -1933,10 +1945,8 @@ void dpout_video_stop(void)
         dpout_dpcd_write(DPCD_SET_POWER, &b, 1);
     }
     s_assr = false;
-    /* The pixel clock and the macro's reference off too (the next start's
-     * _pllss_on locks them again). */
-    CLOCK(PLLD2_BASE_REG) &= ~PLLSS_BASE_ENABLE;
-    CLOCK(PLLDP_BASE_REG) &= ~PLLSS_BASE_ENABLE;
+    /* The pixel clock and the macro's reference off too. */
+    _plls_off();
 }
 
 void dpout_set_logger(void (*fn)(const char *))

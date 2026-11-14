@@ -37,8 +37,7 @@ relocator at `0x4003FF00`), and unmounts the card on every failure:
 The text launcher then waits on "Press POWER to return to the hwtest
 menu." and returns to its menu. The GUI initialises the card again for
 later checks and keeps its raised clocks. The GUI's window text is looser
-than the code ([GUI](gui.md#ram-test)); in particular it mentions a
-reboot, which the payload does not offer.
+than the code ([GUI](gui.md#ram-test)).
 
 On success the text launcher shows "Loaded <path> (<n> bytes)" and, for
 350 ms, "Starting RAM test..."; the GUI has shown "Loading the RAM test..."
@@ -119,9 +118,9 @@ the buffer is commented out.
 
 ## Training
 
-The mode menu comes first ([below](#menus-and-keys)), so Power off from it
-never trains. The "Training DRAM" screen shows the platform, the size
-(`MC_EMEM_CFG & 0x3FFF`, in MiB), the 1600 MHz target, "Training..." then
+The mode menu comes first ([below](#menus-and-keys)), so Restart or Power
+off from it never trains. The "Training DRAM" screen shows the platform,
+the size (`MC_EMEM_CFG & 0x3FFF`, in MiB), the 1600 MHz target, "Training..." then
 "Training      : PASS", and the DRAM ID. Both engines check that the 204
 and 1600 MHz tables carry those rates (else `TABLE`; Erista's 800 MHz
 table is not checked) and that `CLK_SOURCE_EMC` holds the 204 MHz table's
@@ -238,13 +237,17 @@ menu** opens on its first row every time:
 | Quick test | "One full Address pattern write/verify pass." | address (0x01) |
 | Advanced test | "Run all seven RAM patterns." | all seven (0x7F) |
 | Custom test | "Choose individual RAM patterns to run." | the ticked ones |
+| Restart | "Restart the console through its normal boot path." | none |
 | Power off | "Shut down the console cleanly." | none |
 
 Training and the data-bus preflight run first in every mode. **Custom RAM
 test** has a `[x]`/`[ ]` row per pattern, then "Run selected checks" and
 "Back". POWER toggles a row, Run with nothing ticked is ignored, and the
 ticks (all seven at start) survive Back and later runs until power-off.
-Power off writes `MAX77620_ONOFFCNFG1_PWR_OFF` over `I2C_5` once POWER is
+Restart sets `ONOFFCNFG2`'s `SFT_RST_WK` and writes
+`MAX77620_ONOFFCNFG1_SFT_RST`, the power cycle with wake of hwtest's own
+reboot (`do_reboot()`, `core.c`), so a modchip injects again. Power off
+writes `MAX77620_ONOFFCNFG1_PWR_OFF`. Both go over `I2C_5` once POWER is
 released, restoring nothing first.
 
 **Abort** is VOL-, sampled only after each 4 MiB region of a sweep and
@@ -255,12 +258,16 @@ screen appears; seen at the last region of a verify sweep, it discards a
 pass that was in fact fully verified. The report waits for every key to be
 released ("An abort is normally entered with VOL- still held"). Then POWER
 returns to the menu at its first row, not straight into a run, despite the
-footer's "run again"; VOL- powers off and VOL+ does nothing.
+footer's "run again". A volume key acts once both are let go: VOL+
+restarts, VOL- powers off, and VOL- wins if it was held at any point of
+the press.
 
 With a faulty key: either volume key alone reaches every row, as both
 wrap; with POWER alone only Quick test can be run, as the menu opens on
 it; without VOL- there is no abort and no power-off from the report (the
-menu's Power off row still works); without POWER nothing can be started.
+menu's Power off row still works); without VOL+ no restart from the
+report (the menu's Restart row still works); without POWER nothing can be
+started.
 
 ## A run
 
@@ -337,7 +344,8 @@ PASS (`COL_OK`, green). ABORTED wins over FAIL, so read `errors seen`
 after an abort. `stopped on` and `phase prog` appear only when an abort or
 failure came mid-pass. `elapsed` runs from after SMMU setup to the end of
 the passes, so it includes the preflight and excludes training. The
-footer, "POWER: run again    VOL-: power off", is on the LCD only.
+footer, "POWER: run again    VOL+: restart    VOL-: power off", is on the
+LCD only.
 
 Each mismatching 32-bit word counts once per pattern it fails (saturating
 at 0xFFFFFFFF). Counts are printed with `%d`, which the payload's
@@ -355,11 +363,11 @@ right Joy-Con rail at 1.8 V; see the [README](../README.md)), 115200 baud,
 not inverted; the main payload's UART output selector does not apply and
 nothing is read from it. Every `out()` and `out_aligned()` line goes to
 both screen and UART (training, failure, unsupported-platform and report
-text, the SMMU and preflight lines, the menu's "Powering off..."); the
-`[ram]` lines are UART-only, while menus, progress row and bar, the
-per-pass line and footers are LCD-only, and so is the report screen's
-"Powering off...": on UART a power-off from the report leaves the log
-ending at the report. The training, SMMU and preflight lines are cleared
+text, the SMMU and preflight lines, the menu's "Restarting..." and
+"Powering off..."); the `[ram]` lines are UART-only, while menus, progress
+row and bar, the per-pass line and footers are LCD-only, and so are the
+report screen's "Restarting..." and "Powering off...": on UART a restart
+or power-off from the report leaves the log ending at the report. The training, SMMU and preflight lines are cleared
 from the LCD by the next screen, so UART is their only lasting record. The
 host viewer (`host_tools/`) starts a "RAM test" page at each `[ram] mode=`
 line and greys out its UART commands.
@@ -416,5 +424,6 @@ The testable DRAM is overwritten, whatever was loaded there (the GUI and
 the staged copy included), and never restored. The EMC stays at 1600 MHz
 for the rest of the boot; only the recovery path above restores it. The
 SMMU is on for the BPMP during each run only, and CPU0 is booted and
-power-gated twice per run to switch it. Power-off goes through the
-MAX77620; there is no reboot and no return to hwtest.
+power-gated twice per run to switch it. Restart and power-off go through
+the MAX77620. There is no direct return to hwtest: a restart boots the
+console as from power-on.

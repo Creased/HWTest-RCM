@@ -50,10 +50,10 @@ so a missing CPU0 stub fails them.
 almost all free DRAM, including RAM above 4 GiB, on Erista and Mariko alike.
 
 It opens a physical-key menu: **Quick test**, **Advanced test**, **Custom
-test**, and **Power off**. VOL+ moves down, VOL- moves up, and POWER selects or
-toggles. **VOL-** aborts a running test after the current 4 MiB region; after
-an abort or completed run, POWER returns to the RAM-test menu and VOL- powers
-off.
+test**, **Restart** and **Power off**. VOL+ moves down, VOL- moves up, and
+POWER selects or toggles. **VOL-** aborts a running test after the current
+4 MiB region; after an abort or completed run, POWER returns to the RAM-test
+menu, VOL+ restarts and VOL- powers off.
 
 | Mode | Coverage |
 |---|---|

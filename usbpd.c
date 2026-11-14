@@ -513,9 +513,14 @@ const char *dock_state_name(dock_state_t s)
 
 static void _go(dock_t *d, dock_state_t s)
 {
+    /* The hub's busy retry goes HUB_ACC -> HUB_SENT -> HUB_ACC: its count
+     * has to survive those two steps, or the ten-try limit never binds. */
+    bool hub_retry = (d->state == DOCK_HUB_ACC && s == DOCK_HUB_SENT) ||
+                     (d->state == DOCK_HUB_SENT && s == DOCK_HUB_ACC);
     d->state = s;
     d->since = get_tmr_ms();
-    d->tries = 0;
+    if (!hub_retry)
+        d->tries = 0;
     s_printf(d->log, "gui: dock %s: alert %04X s1 %04X s2 %04X dp %04X\n",
              dock_state_name(s), d->alerts, d->s1, d->s2, d->dp);
     d->log_new = true;
@@ -571,13 +576,15 @@ static void _cmd_go(dock_t *d, u16 cmd, dock_state_t next)
 }
 
 /* A command's completion: the chip says done, is no longer busy, and did
- * not reject it. */
+ * not reject it. A done bit seen while still busy is kept for the next
+ * look, and a busy that never clears times out like no answer. */
 static int _cmd_done(dock_t *d)
 {
-    if (!_take(d, PD_AL_CMD_DONE))
+    if (!(d->alerts & PD_AL_CMD_DONE))
         return _timed_out(d) ? -1 : 0;
     if (d->s1 & PD_S1_CMD_BUSY)
-        return 0;
+        return _timed_out(d) ? -1 : 0;
+    _take(d, PD_AL_CMD_DONE);
     if ((d->s1 & PD_S1_LASTCMD_MASK) != 0)
         return -2;
     return 1;
@@ -651,7 +658,7 @@ static bool _choose(dock_t *d)
         u32 mv = d->pdo_mv[i], ma = d->pdo_ma[i];
         if (mv != 5000 && mv != 9000 && mv != 12000 && mv != 15000)
             continue;
-        if (ma > 3000)
+        if (ma < 100 || ma > 3000)
             continue;
         if (mv * ma > best || (!d->pick && mv == 5000)) {
             best = mv * ma;
@@ -666,14 +673,15 @@ static bool _choose(dock_t *d)
 static u32 _op_ma(u32 mv, u32 ma)
 {
     static const u32 steps[] = { 100, 150, 500, 900, 1200, 1500, 2000, 3000 };
-    u32 limit = ma - (mv > 5000 ? 4500000 : 2500000) / mv;
+    u32 reserve = (mv > 5000 ? 4500000 : 2500000) / mv;
+    u32 limit = ma > reserve ? ma - reserve : 0;    /* no unsigned wrap */
     u32 cap = mv >= 15000 ? 1200 : mv == 12000 ? 1500 : 2000;
     if (limit > cap)
         limit = cap;
     for (int i = 7; i >= 0; i--)
         if (limit >= steps[i])
             return steps[i];
-    return 100;
+    return ma < 100 ? ma : 100;                     /* never above the profile */
 }
 
 static void _send_rdo(dock_t *d)
