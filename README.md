@@ -15,13 +15,28 @@ The intended audience is repair techs working on Erista or Mariko consoles
 borderline reading or a real fault stands out without reading every line. For
 everyone else there is a [GUI](#gui) that explains the results in plain words.
 
-The payload is not register-read-only. Active probes can change temporary rails,
-GPIO/pinmux, clocks, power partitions, PWM, radio reset state, audio fabric,
-gamecard state, touch/ALS power, and CPU0 state. Most changes are volatile and
-many probes restore the state they own, but teardown is not yet exact for every
-subsystem. The touch probe deliberately avoids Hekate's button-triggered
-autotune path, runs the FTS ITO production test without saving compensation, and
-powers the touch controller down afterward.
+The payload is not read-only. The probes and the GUI's test screens change
+rails, GPIO/pinmux, clocks, power partitions, PWM, radio reset state, audio,
+the game card reader, touch/ALS power, CPU0 state, DisplayPort output, the
+USB controller, the USB-C PD controller and the dock's mode, and Joy-Con
+modes, and not all of them put back exactly what they found. Most of the
+console's side of that is volatile and goes with the power-off or reboot a
+run normally ends with. A run that instead hands over to another payload
+(the RAM test, Lockpick_RCM, or hwtest.bin restarted from a PC) leaves it to
+that payload. Some state may outlive the power-off: the PD controller's
+settings and the dock's power contract, until the controller is reset (HOS
+resets it at boot), and what the tests left on a Joy-Con (rumble enabled,
+the IR camera's registers, a sensor that missed its off command). Nothing
+permanent is written to the console: no eMMC, no fuses, no touch
+calibration (the ITO test saves no compensation, and hekate's
+button-triggered autotune is avoided), and no game card firmware, whose
+loading burns OTP fuses. The Bluetooth test pairs with each controller it
+connects to, asking for general bonding, so a controller may remember this
+radio and forget the console it was paired with. On the SD card hwtest
+writes the report (`backup/<emmc_serial>/hwtest.txt`), screenshots
+(`hwtest/screenshots/`) and the Dock Test's logs (`hwtest/tvlink_*.txt`).
+A PC on the debug console can also replace the four release files and
+`hwtest/hwtest.ini`, and delete the Dock Test logs.
 
 ## Building
 
@@ -50,10 +65,10 @@ so a missing CPU0 stub fails them.
 almost all free DRAM, including RAM above 4 GiB, on Erista and Mariko alike.
 
 It opens a physical-key menu: **Quick test**, **Advanced test**, **Custom
-test**, **Restart** and **Power off**. VOL+ moves down, VOL- moves up, and
+test**, **Reboot** and **Power off**. VOL+ moves down, VOL- moves up, and
 POWER selects or toggles. **VOL-** aborts a running test after the current
 4 MiB region; after an abort or completed run, POWER returns to the RAM-test
-menu, VOL+ restarts and VOL- powers off.
+menu, VOL+ reboots and VOL- powers off.
 
 | Mode | Coverage |
 |---|---|
@@ -118,11 +133,12 @@ SD card
 `-- hwtest/
     |-- gui.bin              build-gui/gui.bin
     |-- libsys_minerva.bso   build-gui/libsys_minerva.bso (optional, faster drawing)
-    `-- hwtest.ini           the debug console's port (optional, see below)
+    `-- hwtest.ini           console and Dock Test settings (optional, see below)
 ```
 
-`make sdzip` packs exactly that, to be unzipped at the root of the card; every
-release carries it as `hwtest-sd.zip`.
+`make sdzip` packs the four built files, all of it but `hwtest.ini`, to be
+unzipped at the root of the card; every release carries it as
+`hwtest-sd.zip`.
 
 Without `hwtest/gui.bin` (no card, an unreadable card, or a file that is not a
 hwtest GUI image), the text launcher above runs instead, so a console whose SD
@@ -163,7 +179,8 @@ closing box needs a tap or POWER.
 
 The status bar shows the console's serial number when `sd:/switch/prod.keys`
 (from Lockpick_RCM) is on the card, and says in yellow when it is missing or
-unusable; the battery is on the right, as Nyx shows it.
+unusable, or when PRODINFO cannot be read or holds no serial; the battery is
+on the right, as Nyx shows it.
 
 The GUI's debug console starts on the port `hwtest/hwtest.ini` picks, UART-B
 when it does not say, with the `R` reboot, and Custom Check can move it. A
@@ -221,7 +238,8 @@ All three UARTs run at 115200 8N1 with 1.8 V levels. Both stages read
 exists only once the GUI runs. Without a readable SD card nothing can be
 read, and the console stays on UART-B. `R` still reboots from UART-B
 whichever port is picked, as long as no Joy-Con has the right rail.
-`hwtest_push.py console uart-a` writes the file over USB.
+`hwtest_push.py console uart-a` sets `console` and `gui_usb` (1 unless
+`--gui-usb 0`) in the file over USB and keeps its other lines.
 
 ## Host viewer (`host_tools/hwtest_viewer.py`)
 
@@ -255,18 +273,20 @@ python host_tools/hwtest_push.py release      # the four built files, run, then 
 python host_tools/hwtest_push.py log          # the debug console, live; reconnects across restarts
 python host_tools/hwtest_push.py ping         # which build is running
 python host_tools/hwtest_push.py cmd BT STATE # any console command, see docs/gui.md
-python host_tools/hwtest_push.py console uart-a   # write hwtest/hwtest.ini (--gui-usb 0|1), from the next start
+python host_tools/hwtest_push.py console uart-a   # set console= and gui_usb= (--gui-usb 0|1) in hwtest/hwtest.ini, from the next start
 python host_tools/hwtest_push.py report       # copy the last saved report off the card (also: ls, get)
 python host_tools/hwtest_push.py clearlogs    # delete the Dock Test logs (hwtest/tvlink_*.txt)
 ```
 
 The port is found by its USB ID (1209:0001; `--port` overrides). The GUI only
 writes the four files a release puts on the card and `hwtest/hwtest.ini`,
-each checked by CRC-32,
-written beside the old one, read back and only then renamed over it, and then
-starts `bootloader/payloads/hwtest.bin` from the card, which brings up the new
-GUI. The first GUI with this has to reach the card by hand. The commands are
-in [docs/gui.md](docs/gui.md#commands-from-the-pc).
+each checked by CRC-32, written beside the old one as `.new` and read back.
+Only then does the old one step aside as `.old`, the new one take its name
+and the `.old` go; if that rename fails, the old one is put back. `run`,
+which a `release` ends with, then starts `bootloader/payloads/hwtest.bin`
+from the card, which brings up the new GUI. The first GUI with this has to
+reach the card by hand. The commands are in
+[docs/gui.md](docs/gui.md#commands-from-the-pc).
 
 ## Technical notes
 
@@ -276,7 +296,7 @@ in [docs/gui.md](docs/gui.md#commands-from-the-pc).
 | [docs/power.md](docs/power.md) | The PMICs, regulators, fuel gauge, charger, USB-PD controller, thermal sensor and fan, and the power cross-checks |
 | [docs/memory.md](docs/memory.md) | DRAM identity, the channel symmetry check, PLL lock and the decoded clock rates |
 | [docs/storage.md](docs/storage.md) | SD and eMMC bring-up, PRODINFO and CAL0, eMMC health, GPT, BOOT0 (pkg1, AutoRCM), error counters, the SD report |
-| [docs/gamecard.md](docs/gamecard.md) | The game card reader probe: what it never does, what it reports, what it puts back |
+| [docs/gamecard.md](docs/gamecard.md) | The game card reader probe: what it never does, what it reports, what it puts back; the GUI's Game Card screen |
 | [docs/wireless.md](docs/wireless.md) | The Bluetooth and Wi-Fi probes: why the PCIe half runs on CPU0, the bring-up sequence, reading its output |
 | [docs/audio.md](docs/audio.md) | The audio probe: codec identity, clocks, the melody, and the gotchas behind it |
 | [docs/display.md](docs/display.md) | The panel ID and its decoding, the backlight, the CAL0 LCD vendor check |
@@ -297,7 +317,7 @@ in [docs/gui.md](docs/gui.md#commands-from-the-pc).
 hwtest.h             - shared header: logging + finding APIs, probe prototypes
 core.c               - page table, the sweep, step breadcrumbs, UART reboot hook
 main.c               - boot flow, text launcher hand-off, pager + UART command loop
-dbgcfg.c/.h          - hwtest/hwtest.ini: the debug console's port, for hwtest.bin and the GUI
+dbgcfg.c/.h          - hwtest/hwtest.ini (console port, gui_usb, the Dock Test's dp_pol/dp_swap) and bringing that UART up, for hwtest.bin and the GUI
 log.c                - logging to the LCD, the debug console and the report capture
 dx.c                 - diagnostic-finding registry consumed by the verdict
 report.c             - SD report writer (backup/<emmc_serial>/hwtest.txt)
@@ -320,24 +340,27 @@ cpu_mbox.h           - BPMP <-> CPU0 mailbox, shared by both toolchains
 cpu_stub/            - AArch64 stub that does the PCIe half on CPU0
 emmcsn.c             - Hekate-style backup/<emmc_serial>/<sub>/<file> path
 loader/              - self-extracting stub: build/hwtest.bin is it plus the deflate-packed payload, under the 130392-byte RCM limit
-ui_menu.c/.h         - physical-key launcher, custom probe selection, GUI and RAM payload loaders
+ui_menu.c/.h         - physical-key launcher, custom probe selection, GUI loader, payload loader (RAM test, Lockpick_RCM) and runner (those and !RUN)
 ui_theme.h           - shared LCD colors and menu geometry used by hwtest and RAM UI
-chain_reloc.S        - tiny upper-IRAM relocator used for the hwtest -> RAM handoff
+chain_reloc.S        - tiny upper-IRAM relocator used for every payload hand-off (the RAM test, Lockpick_RCM, hwtest.bin on !RUN)
 gfx/                 - LCD driver (vendored from the Hekate bootloader)
 stubs.c              - minerva_deinit no-op
 link.ld              - link script; also keeps .bss off BDK's SDRAM scratch
 memory_map.h         - BDK's memory map with the SDRAM parameter scratch moved past the image
-gui/                 - LVGL front end (`make gui`): screens, theme, plain-language texts, fonts
+gui/                 - LVGL front end (`make gui`): screens, theme, plain-language texts, fonts; also the debug console's routing, USB serial, the PC's commands, the Bluetooth HID host, the Joy-Con rail protocol and the payload hand-offs
 tools/mkfont.py      - rasterises the GUI's fonts into LVGL's format
 tools/mksdzip.py     - packs the SD card zip (`make sdzip`)
 tools/mkpayload.py   - packs the linked payload for the loader: deflate for hwtest.bin, LZ for the RAM test (tools/lzpack.py)
+tools/lzpack.py      - the LZ77 packer for BDK's LZ_Uncompress, used by mkpayload.py for the RAM test
 tools/check_inflate.py - proves at build time that hwtest.bin's in-place expansion never overwrites unread input
 Makefile             - devkitARM normal payload, `make ram`, `make gui`, AArch64 CPU0-stub build support
 docs/                - technical notes
 third_party/hekate/  - pinned Hekate BDK git submodule
 third_party/Atmosphere/ - pinned Atmosphere MTC/timing-table git submodule
 ramtest/             - universal Erista/Mariko DRAM diagnostic + Atmosphere MTC adaptation patch
-host_tools/          - ImGui + pyserial UART viewer (parser, GUI, replay), and hwtest_push.py (log and push builds over USB)
+host_tools/          - ImGui + pyserial UART viewer (parser, GUI, replay), and hwtest_push.py (over USB: the log, pushing and running builds, any console command, hwtest.ini, files and the report off the card, deleting the Dock Test logs)
+.github/workflows/   - CI build (ci.yml) and the tagged release with hwtest-sd.zip (release.yml)
+img/                 - the pictures in this README
 ```
 
 ## Acknowledgements

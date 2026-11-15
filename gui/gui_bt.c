@@ -18,10 +18,10 @@
  * the UART runs with hardware flow control both ways: our RTS goes up when
  * the receive FIFO fills, and the radio holds what it has until we read.
  *
- * Security is asked for only when the controller asks for it: the HID
- * channels are opened first, and only a "security block" answer leads to
- * pairing. Pairing starts without bonding, which a controller may accept
- * without storing anything, and falls back to bonding if it refuses.
+ * Pairing comes first, right after the connection, as BlueZ pairs a
+ * controller before opening anything: Secure Simple Pairing, "just works",
+ * asking for general bonding, so a controller may remember this radio. A
+ * "security block" answer to an HID channel asks for it again.
  */
 #include "gui.h"
 #include "gui_bt.h"

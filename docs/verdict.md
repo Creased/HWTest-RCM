@@ -157,10 +157,11 @@ short) through `DBG_SEND`, then calls `status_set(msg)`. During the text
 boot sweep it also cleans the BPMP cache: the framebuffer sits in
 write-back-cached DRAM, and without the clean the LCD can show the
 previous step and blame the wrong one. In the text payload `DBG_SEND` is
-`uart_send_crlf` on UART-B, which waits for TX idle, so the line is out
-before the next access, which may hang. In the GUI it is `dbg_send`, to
-UART-A, UART-B, UART-C or USB serial; only the UART ports go through
-`uart_send_crlf` and its TX-idle wait.
+`uart_send_crlf` on the console's UART (UART-B unless `hwtest/hwtest.ini`
+moves it), which waits for TX idle, so the line is out before the next
+access, which may hang. In the GUI it is `dbg_send`, to UART-A, UART-B,
+UART-C or USB serial; only the UART ports go through `uart_send_crlf` and
+its TX-idle wait.
 
 Breadcrumbs bypass `_log_emit`. They reach only the debug console, never
 the SD report or the GUI's page capture, and muting does not stop them.
@@ -491,8 +492,8 @@ Text and GUI part ways in four places:
   yellow. Without prod.keys the Storage row reads `warn (no keys)`, unless
   an earlier key supplies the reason. The GUI shows the Storage category
   as working normally, since nothing is wrong with the hardware, but says
-  the keys are missing in the status bar, on every screen, and on the
-  Factory data row, marked as a warning.
+  the keys are missing in the status bar, on every screen but the Screen
+  and Touchscreen tests, and on the Factory data row, marked as a warning.
 - In a Power-only run, `soc_pmic_otp` shows as "Not picked for this
   check." because its row did not run. The finding is still recorded,
   though, so a failure still carries its "Technical:" line.

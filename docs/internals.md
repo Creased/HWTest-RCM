@@ -11,8 +11,8 @@ prologue and silently truncates the buffer to 192 KiB, so a payload past
 130392 bytes reaches the console cut short. hwtest.bin is therefore
 `loader/`, about 1.8 KB of code at `0x40007000`, with the payload trailing
 it as a raw deflate stream (`tools/mkpayload.py --codec deflate`, zlib at
-level 9, about 62% of the linked image). The Makefile fails a `.bin` over
-`RCM_LIMIT`.
+level 9, about 62% of the linked image). The Makefile fails, and deletes,
+a `.bin` over 130392 bytes.
 
 `loader.c` boosts the BPMP, copies the stream back to front so it ends at
 `0x40038000`, expands it forward into `0x40008000` with `inflate.c` and
@@ -116,16 +116,16 @@ gui: <n> frames, <n> ms avg, <n> ms worst, VIC wait <n> ms/frame
 ## The GUI's fonts
 
 The GUI's fonts are Inter at Nyx's 30 px (most text) and 20 px (hints) plus
-a 25 px of its own for the home buttons' captions (six buttons in the row
-make the tile 180 px instead of Nyx's 256, and it is scaled as a whole),
-Source Code Pro at 18 px for report text, and Font Awesome 4.7 symbols at
-the two text sizes, at 100 px (the home buttons) and at 120 px (the
-results' verdict). In C they are `gui_font_30`, `gui_font_20`,
-`gui_font_25` and `gui_font_mono`, then `gui_icons_30`, `gui_icons_20`,
-`gui_icons_100` and `gui_icons_120`. Nyx's own glyph bitmaps are not in
-the source tree: they are read at run time from hekate's `res.pak`, at
-offsets that move between releases, so the GUI bundles its own.
-`tools/mkfont.py` rasterises them into:
+a 25 px of its own for the home buttons' captions (the eight tiles are 276
+by 210 px, their icon and caption placed in Nyx's proportions at 256,
+scaled from the shorter side), Source Code Pro at 18 px for report text,
+and Font Awesome 4.7 symbols at the two text sizes, at 100 px (the home
+buttons) and at 120 px (the results' verdict). In C they are `gui_font_30`,
+`gui_font_20`, `gui_font_25` and `gui_font_mono`, then `gui_icons_30`,
+`gui_icons_20`, `gui_icons_100` and `gui_icons_120`. Nyx's own glyph
+bitmaps are not in the source tree: they are read at run time from hekate's
+`res.pak`, at offsets that move between releases, so the GUI bundles its
+own. `tools/mkfont.py` rasterises them into:
 
 - `gui/res/fonts.bin`: every glyph bitmap back to back, at 4 bpp, linked
   into gui.bin as `gui_font_blob` by `gui/fonts_blob.S` (its

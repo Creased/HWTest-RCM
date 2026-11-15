@@ -107,7 +107,8 @@ on.
 ## UART debug port
 
 The Joy-Con right rail's chassis-side debug header carries `UART_B` at
-115200 8N1 with 1.8 V logic, and hwtest writes its log out of it.
+115200 8N1 with 1.8 V logic, and hwtest writes its log out of it unless
+`hwtest/hwtest.ini` (or, in the GUI, Custom Check) moves the console.
 `probe_uart_b`, under `[UART_B debug port]`, reports the receive side, so
 a break in the adapter wiring can be localised without a scope or a
 meter. The receive path:
@@ -233,7 +234,7 @@ most consoles read LOW and treats that reading as the expected one.
 ### What it changes
 
 - `LCR.DLAB` is set for the divisor read, then the saved `LCR` is written
-  back. This is the UART that carries the log, but the code notes that
+  back. This UART carries the log by default, but the code notes that
   the flip lasts microseconds and loses no TX byte in flight: THR keeps
   emptying, the shift register being independent of the latch mux.
 - PG1 spends about 10 ms in GPIO mode and is then set to SPIO

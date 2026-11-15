@@ -53,12 +53,15 @@ copy is as long as the file, with no upper bound. A gui.bin from another
 build with the same header layout starts, and so does one damaged past its
 header. Nothing says why the GUI was skipped: the launcher just appears.
 UART-B does show whether it was: hwtest.bin's `[boot] backlight ok` is
-followed by `=== hwtest GUI ===` when the GUI starts, or by
-`[boot] launcher enter` when it was skipped. With neither, it stopped in
-between: in the card read, the copy or the GUI's first steps. The only
-size guard is at build time: `gui/link.ld` asserts that the image and its
-BSS end by 0x82000000, inside the 16 MiB slot hekate gives Nyx under the
-heap.
+followed by `=== hwtest GUI ===` when the GUI starts. When it was skipped
+it is followed by `[boot] launcher enter` (after
+`[boot] console=<value> unknown` for a `console=` it does not know), or by
+`[boot] console moves to UART-<x>` when `hwtest/hwtest.ini` moves the
+console, the launcher's line then going out on the new port. With none of
+them, it stopped in between: in the card read, the copy or the GUI's
+first steps. The only size guard is at build time: `gui/link.ld` asserts
+that the image and its BSS end by 0x82000000, inside the 16 MiB slot
+hekate gives Nyx under the heap.
 
 The panel id is passed because bdk's display code branches on it (an
 OLED's brightness goes over DSI) and the GUI never runs `display_init()`;
@@ -122,12 +125,14 @@ most every 2 s), `gui_cmd_poll()` (`R` and the PC's commands, see
 serial port), a VOL sample and a 500 us sleep.
 
 The status bar along the bottom shows on the left the console's serial
-from PRODINFO, which decrypts only with `sd:/switch/prod.keys`. Without
-it that side says why, in yellow (`console_serial()` tells them apart):
-"No prod.keys on the SD card", "prod.keys could not be read" or
+from PRODINFO, which decrypts only with `sd:/switch/prod.keys`. When it
+cannot be read that side says why, in yellow (`console_serial()` tells
+them apart): "No prod.keys on the SD card", "prod.keys could not be read",
 "prod.keys is not this console's" (no usable `bis_key_00`, or CAL0 does
-not decrypt with it). It stays empty when the eMMC or the SD card did not
-come up. On the right, refreshed every 5 s, the
+not decrypt with it), "PRODINFO could not be read" (not in the GPT, an
+unusable LBA range, or the read failed) or "No serial in PRODINFO" (CAL0
+decrypted, its serial empty). It stays empty when the eMMC or the SD card
+did not come up. On the right, refreshed every 5 s, the
 battery as Nyx shows it: the MAX17050's `RepSOC` to a tenth of a percent,
 the symbol red at 15% and below, a bolt while the BQ24193 reports a charge
 status, the current (green into the battery, red out of it) and the cell
@@ -463,8 +468,9 @@ The UARTs run at 115200 8N1 with 1.8 V levels. Everything the console
 carries follows the port: the check's report as it runs, the GUI's own
 lines, and `R`. That is because gui.bin builds `core.c`, `log.c` and the
 probes again with `-DHWTEST_GUI`, which turns `hwtest.h`'s `DBG_SEND` and
-`DBG_RECV` from UART-B into `gui_dbg.c`'s `dbg_send` and `dbg_recv`; the
-same define makes `log.c`'s `_log_emit` also call `gui_log_capture()`
+`DBG_RECV` from hwtest.bin's console UART (`g_dbg_uart`) into
+`gui_dbg.c`'s `dbg_send` and `dbg_recv`; the same define makes `log.c`'s
+`_log_emit` also call `gui_log_capture()`
 ([The page capture](#the-page-capture)).
 
 A UART is brought up (`_uart_up`) as main.c brings UART-B up: 115200 with
@@ -480,12 +486,17 @@ and charge-enable stay on. USB stays up beside the new port.
 `gui_dbg_init()` reads the file once the rails are set up, after
 `jc_init_hw()`. A `console=` value it does not know is reported as "gui:
 hwtest/hwtest.ini: console=<value> unknown" and the console stays where it
-is; `gui_usb=0` sends "gui: gui_usb=0, USB serial off" and stops USB; a
-port that cannot be had (UART-C on a Lite, or a rail a Joy-Con has taken)
-gives "gui: <port> is not there, the console stays on <port>". The text
-launcher reads the same file in `main.c` (`_console_from_config()`), once
-`ui_boot_gui()` has returned, and moves its own console with the same
-`dbg_uart_up()`; the GUI's `gui_usb` means nothing to it.
+is; `dp_pol=1` or `dp_swap=1`, bench tests of the Dock Test's DisplayPort
+lanes ([Dock Test](dock.md#sor1-and-the-second-head)), are set for the
+session and said as "gui: hwtest/hwtest.ini: DP lanes <inverted and/or
+exchanged> for the Dock Test"; `gui_usb=0` sends "gui: gui_usb=0, USB
+serial off" and stops USB; UART-C on a Lite, which cannot be had, gives
+"gui: <port> is not there, the console stays on <port>". A rail a Joy-Con
+has taken is not refused: it is the console all the same, its UART output
+is dropped and only USB carries it. The text launcher reads the
+same file in `main.c` (`_console_from_config()`), once `ui_boot_gui()` has
+returned, and moves its own console with the same `dbg_uart_up()`; the
+GUI's `gui_usb`, `dp_pol` and `dp_swap` mean nothing to it.
 
 Moving sends "gui: debug console moves to <port>" on the old port and
 "=== hwtest GUI === debug console on <port>" on the new one. Either is
@@ -515,7 +526,11 @@ Joy-Con is there; a bench UART adapter does not pull it low. TX is handed
 back after. It runs, never on a Lite:
 
 - on UART-B at start-up;
-- on UART-C when Custom Check picks it;
+- on UART-C when `hwtest/hwtest.ini` or Custom Check picks it;
+- every 150 ms on each rail the Motion screen (both) or the IR Camera
+  screen (the right) watches (`gui_rail_attached()`), UART-C included when
+  it is not the console, after that UART's last bytes
+  ([Joy-Con tests](joycon.md#talking-to-a-joy-con));
 - before every Joy-Con poll, on UART-B unless a Joy-Con has already taken
   it and on UART-C while it is the console, each once that UART's last
   bytes have gone out.
@@ -531,10 +546,11 @@ and `R` over UART-B stops working; UART-A or USB carry everything. On a
 Lite UART-C is the controls' from the start, and UART-B keeps main.c's
 set-up untouched.
 
-The detection runs only when the Joy-Con is polled, and nothing polls it
-during a health check. Going by the code, a Joy-Con slid onto the
-console's rail during a run is not noticed until the first poll after it,
-and the run's output keeps going out on that rail until then.
+The detection runs only when the Joy-Con is polled or a sensor screen
+watches its rail, and neither happens during a health check. Going by the
+code, a Joy-Con slid onto the console's rail during a run is not noticed
+until the first poll after it, and the run's output keeps going out on
+that rail until then.
 
 ### The R reboot
 
@@ -605,18 +621,17 @@ Erista's USB2 controller (`gui/usbser_usb2.c`), forks of bdk's `xusbd.c`
 and `usbd.c` reduced to this device and changed never to wait for a PC:
 `init()` brings the controller up and arms the port, `poll()` handles what
 came in. Their controller, PHY and clock sequences are bdk's. Both enable
-PLLU when the port comes up and disable it when it stops, so once USB
-serial has been picked the PLLU line of the Memory & clocks page reads as
-the port left it, not as the console booted. XUSB reports a PC that went
-away, after which the port starts over with DTR and the queues cleared.
-USB2 never reports one: a PC plugged in again resets the bus and
-enumeration starts over from there. Until then, by the code, the port
-reads as configured and DTR stays as the last PC left it, so the note can
-keep saying "Open on the PC." with the cable out. USB2 also runs its
-control stages synchronously, as bdk does ("a PC completes them within
-microseconds"), each wait bounded at `USB_XFER_SYNCED_ENUM` tries, about
-2 s. XUSB's `init()` cannot fail, so "The USB controller did not come up."
-can only appear on Erista.
+PLLU when the port comes up and disable it when it stops, so the PLLU line
+of the Memory & clocks page reads as the port left it, not as the console
+booted. XUSB reports a PC that went away, after which the port starts over
+with DTR and the queues cleared. USB2 never reports one: a PC plugged in
+again resets the bus and enumeration starts over from there. Until then,
+by the code, the port reads as configured and DTR stays as the last PC
+left it, so the note can keep saying "Open on the PC." with the cable out.
+USB2 also runs its control stages synchronously, as bdk does ("a PC
+completes them within microseconds"), each wait bounded at
+`USB_XFER_SYNCED_ENUM` tries, about 2 s. XUSB's `init()` cannot fail, so
+"The USB controller did not come up." can only appear on Erista.
 
 Before the GUI hands over to another payload (the RAM test, or `!RUN`
 below), `gui_dbg_end()` gives the queue up to 300 ms to drain and stops the
@@ -634,7 +649,7 @@ answer is one line, `+...` or `-ERR <reason>`:
 |---|---|
 | `!PING` | `+PONG hwtest GUI <version>, console on <port>` |
 | `!PUT <path> <size> <crc32 hex>` | `+READY <size>`, then exactly `<size>` raw bytes; `+OK <path> <size> <crc>` once the file is on the card |
-| `!LS <folder>` | `+OK <folder>: <name> <size> ... <sub>/ ...` on one line; only `backup` and `hwtest` and what is under them |
+| `!LS <folder> [skip]` | `+OK <folder>: <name> <size> ... <sub>/ ...` on one line of at most 1 KB, from the `skip`-th entry on; a line that cannot hold the rest ends `... next <n>`, the skip to ask with next (`hwtest_push.py ls` does that); only `backup` and `hwtest` and what is under them |
 | `!GET <path>` | `+DATA <size> <crc32 hex>`, the file as `=<hex>` lines of 48 bytes, then `+END`; only under `backup/` and `hwtest/`, up to 4 MiB. The lines go over USB alone when it is up, paced by the PC |
 | `!RMLOGS` | `+OK removed <n>`: every Dock Test log, `hwtest/tvlink_*.txt`, deleted and nothing else (`-ERR removed <n>, the rest would not go` if some stay) |
 | `!RUN` | `+OK starting hwtest.bin, <n> bytes`, then `bootloader/payloads/hwtest.bin` is started from the card, which brings up the `hwtest/gui.bin` now there |
@@ -643,27 +658,32 @@ answer is one line, `+...` or `-ERR <reason>`:
 `!PUT` writes only the four files a release puts on the card
 (`hwtest/gui.bin`, `hwtest/libsys_minerva.bso`,
 `bootloader/payloads/hwtest.bin`, `bootloader/payloads/hwtest_ram.bin`)
-and `hwtest/hwtest.ini`, up to 8 MiB. Nothing is drawn while the bytes come, since at 115200 a
-frame's worth would overrun a UART's FIFO; a transfer that stops for 5 s
-fails. The CRC-32 (bdk's `crc32_calc`, the same as zlib's) is checked, the
-file is written as `<path>.new`, read back and checked again, and only then
-renamed over the old one, so a transfer cut short leaves the old file in
-place. `!RUN` stages the payload as the RAM test is staged
-(`ram_payload_run()`): USB stopped, the boot clocks back, the payload
-copied to 0x40010000 from IRAM. Over USB a whole release (about 1.3 MB)
-goes over in about a second.
+and `hwtest/hwtest.ini`, up to 8 MiB. Nothing is drawn while the bytes
+come, since at 115200 a frame's worth would overrun a UART's FIFO; a
+transfer that stops for 5 s fails. The CRC-32 (bdk's `crc32_calc`, the
+same as zlib's) is checked, the file is written as `<path>.new`, read back
+and checked again, and only then put in place, so a transfer cut short
+leaves the old file as it was. FatFs will not rename over a file, so the
+old one steps aside to `<path>.old` (a stale one deleted first), the
+`.new` is renamed into place and the `.old` deleted; if that rename fails
+the `.old` is renamed back and the `.new` deleted. `!RUN` stages the
+payload as the RAM test is staged (`ram_payload_run()`): USB stopped, the
+boot clocks back, the payload copied to 0x40010000 from IRAM. Over USB a
+whole release (about 1.3 MB) goes over in about a second.
 
 `host_tools/hwtest_push.py` speaks it from the PC, finding the port by its
 USB ID: `release` puts the four built files on the card (hwtest.bin last),
 runs it, waits for the port to come back and pings the new build; `log`
 streams the console and reconnects across restarts; `cmd` sends any
 command and can follow the log after it; `console uart-b|uart-c|uart-a
-[--gui-usb 0|1]` writes `hwtest/hwtest.ini`; `ls`, `get` and `report`
-(the last saved `backup/<eMMC serial>/hwtest.txt`) read the card back.
-Only `+...` and `-ERR` lines count as answers, since a report's page
-headers start with `---`. Every wait has a deadline as
-well as a quiet spell, since the GUI logs its frame times every couple of
-seconds while it draws.
+[--gui-usb 0|1]` reads `hwtest/hwtest.ini` off the card and writes it back
+with its `console=` and `gui_usb=` lines set (1 unless given) and every
+other line kept, or a commented template when there is none; `ls`, `get`
+and `report` (the last saved `backup/<eMMC serial>/hwtest.txt`) read the
+card back. Only `+...` and `-ERR` lines count as answers, since a report's
+page headers start with `---`. Every wait has a deadline as well as a
+quiet spell, since the GUI logs its frame times every couple of seconds
+while it draws.
 
 ## Touchscreen test
 

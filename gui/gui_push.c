@@ -7,7 +7,8 @@
  * console (host_tools/hwtest_push.py drives it):
  *
  *   !PING                        +PONG hwtest GUI <version>, console on <port>
- *   !LS <folder>                 +OK <folder>: name size, sub/, ...
+ *   !LS <folder> [skip]          +OK <folder>: name size, sub/, ...; a
+ *                                full line ends "... next <n>"
  *   !GET <path>                  +DATA <size> <crc32>, =<hex> lines, +END
  *                                (backup/ and hwtest/ only, read only)
  *   !RMLOGS                      +OK removed <n>: every hwtest/tvlink_*.txt
@@ -90,7 +91,7 @@ static u32 _parse_u32(const char **p, u32 base)
 
 static void _put(const char *args)
 {
-    char path[64], tmp[72], buf[160];
+    char path[64], tmp[72], old[72], buf[160];
     u32 n = 0;
     while (*args == ' ')
         args++;
@@ -165,20 +166,41 @@ static void _put(const char *args)
         _reply("-ERR the card did not read back what was written\n");
         return;
     }
-    f_unlink(path);
+    /* FatFs will not rename over a file, so the old one steps aside to
+     * .old first and comes back if the new one cannot take its place:
+     * a failure never leaves the path empty. */
+    s_printf(old, "%s.old", path);
+    f_unlink(old);
+    bool had_old = f_rename(path, old) == FR_OK;
     if (f_rename(tmp, path) != FR_OK) {
+        if (had_old)
+            f_rename(old, path);
+        f_unlink(tmp);
         _reply("-ERR could not rename the new file into place\n");
         return;
     }
+    if (had_old)
+        f_unlink(old);
     s_printf(buf, "+OK %s %d %08X\n", path, size, crc);
     _reply(buf);
     s_printf(buf, "gui: push wrote %s, %d bytes\n", path, size);
     gui_uart_puts(buf);
 }
 
-static void _ls(const char *path)
+/* !LS <folder> [skip]: one line of at most 1 KB, from the skip-th entry on.
+ * A line that does not hold them all ends " ... next <n>", the skip that
+ * carries on from there. */
+static void _ls(const char *args)
 {
     static char buf[1024];
+    char path[64];
+    u32 n = 0;
+    while (*args == ' ')
+        args++;
+    while (*args && *args != ' ' && n < sizeof(path) - 1)
+        path[n++] = *args++;
+    path[n] = 0;
+    u32 skip = _parse_u32(&args, 10), idx = 0;
     if (!_readable(path)) {
         _reply("-ERR only backup/ and hwtest/ can be read\n");
         return;
@@ -194,9 +216,11 @@ static void _ls(const char *path)
         return;
     }
     s_printf(buf, "+OK %s:", path);
-    while (f_readdir(&dir, &fi) == FR_OK && fi.fname[0]) {
-        if (strlen(buf) + strlen(fi.fname) + 16 > sizeof(buf) - 8) {
-            strcat(buf, " ...");
+    for (; f_readdir(&dir, &fi) == FR_OK && fi.fname[0]; idx++) {
+        if (idx < skip)
+            continue;
+        if (strlen(buf) + strlen(fi.fname) + 16 > sizeof(buf) - 24) {
+            s_printf(buf + strlen(buf), " ... next %d", idx);
             break;
         }
         if (fi.fattrib & AM_DIR)
@@ -210,7 +234,7 @@ static void _ls(const char *path)
 }
 
 /* The Dock Test's logs, hwtest/tvlink_*.txt, and nothing else: a clean
- * folder before a new round of dock tests (!LS shows 1 KB of it at most).
+ * folder before a new round of dock tests (!LS shows it 1 KB at a time).
  * The names are gathered a batch at a time with the folder closed, then
  * deleted. */
 static void _rmlogs(void)

@@ -321,9 +321,10 @@ GUI a second health check is a re-run. Two GUI-only things also come
 before every GUI sweep: on Erista with the Minerva module found, its DRAM
 switches up to 1600 MHz program and enable PLLM or PLLMB (PLLMB is not
 listed here), and nothing clears that when the DRAM drops back to
-204 MHz; and while the USB serial console is the debug console it keeps
-PLLU enabled, so the PLLU line can read differently from the text
-payload's.
+204 MHz; and the USB serial port, started beside the debug console at the
+GUI's start unless `hwtest/hwtest.ini` sets `gui_usb=0`, enables PLLU when
+it comes up and disables it when it stops, so the PLLU line reads as the
+port left it and can differ from the text payload's.
 
 `SDMMC1(SD)` and `SDMMC4(eMMC)` depend on who set up storage. The text
 payload initialises the SD card and eMMC before its sweep only when

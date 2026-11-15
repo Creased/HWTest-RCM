@@ -375,7 +375,17 @@ as L4T's `dpaux.c`.
    Tegra210 SoC device tree has it for sor1, `<2 1 0 3 4>`: DP lane i goes
    out on the pad the list gives at position i (lane 0 on pad 2, lane 1 on
    pad 1), which also picks the lane's power bit and its byte in the drive
-   registers.
+   registers. Two bench tests in `hwtest/hwtest.ini`, read once as the GUI
+   starts, change that for the session: `dp_swap=1` exchanges lanes 0 and
+   1 (lane 0 on pad 1, lane 1 on pad 2), and `dp_pol=1` inverts crossbar
+   channels 0-2 (`SOR_XBAR_POL` = 7), which covers both lanes. They are for
+   a console that trains Realtek converters, which correct a lane's
+   polarity on their own, but not a Nintendo dock's STDP2550, which needs
+   it right: a Nintendo dock that trains with `dp_pol=1` points at swapped
+   DP pairs. The GUI's start-up then says `gui: hwtest/hwtest.ini: DP lanes
+   ... for the Dock Test`, and a start that gets as far as waking the sink
+   logs `gui: tv: BENCH TEST from hwtest.ini: lanes ...` with the pad each
+   lane went to.
 8. An external panel on the macro clock. A sink that can use the alternate
    scrambler reset, ASSR (DPCD `00D` bit 0), gets it on both sides, DPCD
    `10A` and the SOR's internal-panel bit, as L4T does: training patterns
@@ -441,7 +451,9 @@ Otherwise:
 
 In sync is DPCD `205` bit 0, read 85 ms after the attach and again a moment
 later; either counts, because some converters drop sync for a moment when
-video starts and lock again (the Ugreen dock did, every time). The STDP2550
+video starts and lock again (the Ugreen dock did, every time, and a
+Realtek converter with ID `Dp1.4` does: the attach read says "NOT in sync"
+in the log, the later one `01`, three runs on 2026-11-15). The STDP2550
 of the V1 / V2 Nintendo docks (branch OUI `0080E1`) never sets the bit, not
 even while it shows the picture: an Erista on a known-good dock and a working
 Mariko on another both trained 2 lanes at HBR2, swing 2, 0 errors, picture

@@ -200,6 +200,8 @@ typedef enum {
     SERIAL_KEYS_UNREAD,  /* there, but it could not be read                */
     SERIAL_BAD_KEYS,     /* read, but no usable bis_key_00 for this unit   */
     SERIAL_NO_STORAGE,   /* no eMMC, or the SD card could not be read      */
+    SERIAL_NO_PRODINFO,  /* PRODINFO missing from the GPT, or unreadable   */
+    SERIAL_NO_SERIAL,    /* CAL0 decrypted, but its serial is empty        */
 } serial_res_t;
 serial_res_t console_serial(char out[25]);
 void probe_partitions(void);

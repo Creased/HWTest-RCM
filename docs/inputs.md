@@ -286,8 +286,9 @@ and pinmux stay enabled.
 ## Joy-Con rails
 
 Section `[Joy-Con rail attachment]`. In `hwtest.bin` UART_B is the 115200
-diagnostic console, so this probe does not speak the right Joy-Con's
-serial protocol (in the GUI, bdk's Joy-Con driver does: see
+diagnostic console unless `hwtest/hwtest.ini` moves it, and it takes `R`
+either way, so this probe does not speak the right Joy-Con's serial
+protocol (in the GUI, bdk's Joy-Con driver does: see
 [Rails and Joy-Cons](gui.md#rails-and-joy-cons)). What it does read are
 the two IsAttached lines, PH6 (right) and PE6 (left). Both are active low:
 a Joy-Con, or a chassis adapter that shorts the detect line, pulls the
@@ -301,13 +302,13 @@ the dummy read changes the result.
 
 It prints `JC-R rail` and `JC-L rail` as `ATTACHED` or `empty`, then
 `serial poll : not used; UART_B stays on hwtest debug`, which only says
-that this probe leaves the serial link alone: in a GUI run the console may
-be on another port and UART_B may belong to a Joy-Con. The probe's comment
-says a chassis adapter on the right rail reads `JC-R rail : ATTACHED`,
-confirming that the rail's spring contacts are seating; the GUI's rail
-check (`gui/gui_dbg.c`) records that a bench UART adapter does not pull
-the line low ([gui](gui.md#rails-and-joy-cons)). The probe changes
-nothing and sets no key.
+that this probe leaves the serial link alone: the console may be on
+another port, and in a GUI run UART_B may belong to a Joy-Con. The
+probe's comment says a chassis adapter on the right rail reads
+`JC-R rail : ATTACHED`, confirming that the rail's spring contacts are
+seating; the GUI's rail check (`gui/gui_dbg.c`) records that a bench UART
+adapter does not pull the line low ([gui](gui.md#rails-and-joy-cons)).
+The probe changes nothing and sets no key.
 
 Only the detect line is read, so the probe cannot tell a Joy-Con from a
 chassis adapter or from a detect line shorted to ground, and it sees

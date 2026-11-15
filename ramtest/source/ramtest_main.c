@@ -600,18 +600,18 @@ static void menu_row(int x, int y, int w, int h, bool selected, const char *text
     set_color(COL_TEXT);
 }
 
-/* Power off, or restart through the console's normal boot path: the same
+/* Power off, or reboot through the console's normal boot path: the same
  * MAX77620 power cycle with wake as hwtest's do_reboot (core.c), so a
  * modchip triggers again. Never returns. */
-static void ram_power_action(bool restart)
+static void ram_power_action(bool reboot)
 {
-    if (restart) {
+    if (reboot) {
         u8 reg = i2c_recv_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_ONOFFCNFG2);
         reg |= MAX77620_ONOFFCNFG2_SFT_RST_WK;
         i2c_send_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_ONOFFCNFG2, reg);
     }
     i2c_send_byte(I2C_5, MAX77620_I2C_ADDR, MAX77620_REG_ONOFFCNFG1,
-                  restart ? MAX77620_ONOFFCNFG1_SFT_RST : MAX77620_ONOFFCNFG1_PWR_OFF);
+                  reboot ? MAX77620_ONOFFCNFG1_SFT_RST : MAX77620_ONOFFCNFG1_PWR_OFF);
     for (;;)
         ;
 }
@@ -633,14 +633,14 @@ static void draw_main_menu(int selected)
         "Quick test",
         "Advanced test",
         "Custom test",
-        "Restart",
+        "Reboot",
         "Power off",
     };
     static const char *help[] = {
         "One full Address pattern write/verify pass.",
         "Run all seven RAM patterns.",
         "Choose individual RAM patterns to run.",
-        "Restart the console through its normal boot path.",
+        "Reboot the console through its normal boot path.",
         "Shut down the console cleanly.",
     };
 
@@ -776,12 +776,12 @@ static void choose_mode(void)
                 draw_main_menu(selected);
             }
             if (activated == 3 || activated == 4) {
-                bool restart = activated == 3;
+                bool reboot = activated == 3;
                 while (btn_read() & BTN_POWER)
                     msleep(20);
-                screen_title(restart ? "Restart" : "Power off");
-                out(restart ? "Restarting...\n" : "Powering off...\n");
-                ram_power_action(restart);
+                screen_title(reboot ? "Reboot" : "Power off");
+                out(reboot ? "Rebooting...\n" : "Powering off...\n");
+                ram_power_action(reboot);
             }
 
             if (btn) {
@@ -896,7 +896,7 @@ static void report_final(u32 elapsed_ms)
 
     gfx_con_setpos(UI_TITLE_X, UI_FOOTER_Y);
     gfx_con_setcol(COL_DIM, 1, COL_BG);
-    gfx_printf("POWER: run again    VOL+: restart    VOL-: power off");
+    gfx_printf("POWER: run again    VOL+: reboot    VOL-: power off");
     set_color(COL_TEXT);
 }
 
@@ -919,7 +919,7 @@ static void wait_post_test_action(void)
         }
         if (b & (BTN_VOL_DOWN | BTN_VOL_UP)) {
             /* Act once both are let go, as the menu does: VOL- wins if it
-             * was held at any point, and the restart does not begin with
+             * was held at any point, and the reboot does not begin with
              * a volume key still down. */
             u8 seen = b;
             while ((b = btn_read()) & (BTN_VOL_DOWN | BTN_VOL_UP)) {
@@ -927,12 +927,12 @@ static void wait_post_test_action(void)
                 mtc_tick();
                 msleep(20);
             }
-            bool restart = !(seen & BTN_VOL_DOWN);
+            bool reboot = !(seen & BTN_VOL_DOWN);
             gfx_con_setpos(UI_TITLE_X, UI_FOOTER_Y);
             gfx_con_setcol(COL_DIM, 1, COL_BG);
-            gfx_printf(restart ? "Restarting...                                        "
+            gfx_printf(reboot ? "Rebooting...                                         "
                                : "Powering off...                                      ");
-            ram_power_action(restart);
+            ram_power_action(reboot);
         }
         msleep(20);
     }

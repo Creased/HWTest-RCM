@@ -479,8 +479,10 @@ static void gpt_free_bounded(link_t *gpt)
 }
 
 /* Just the serial, read the way probe_serial reads it, for the GUI's
- * header: no logging, no findings, and nothing decrypted is kept. Needs
- * the eMMC and SD up and sd:/switch/prod.keys; false without any of them. */
+ * status bar: no logging, no findings, and nothing decrypted is kept.
+ * Needs the eMMC and SD up and sd:/switch/prod.keys. Only a CAL0 that does
+ * not decrypt to its magic blames the keys; a PRODINFO the GPT does not
+ * give or that cannot be read is the eMMC's, as probe_serial says. */
 serial_res_t console_serial(char out[25])
 {
     out[0] = 0;
@@ -499,6 +501,7 @@ serial_res_t console_serial(char out[25])
     if (kr)
         return SERIAL_BAD_KEYS;
 
+    serial_res_t res = SERIAL_NO_PRODINFO;
     LIST_INIT(gpt);
     emmc_gpt_parse(&gpt);
     emmc_part_t *part = emmc_part_find(&gpt, "PRODINFO");
@@ -507,14 +510,20 @@ serial_res_t console_serial(char out[25])
         (!sec_cnt || part->lba_end < sec_cnt)) {
         static u8 cal0[1024] __attribute__((aligned(8)));
         nx_emmc_bis_init(part, false, 0);
-        if (!nx_emmc_bis_read(0, 2, cal0) && !memcmp(cal0, "CAL0", 4))
-            cal0_str(out, (const char *)&cal0[0x250], 24);
+        if (!nx_emmc_bis_read(0, 2, cal0)) {
+            if (memcmp(cal0, "CAL0", 4))
+                res = SERIAL_BAD_KEYS;
+            else {
+                cal0_str(out, (const char *)&cal0[0x250], 24);
+                res = out[0] ? SERIAL_OK : SERIAL_NO_SERIAL;
+            }
+        }
         nx_emmc_bis_end();
         memset(cal0, 0, sizeof(cal0));
     }
     gpt_free_bounded(&gpt);
     clear_loaded_bis_keyslots(true);
-    return out[0] ? SERIAL_OK : SERIAL_BAD_KEYS;
+    return res;
 }
 
 void probe_serial(void)

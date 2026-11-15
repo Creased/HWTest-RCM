@@ -15,8 +15,9 @@ The sizes follow Nyx's: Inter at 30 px for most text and 20 px for hints
 monospace face for report text, and Font Awesome symbols at the text sizes
 at 100 px for the home screen's buttons and at 120 px for the results'
 verdict (Nyx's hekate_symbol_* are Font Awesome too). The home buttons'
-captions have a 25 px Inter of their own: six tests in the row make Nyx's
-tile 180 px instead of 256, and the tile is scaled as a whole.
+captions have a 25 px Inter of their own: the home screen's tiles are not
+Nyx's 256 px squares, and their icon and caption are scaled from the
+shorter side.
 
 Only the rasterised output is committed, never the font files themselves.
 All three faces are under the SIL Open Font License 1.1, whose text and the

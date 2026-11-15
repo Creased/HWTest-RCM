@@ -136,8 +136,8 @@ Joy-Con from navigating, and B does not go back. VOL+, VOL- and POWER still
 drive the header and touch still works: leave with POWER on the focused
 Close button, or a tap. The next screen switch (`_switch_screen`) turns
 Joy-Con navigation back on. The header reads, left to right, Rumble,
-Motion, IR Camera, Close; on a Lite only Close, because a Lite's controls
-do not speak the protocol the deeper tests need.
+Motion, IR Camera, Bluetooth, Close; on a Lite only Bluetooth and Close,
+because a Lite's controls do not speak the protocol the other three need.
 
 `_jc_tick` runs every 20 ms, and once straight away. Each tick polls the
 driver through `gui_jc_state()` and updates both panels. Leaving
@@ -224,11 +224,10 @@ erased flash reads `0xFFF` and fails.
 
 The subcommand's own four tries are the only retries, so a pad with no
 flash to read (a third-party pad) holds the screen for about half a
-second, both reads failing, at every connect. A successful read is not
-repeated. The debug console gets
-`gui: jc L cal user centre CX,CY travel lN rN uN dN` (`factory` for the
-second; `l` is `xmin`, `r` `xmax`, `u` `ymax`, `d` `ymin`), or
-`gui: jc L cal: none read`, which a Lite prints too.
+second, both reads failing, once per screen and side. The debug console
+gets `gui: jc L cal user centre CX,CY travel lN rN uN dN` (`factory` for
+the second; `l` is `xmin`, `r` `xmax`, `u` `ymax`, `d` `ymin`), or
+`gui: jc L cal: none read`; a Lite, never read, prints neither.
 
 ### The stick model
 
@@ -611,9 +610,9 @@ with them above.
   swinging. An accelerometer that never reads 750..1250 mg at rest, while
   the sample is not all zero, gets no WARN or FAIL either: the line stays
   on `Reading: hold it still a moment`.
-* A Joy-Con that stops sending on the Motion screen: the screen keeps
-  judging its last sample, so it neither fails nor says the readings
-  stopped.
+* A Joy-Con that stops sending on the Motion screen: for 3 s the screen
+  keeps judging its last sample, so a shorter silence neither fails nor
+  shows; after that the side is started again.
 * Missing camera fragments: a frame completes when its last fragment
   arrives, and gaps keep the previous frame's pixels. "The camera sees"
   only means a frame was not black; seeing the hand is left to the eye.

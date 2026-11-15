@@ -463,9 +463,10 @@ void probe_gpio_census(void)
 /* UART debug port (UART_B / Joy-Con R rail)                                */
 /*                                                                          */
 /* The Joy-Con-R chassis-side debug header carries UART_B (115200 8N1, 1.8  */
-/* V logic). hwtest writes log lines out of it; this probe reports the      */
-/* full RX-side configuration so a chassis-adapter wiring issue can be      */
-/* localised without scope or multimeter:                                   */
+/* V logic). hwtest writes its log out of it unless hwtest/hwtest.ini moves */
+/* the console; this probe reports the full RX-side configuration so a      */
+/* chassis-adapter wiring issue can be localised without scope or           */
+/* multimeter:                                                              */
 /*                                                                          */
 /*   host USB-UART -> chassis cable -> chassis-side level shifter           */
 /*                  (powered from the JC-R 5V rail enabled via PA5)         */

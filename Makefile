@@ -256,15 +256,16 @@ $(DEFAULT_DIR)/$(TARGET).elf: $(DEFAULT_OBJS) link.ld
 
 # ---- self-extracting wrapper --------------------------------------------
 #
-# What ships is a small stub with the LZ-compressed image trailing it, not the
-# linked image itself. TegraRcmSmash - which TegraRcmGUI drives - prepends a
+# What ships is a small stub with the deflate-compressed image trailing it,
+# not the linked image itself. TegraRcmSmash - which TegraRcmGUI drives - prepends a
 # fixed 66216-byte exploit prologue and then truncates the whole buffer to
 # 192 KiB without reporting anything, so a payload past 130392 bytes is
 # silently cut off and the console jumps into a partial image. Compressing
 # gets the shipped file back under that ceiling, and speeds up chainloading.
 #
-# The codec is the BCL LZ77 that BDK already carries as LZ_Uncompress(), so
-# the on-device half is hekate's own decompressor and only the packer is ours.
+# The codec is raw deflate (tools/mkpayload.py --codec deflate), unpacked by
+# loader/inflate.c and checked at build time by tools/check_inflate.py. The
+# RAM test's copy of the loader keeps BDK's LZ_Uncompress (-DLDR_LZ).
 LDR_LOAD_ADDR := 0x40007000
 LDRDIR        := loader
 

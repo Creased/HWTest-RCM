@@ -198,9 +198,10 @@ Then `Partition : LBA a..b (N KiB)`, `CAL0 magic` (`CAL0` in green, or
 read from CAL0 offset 0x250: up to 24 characters, stopping at the first
 unprintable byte, with `(empty / wiped)` when there are none. Its format
 is not checked, and an empty serial sets no key: `prodinfo` still passes,
-and only this line and the GUI's **Serial number** reading show it.
-Without a decoded CAL0 the `Serial` line is a yellow `skipped (...)` that
-says whether the keys were wrong or absent, and the probe stops there.
+and only this line, the GUI's **Serial number** reading and its status bar
+show it. Without a decoded CAL0 the `Serial` line is a yellow
+`skipped (...)` that says whether the keys were wrong or absent, and the
+probe stops there.
 
 | Severity | Detail | Condition |
 |---|---|---|
@@ -293,8 +294,13 @@ The GUI shows the `Serial` line as the **Serial number** reading under
 System and security: the serial, or without keys the whole `skipped (...)`
 text. Its status bar shows the serial as well, read once at start-up by
 `console_serial()` (the same key load and range checks, a two-sector read,
-nothing logged or recorded); it stays blank without keys and is not
-refreshed if they appear later.
+nothing logged or recorded). Without it the bar says why, in yellow:
+"No prod.keys on the SD card", "prod.keys could not be read",
+"prod.keys is not this console's" (no usable `bis_key_00`, or CAL0 does
+not decrypt with it), "PRODINFO could not be read" (not in the GPT, an
+unusable range or a failed read) or "No serial in PRODINFO". It is blank
+only with no eMMC or an SD card that could not be read, and it is not
+refreshed if the keys appear later.
 
 ## Partitions
 
@@ -590,9 +596,11 @@ aggregation in general are in [verdict](verdict.md).
 That example is the common case: a console with no `prod.keys` on its SD
 card and nothing else wrong reads `warn (no keys)` in the text verdict,
 while the GUI shows its Storage category as working normally, because
-`prodinfo`'s soft prefix `no keys` turns that WARN into "Not checked on
-this console." `decode failed (wrong keys?)` and `GPT entry unusable` are
-real warnings in both.
+`prodinfo`'s soft prefix `no keys` makes that WARN soft. Its Factory data
+row has the yellow warning mark and a sentence that begins "Not read:
+there is no usable sd:/switch/prod.keys on the SD card."
+`decode failed (wrong keys?)` and `GPT entry unusable` are real warnings
+in both.
 
 In the GUI each key is a check in the Storage category, whose all-good
 text is "Internal storage and SD card are healthy."; `fuses_pkg1` is in
@@ -631,8 +639,8 @@ the text payload around the boot sweep and each `a` run, in the GUI around
 each Health Check or Custom Check. The file has LF line endings and no
 colour. If the buffer fills, `[capture truncated]` is added once and later
 lines are dropped. The `[step]` breadcrumbs go to the debug console
-(UART-B in the text payload; in the GUI the console picked, a UART or USB
-serial) and are not in it.
+(in the text payload UART-B unless `hwtest/hwtest.ini` moves it; in the
+GUI the console picked, a UART or USB serial) and are not in it.
 
 `save_report()` needs the SD card, the eMMC (for the folder name) and the
 buffer; without them it logs `[save] SD not ready - cannot write report`,

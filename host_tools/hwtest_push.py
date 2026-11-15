@@ -20,9 +20,10 @@ on the SD card and started from the PC with nobody at the console:
     hwtest_push.py release [--build DIR]             all four built files,
                                                      then run, then the log
 
-DEST is one of the four files a release puts on the card (the GUI refuses
-anything else): hwtest/gui.bin, hwtest/libsys_minerva.bso,
-bootloader/payloads/hwtest.bin, bootloader/payloads/hwtest_ram.bin.
+DEST is one of the four files a release puts on the card, or the console
+setting (the GUI refuses anything else): hwtest/gui.bin,
+hwtest/libsys_minerva.bso, bootloader/payloads/hwtest.bin,
+bootloader/payloads/hwtest_ram.bin, hwtest/hwtest.ini.
 
 Needs pyserial. The port is found by its USB ID; --port overrides.
 """
@@ -163,9 +164,12 @@ def follow(con, seconds, out_path=None):
             break
 
 
-def get(con, path):
-    """A file off the SD card (backup/ or hwtest/), as bytes."""
+def get(con, path, missing_ok=False):
+    """A file off the SD card (backup/ or hwtest/), as bytes; with
+    missing_ok, None when the GUI answers -ERR (no such file)."""
     ans = con.command("GET " + path, timeout=15)
+    if missing_ok and ans and ans.startswith("-ERR"):
+        return None
     if not ans or not ans.startswith("+DATA"):
         sys.exit("%s: %s" % (path, ans or "no answer"))
     _, size, crc = ans.split()
@@ -182,8 +186,23 @@ def get(con, path):
 
 
 def cmd_ls(args):
+    """The whole folder: !LS answers 1 KB at a time, ending '... next <n>'
+    when there is more, and this asks again from there."""
     con = open_console(args, echo=False)
-    print(con.command("LS " + args.path) or "no answer")
+    head, items, skip = None, [], 0
+    while True:
+        ans = con.command("LS %s %d" % (args.path, skip))
+        if not ans or not ans.startswith("+OK"):
+            print(ans or "no answer")
+            break
+        part, _, rest = ans.partition(":")
+        head = head or part
+        body, sep, nxt = rest.partition(" ... next ")
+        items.append(body.strip())
+        if not sep or not nxt.strip().isdigit():
+            print("%s: %s" % (head, " ".join(i for i in items if i)))
+            break
+        skip = int(nxt)
     con.close()
 
 
@@ -287,13 +306,48 @@ gui_usb=%d
 """
 
 
+def _ini_key(line):
+    """The key of a key=value line as dbgcfg.c reads it (case, and _
+    against -, not told apart), or None for comments and other lines."""
+    t = line.strip()
+    if not t or t[0] in "#;[" or "=" not in t:
+        return None
+    return t.split("=", 1)[0].strip().lower().replace("_", "-")
+
+
+def _ini_update(old, port_name, gui_usb):
+    """The card's hwtest.ini with console= and gui_usb= set, every other
+    line (the Dock Test's dp_pol/dp_swap, comments) kept as it was."""
+    want = {"console": "console=%s" % port_name,
+            "gui-usb": "gui_usb=%d" % gui_usb}
+    out, done = [], set()
+    for line in old.splitlines():
+        k = _ini_key(line)
+        if k in want:
+            if k not in done:
+                out.append(want[k])
+                done.add(k)
+            continue
+        out.append(line)
+    for k in ("console", "gui-usb"):
+        if k not in done:
+            out.append(want[k])
+    return "\n".join(out) + "\n"
+
+
 def cmd_console(args):
     import tempfile
+    con = open_console(args)
+    old = get(con, "hwtest/hwtest.ini", missing_ok=True)
+    if old is None:
+        text = CONSOLE_INI % (args.port_name, args.gui_usb)
+    else:
+        text = _ini_update(old.decode("utf-8", "replace"), args.port_name,
+                           args.gui_usb)
     with tempfile.NamedTemporaryFile("w", suffix=".ini", delete=False,
                                      newline="\n") as f:
-        f.write(CONSOLE_INI % (args.port_name, args.gui_usb))
+        f.write(text)
         path = f.name
-    con = open_console(args)
     put(con, path, "hwtest/hwtest.ini")
     con.close()
     os.unlink(path)

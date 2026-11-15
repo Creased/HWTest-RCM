@@ -722,6 +722,10 @@ void gui_statusbar_init(void)
         left = "#" GUI_HEX_WARN " " ICON_WARN "  prod.keys could not be read#";
     } else if (s_serial == SERIAL_BAD_KEYS) {
         left = "#" GUI_HEX_WARN " " ICON_WARN "  prod.keys is not this console's#";
+    } else if (s_serial == SERIAL_NO_PRODINFO) {
+        left = "#" GUI_HEX_WARN " " ICON_WARN "  PRODINFO could not be read#";
+    } else if (s_serial == SERIAL_NO_SERIAL) {
+        left = "#" GUI_HEX_WARN " " ICON_WARN "  No serial in PRODINFO#";
     }
     if (left) {
         lv_obj_t *l = gui_label(s_bar, &gui_font_20, GUI_COL_TEXT, left);

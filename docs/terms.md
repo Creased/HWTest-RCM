@@ -26,7 +26,7 @@ sink, partition); both meanings are listed.
 | **soft prefix** | The start of a WARN detail (`no keys`, `inconclusive`, `not run`) that makes the GUI show the check as not checked |
 | **cross-check** | A Verdict check (`xc_*` keys) that reads the hardware again and compares readings that each look healthy on their own |
 | **breadcrumb, `[step]` line** | A progress line a long probe sends straight to the debug console, so that a hang names the step it was in |
-| **debug console** | The serial port the payload logs to: UART-B on the right rail, or in the GUI the port Custom Check picks |
+| **debug console** | The serial port the payload logs to: UART-B on the right rail, or the UART `hwtest/hwtest.ini` picks, in both stages; the GUI also sends it over USB serial unless `gui_usb=0`, and Custom Check can move it |
 | **report** | The text of a sweep, captured in a 128 KiB buffer and saved as `backup/<eMMC serial>/hwtest.txt` on the SD card |
 | **census** | A read-only listing that judges nothing: the pin census, the I2C census, the input census |
 | **snapshot** | The MAX77620's clear-on-read latches, read once per boot before anything active runs and reported by every sweep after |
@@ -226,7 +226,7 @@ sink, partition); both meanings are listed.
 | **ACK, NAK** | An I2C device acknowledging or refusing a transfer (also NACK, and HOS's NoAck); bdk returns 0 for a read that got no ACK |
 | **STOP, repeated start** | I2C framing: a STOP ends a transaction, a repeated start begins the next without releasing the bus |
 | **SPI** | Serial Peripheral Interface: the Joy-Con's flash bus, and the transport a CYW4356 latched with PH5 low speaks instead of the UART |
-| **UART** | A serial port: UART-A (test pads), UART-B (right rail, the debug console), UART-C (left rail), UART-D (Bluetooth); pin names count from 1, so UART2 is UART-B, and `UART_B` is UART-B too |
+| **UART** | A serial port: UART-A (test pads), UART-B (right rail, the default debug console), UART-C (left rail), UART-D (Bluetooth); pin names count from 1, so UART2 is UART-B, and `UART_B` is UART-B too |
 | **8N1, baud** | 8 data bits, no parity, 1 stop bit; and the line rate, 115200 on every debug UART |
 | **16550** | The standard UART register layout the Tegra's UARTs follow |
 | **FIFO** | First-in first-out buffer, such as a UART's receive queue or the audio TX FIFO |
