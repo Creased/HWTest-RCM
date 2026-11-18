@@ -90,6 +90,12 @@ lv_obj_t *gui_win_new(const char *title);
 lv_obj_t *gui_win_btn(lv_obj_t *win, const char *text, lv_action_t action);
 void gui_win_close_hide(bool hide);      /* for a screen that cannot be left yet */
 void gui_hide(lv_obj_t *obj, bool hide); /* the focus leaves it while hidden */
+/* The focus walks the group in the order objects were added: this puts one
+ * back where it reads, for a screen that had to make it out of order. */
+void gui_focus_before(lv_obj_t *obj, lv_obj_t *before);
+/* UP/DOWN: the focus to the nearest object a row above or below, false
+ * when there is none that way. */
+bool gui_focus_step_row(bool down);
 
 lv_obj_t *gui_label(lv_obj_t *parent, const lv_font_t *font, lv_color_t col,
                     const char *text);

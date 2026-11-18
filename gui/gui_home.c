@@ -5,6 +5,10 @@
  * hands-on tests, two rows of three, and past a divider the RAM test and
  * Lockpick_RCM, which leave for payloads of their own) and flat text
  * buttons along the bottom, with Reboot and Power Off asking first.
+ *
+ * Everything on it is reached in reading order: along a row and on at the
+ * start of the next, with up and down crossing between the two tile rows
+ * and the buttons under them.
  */
 #include "gui.h"
 
@@ -67,19 +71,25 @@ void gui_home(void)
      * that leave for payloads of their own, ending on the right margin: the
      * RAM Test, and Lockpick_RCM, greyed out when it is not on the SD card.
      * Four columns share the width between the margins; the two rows sit
-     * midway between the tab bar and the bottom row. */
+     * midway between the tab bar and the bottom row.
+     *
+     * They are made row by row, left to right, because that is the order
+     * the focus walks them in: VOL+ / right crosses a row and carries on
+     * at the start of the next, and VOL- / left goes back the same way.
+     * Up and down move between the rows (gui_focus_step_row), which is why the
+     * bottom row's buttons are put back in reading order below. */
     const lv_coord_t bw = (GUI_CONTENT_W - 2 * 13 - 34) / 4, bh = 210;
     const lv_coord_t step = bw + 13, row = bh + 13;
     lv_coord_t y = TAB_Y(104);
+    gui_divider(tab, GUI_RIGHT - bw - 17, y - 20, row + bh + 40);
     lv_obj_t *check = gui_big_button(tab, GUI_MARGIN, y, bw, bh, ICON_HEALTH,
                                      "Health Check", _act_check);
     gui_big_button(tab, GUI_MARGIN + step, y, bw, bh, ICON_GAMEPAD, "Joy-Con", _act_joycon);
     gui_big_button(tab, GUI_MARGIN + 2 * step, y, bw, bh, ICON_TOUCH, "Touchscreen", _act_touch);
+    gui_big_button(tab, GUI_RIGHT - bw, y, bw, bh, ICON_RAM, "RAM Test", _act_ram);
     gui_big_button(tab, GUI_MARGIN, y + row, bw, bh, ICON_SCREEN, "Screen", _act_screen);
     gui_big_button(tab, GUI_MARGIN + step, y + row, bw, bh, ICON_TV, "Dock", _act_dock);
     gui_big_button(tab, GUI_MARGIN + 2 * step, y + row, bw, bh, ICON_CHIP, "Game Card", _act_gc);
-    gui_divider(tab, GUI_RIGHT - bw - 17, y - 20, row + bh + 40);
-    gui_big_button(tab, GUI_RIGHT - bw, y, bw, bh, ICON_RAM, "RAM Test", _act_ram);
     gui_big_button(tab, GUI_RIGHT - bw, y + row, bw, bh, ICON_KEY, "Lockpick_RCM",
                    gui_lockpick_found() ? _act_lockpick : NULL);
 
@@ -94,10 +104,15 @@ void gui_home(void)
         lv_obj_align(res, custom, LV_ALIGN_OUT_RIGHT_MID, GUI_TEXT_PAD, 0);
     }
 
+    /* Power Off sits on the right margin and Reboot is aligned to its left,
+     * so Reboot has to be made second and then put back before it: the
+     * focus crosses the bottom row as it reads, Custom Check to Power Off,
+     * and not out to the corner and back. */
     lv_obj_t *off = gui_text_button(tab, ICON_POWER " Power Off", _act_poweroff);
     lv_obj_align(off, NULL, LV_ALIGN_IN_BOTTOM_RIGHT, -(GUI_MARGIN - GUI_TEXT_PAD), dy);
     lv_obj_t *reboot = gui_text_button(tab, ICON_REFRESH " Reboot", _act_reboot);
     lv_obj_align(reboot, off, LV_ALIGN_OUT_LEFT_MID, -GUI_TEXT_PAD, 0);
+    gui_focus_before(reboot, off);
 
     lv_group_focus_obj(check);
 }

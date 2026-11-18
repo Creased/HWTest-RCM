@@ -343,18 +343,30 @@ static u32 _jc_key(const jc_gamepad_rpt_t *jc)
     s32 dx = (s32)sx - cx, dy = (s32)sy - cy;
     if (jc->sio_mode)
         dy = -dy;
-    bool fwd  = dy < -0x280 || dx > 0x280;
-    bool back = dy > 0x280 || dx < -0x280;
-    if (jc->down || jc->right || fwd)
+    /* Down and up change the row, right and left walk it; a stick pushed
+     * on the diagonal goes the way it leans. */
+    s32 ady = dy < 0 ? -dy : dy, adx = dx < 0 ? -dx : dx;
+    bool push_down = dy < -0x280, push_up = dy > 0x280;
+    bool push_right = dx > 0x280, push_left = dx < -0x280;
+    if (ady > adx)
+        push_right = push_left = false;
+    else
+        push_down = push_up = false;
+    if (jc->down || push_down)
+        return LV_GROUP_KEY_DOWN;
+    if (jc->up || push_up)
+        return LV_GROUP_KEY_UP;
+    if (jc->right || push_right)
         return LV_GROUP_KEY_NEXT;
-    if (jc->up || jc->left || back)
+    if (jc->left || push_left)
         return LV_GROUP_KEY_PREV;
     return 0;
 }
 
-/* Buttons and Joy-Con as a keypad: NEXT/PREV walk the focus group, ENTER
- * activates. Joy-Con B is handled here rather than sent to LVGL: it means
- * "back" on every screen. A direction held down repeats, as a held key
+/* Buttons and Joy-Con as a keypad: NEXT/PREV walk the focus group, UP/DOWN
+ * move between its rows (handled here, not sent to LVGL, whose own widgets
+ * would take them), ENTER activates. Joy-Con B is handled here rather than
+ * sent to LVGL too: it means "back" on every screen. A direction held down repeats, as a held key
  * does anywhere: LVGL's own repeat is kept off (lv_conf.h) because a
  * message box's buttons would fire on it, so a held direction is shown
  * to LVGL as a new press every so often. */
@@ -393,6 +405,7 @@ static bool _keys_read(lv_indev_data_t *data)
 {
     static u32 last = LV_GROUP_KEY_ENTER;
     static u32 held, held_since, repeated;
+    static u32 v_held, v_since, v_repeated;
     static bool b_held;
     u32 key = 0;
 
@@ -427,6 +440,37 @@ static bool _keys_read(lv_indev_data_t *data)
         } else {
             s_nav_cal = false;    /* the next Joy-Con is read afresh */
         }
+    }
+
+    /* A row move is the focus group's business, not a key for the focused
+     * object, so LVGL is told nothing happened. Held, it repeats on the
+     * walk's cadence. The screens that are one row of buttons have no row
+     * to move to: there the key walks instead, so a stick pushed down
+     * still goes somewhere. */
+    if (key == LV_GROUP_KEY_UP || key == LV_GROUP_KEY_DOWN) {
+        u32 now_v = get_tmr_ms();
+        bool step = key != v_held;
+        if (step) {
+            v_held = key;
+            v_since = now_v;
+            v_repeated = now_v;
+        } else if (now_v - v_since >= KEY_REPEAT_AFTER &&
+                   now_v - v_repeated >= KEY_REPEAT_EVERY) {
+            v_repeated = now_v;
+            step = true;
+        }
+        /* A message box holds the focus to itself, and picks between its
+         * buttons with LEFT/RIGHT: a row move there would walk off it. */
+        bool moved = !step || gui_mbox_open() ||
+                     gui_focus_step_row(key == LV_GROUP_KEY_DOWN);
+        if (moved) {
+            data->key = last;
+            data->state = LV_INDEV_STATE_REL;
+            return false;
+        }
+        key = key == LV_GROUP_KEY_DOWN ? LV_GROUP_KEY_NEXT : LV_GROUP_KEY_PREV;
+    } else {
+        v_held = 0;
     }
 
     bool pressed = key != 0;

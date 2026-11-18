@@ -236,8 +236,19 @@ Lockpick_RCM is greyed out (the theme's inactive button, its text grey)
 when it is not on the SD card, and then neither a touch nor VOL+ / VOL-
 reaches it. Along the bottom: Custom Check, Last Results (only once a
 check has run this boot), Reboot and Power Off. Focus starts on Health
-Check; VOL+ / VOL- go through the six tests row by row, then RAM Test and
-Lockpick_RCM, then the bottom row. Power Off asks first, then writes
+Check, and everything is reached in reading order: VOL+ (or right on a
+Joy-Con) crosses a row and carries on at the start of the next - Health
+Check, Joy-Con, Touchscreen, RAM Test, then Screen, Dock, Game Card,
+Lockpick_RCM, then the bottom row left to right - and VOL- (or left)
+goes back the same way. Up and down on a Joy-Con change the row instead,
+to whatever sits straight above or below: from the tiles to the row under
+them, and from the bottom tiles to the buttons along the bottom
+(`gui_focus_step_row()`). The buttons the screen makes out of order - the
+bottom row's Reboot, which has to be aligned to Power Off - are put back
+in the focus list with `gui_focus_before()`, so the walk follows the
+screen and not the order they were made in. Where there is no row that
+way (the top row going up, a screen that is one row of buttons), up and
+down walk instead, so they are never dead. Power Off asks first, then writes
 `MAX77620_ONOFFCNFG1_PWR_OFF`, the same power-off as the text launcher's,
 which does not ask. Reboot asks
 first ("The console powers off and on again."), then calls `do_reboot()`

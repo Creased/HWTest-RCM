@@ -150,7 +150,7 @@ Every screen works with any one of:
 | Input | Move | Select | Back |
 |---|---|---|---|
 | Touchscreen | - | tap | Close |
-| Joy-Con | stick or D-pad | A | B |
+| Joy-Con | stick or D-pad: left and right walk the screen in reading order, up and down change the row | A | B |
 | Console buttons | VOL+ / VOL- | POWER | Close |
 
 The console buttons are enough on their own, for a console with a broken

@@ -121,6 +121,86 @@ static void _focus_follow(lv_group_t *g)
     _focus_page(f);
 }
 
+/* ---- focus order ------------------------------------------------------
+
+ * The group walks the focus in the order objects were added, so a screen
+ * that has to make a button out of its place on the screen (the Home
+ * screen's Reboot, made after Power Off so it can be aligned to it) is
+ * reached out of turn. This puts one back where it reads. */
+static lv_obj_t **_focus_node(lv_obj_t *obj)
+{
+    lv_obj_t **i;
+    LL_READ(s_group->obj_ll, i)
+        if (*i == obj)
+            return i;
+    return NULL;
+}
+
+void gui_focus_before(lv_obj_t *obj, lv_obj_t *before)
+{
+    lv_ll_t *ll = &s_group->obj_ll;
+    lv_obj_t **n = _focus_node(obj), **b = _focus_node(before);
+    if (!n || !b || n == b)
+        return;
+    /* LVGL 5's lv_ll_move_before links a node in before the head but
+     * leaves the head pointer alone, which orphans the node: as in the
+     * header buttons above, the head is set here. */
+    bool was_head = ll->head == (void *)b;
+    lv_ll_move_before(ll, n, b);
+    if (was_head)
+        ll->head = (void *)n;
+}
+
+/* A row at a time, for UP/DOWN: the focus goes to the nearest object
+ * straight above or below the focused one - the tile over this one, or
+ * from the bottom tiles down to the text buttons under them. A screen
+ * with nothing that way (one row of buttons) keeps the focus where it is,
+ * and says so, so the key can fall back to the walk. */
+bool gui_focus_step_row(bool down)
+{
+    lv_obj_t *f = lv_group_get_focused(s_group);
+    if (!f)
+        return false;
+
+    lv_area_t fa;
+    lv_obj_get_coords(f, &fa);
+    lv_coord_t fx = (fa.x1 + fa.x2) / 2;
+
+    lv_obj_t *best = NULL;
+    s32 best_cost = 0;
+    lv_obj_t **i;
+    LL_READ(s_group->obj_ll, i) {
+        lv_obj_t *c = *i;
+        if (c == f || !_shown(c))
+            continue;
+        lv_area_t ca;
+        lv_obj_get_coords(c, &ca);
+        /* Another row: its top edge clears the focused one's, the way the
+         * key points. Tiles of a row share a top edge, so a few pixels
+         * are enough to tell a row from its own. */
+        s32 dy = down ? ca.y1 - fa.y1 : fa.y1 - ca.y1;
+        if (dy < 8)
+            continue;
+        s32 dx = (ca.x1 + ca.x2) / 2 - fx;
+        if (dx < 0)
+            dx = -dx;
+        /* The nearest row wins, whatever it costs across the screen: a
+         * row is worth more than the widest column offset (dy is at
+         * least 8, dx at most the screen's width). */
+        s32 cost = dy * GUI_W + dx;
+        if (!best || cost < best_cost) {
+            best = c;
+            best_cost = cost;
+        }
+    }
+    if (!best)
+        return false;
+
+    lv_group_focus_obj(best);
+    _focus_page(best);
+    return true;
+}
+
 void gui_hide(lv_obj_t *obj, bool hide)
 {
     lv_obj_set_hidden(obj, hide);
