@@ -233,8 +233,10 @@ Lockpick_RCM. The four columns share the width between the margins
 high, and the two rows sit midway between the tab bar and the bottom row;
 a tile's icon and caption sit about its middle in Nyx's proportions.
 Lockpick_RCM is greyed out (the theme's inactive button, its text grey)
-when it is not on the SD card, and then neither a touch nor VOL+ / VOL-
-reaches it. Along the bottom: Custom Check, Last Results (only once a
+when it is not on the SD card, and Dock is greyed out the same way on a
+Lite, which has no video out on its USB-C port and nothing to dock to;
+a greyed tile is not in the focus group, so neither a touch nor VOL+ /
+VOL- reaches it. Along the bottom: Custom Check, Last Results (only once a
 check has run this boot), Reboot and Power Off. Focus starts on Health
 Check, and everything is reached in reading order: VOL+ (or right on a
 Joy-Con) crosses a row and carries on at the start of the next - Health

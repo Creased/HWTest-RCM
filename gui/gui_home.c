@@ -88,7 +88,12 @@ void gui_home(void)
     gui_big_button(tab, GUI_MARGIN + 2 * step, y, bw, bh, ICON_TOUCH, "Touchscreen", _act_touch);
     gui_big_button(tab, GUI_RIGHT - bw, y, bw, bh, ICON_RAM, "RAM Test", _act_ram);
     gui_big_button(tab, GUI_MARGIN, y + row, bw, bh, ICON_SCREEN, "Screen", _act_screen);
-    gui_big_button(tab, GUI_MARGIN + step, y + row, bw, bh, ICON_TV, "Dock", _act_dock);
+    /* A Lite has no video out on its USB-C port and nothing to dock to, and
+     * its LDO8 is the I2C1 pad supply rather than the DisplayPort pads'
+     * (docs/dock.md), so the Dock Test is greyed out there, as
+     * Lockpick_RCM is without its payload. */
+    gui_big_button(tab, GUI_MARGIN + step, y + row, bw, bh, ICON_TV, "Dock",
+                   gui_is_lite() ? NULL : _act_dock);
     gui_big_button(tab, GUI_MARGIN + 2 * step, y + row, bw, bh, ICON_CHIP, "Game Card", _act_gc);
     gui_big_button(tab, GUI_RIGHT - bw, y + row, bw, bh, ICON_KEY, "Lockpick_RCM",
                    gui_lockpick_found() ? _act_lockpick : NULL);
