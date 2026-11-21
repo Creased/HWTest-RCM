@@ -18,6 +18,16 @@
 bool g_show_status = false;
 u32 g_run_mask = PROBE_G_ALL;
 
+/* Put in front of every step line while set, so work that repeats its own
+ * steps reads as a count and not as a wedge: the Wi-Fi soak's "soak 2/3: ".
+ * NULL for none. */
+static const char *s_step_prefix;
+
+void status_prefix(const char *prefix)
+{
+    s_step_prefix = prefix;
+}
+
 /* A step INSIDE a probe, for when the console dies straight after it.
  * status_set() only names the page, and pages share names - BT, Wi-Fi bring-up
  * and the Wi-Fi link all spin as "Wireless" - so "it freezes in Wireless"
@@ -33,7 +43,12 @@ u32 g_run_mask = PROBE_G_ALL;
  * Keep messages short: the line buffer is fixed. */
 void status_step(const char *msg)
 {
-    char line[96];
+    /* s_printf is unbounded: sized for the longest prefixed step line. */
+    char line[160], full[128];
+    if (s_step_prefix) {
+        s_printf(full, "%s%s", s_step_prefix, msg);
+        msg = full;
+    }
     s_printf(line, "[step] %s\n", msg);
     DBG_SEND((u8 *)line, strlen(line));
 

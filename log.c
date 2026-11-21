@@ -91,12 +91,15 @@ static void _gfx_puts_folded(const char *s)
     }
 }
 
+/* See log_silence(). */
+static bool _log_silent;
+
 /* Emit `_log_buf` to all sinks. Caller has already filled the buffer via
  * s_printf / s_vprintf. `color` only matters for the gfx sink. */
 void _log_emit(u32 color)
 {
     u32 n = strlen(_log_buf);
-    if (!_log_uart_only) {
+    if (!_log_uart_only && !_log_silent) {
         u32 prev = gfx_con.fgcol;
         gfx_con.fgcol = color;
         _gfx_puts_folded(_log_buf);
@@ -104,6 +107,8 @@ void _log_emit(u32 color)
     }
     if (!_log_no_uart)
         DBG_SEND((u8 *)_log_buf, n);
+    if (_log_silent)
+        return;
     _log_capture_append(_log_buf, n);
 #ifdef HWTEST_GUI
     gui_log_capture(color, _log_buf, n);
@@ -155,5 +160,17 @@ void log_mute(bool on)
         _log_uart_only = _log_mute_prev_gfx;
         _log_no_uart   = _log_mute_prev_uart;
     }
+}
+
+/* Keep output off the LCD, the report capture and the GUI's page capture
+ * (the last two are what log_mute() keeps), leaving only the debug UART,
+ * which still follows log_mute(). For work repeated so many times that
+ * keeping it would flood the report and the page - the Wi-Fi soak's
+ * cycles - and whose result the caller prints as one summary line, while
+ * a tech on the UART still sees each repeat in full. Independent of
+ * log_mute(), so the two nest. */
+void log_silence(bool on)
+{
+    _log_silent = on;
 }
 

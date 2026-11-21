@@ -44,7 +44,11 @@ the bring-up with `g_wifi_brought_up` false; the CPU0 handoff in
 three boot attempts: PASS by the attempt loop after each boot that
 succeeds, FAIL by `_cpu0_boot_checked` when one fails, which ends the
 handoff. The diagnostic re-boot writes nothing when it succeeds, so a
-failure there replaces an earlier PASS. `health_color` in dx.c only picks
+failure there replaces an earlier PASS. The link page's soak then repeats
+the bring-up and handoff `WIFI_CFG_SOAK` times (3 by default) and writes
+both keys once more at the end: `wifi_pcie` as the worse of the first
+cycle and the soak, `cpu_complex` as the worst boot of any cycle, so a
+later PASS no longer hides an earlier FAIL there. `health_color` in dx.c only picks
 a line colour and plays no part in the verdict.
 
 ## Where it runs

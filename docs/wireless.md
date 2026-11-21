@@ -271,7 +271,9 @@ alone, see
 It boots the CPU cluster (CPU rail up through the MAX77621/MAX77812, PLLX,
 the CRAIL/C0NC/CE0 partitions) and cold-cycles `WL_REG_ON`, resetting the
 WLAN section. hwtest is otherwise a read-only pass you can point at an
-unknown console, and this costs 3-4 seconds on top. Only the cluster is put
+unknown console, and this costs 3-4 seconds on top, plus about 1.5 seconds
+for each cycle of the soak (about 5 s at the default 3, measured on an
+Erista, and it stops early on a failing cycle). Only the cluster is put
 back (powergated at the end). LDO1 and LDO7 stay on at 1.05 V, PH0 stays
 high (by default), PH1 stays at `WIFI_CFG_PH1_LEVEL`, and the rest stays as
 the bring-up left it: the PEX I/O pads out of deep power down and the
@@ -291,6 +293,7 @@ Build knobs, all passed through `EXTRA_DEFINES`:
 | `WIFI_CFG_PH1_LEVEL` | 1 | the level PH1 is left at after the cold cycle. PH1 is named `wifi_rst` and the code notes that nothing establishes its polarity: if it is an active-high reset, a high PH1 holds the core in reset, which would look exactly like a link that trains with a dead core |
 | `WIFI_CFG_X4_LANES` | 1 | include the unconnected x4 lanes `pcie-1..4` in the lane mux step and the B01 `CTL8` writes; the outright `USB3_PAD_MUX` write sets the final mux either way |
 | `WIFI_CFG_EARLY_REGON` | 0 | drive PH1 high at the start of every sweep, as HOS keeps it; pair with `WIFI_CFG_COLD_CYCLE=0`. The Bluetooth probe, which runs before the Wi-Fi pages, still drops PH1 for each arm and then drives it high again |
+| `WIFI_CFG_SOAK` | 3 | extra cold cycles after the reported one (see [The soak](#the-soak)); 0 turns the soak off |
 
 The stub needs an aarch64 compiler: `A64_CC`/`A64_OC`, devkitA64 by default,
 or any bare-metal aarch64 gcc. Without one the payload still builds and the
@@ -300,8 +303,9 @@ time)`; `REQUIRE_A64=1` turns that into a build error.
 The link page always repeats the bring-up, with its output muted, before it
 hands off: a bare handoff re-run reads `FFFF:FFFF`, because the endpoint
 does not survive the PERST#/link re-train without the bring-up ahead of it.
-So in the sweep and on `w` the cold cycle and the BPMP bring-up run twice,
-and the printed bring-up lines (the POR window among them) come from the
+So in the sweep and on `w` the cold cycle and the BPMP bring-up run twice
+before the reported handoff (and once more per soak cycle after it), and
+the printed bring-up lines (the POR window among them) come from the
 first pass, not from the one the handoff follows. The mute covers the LCD
 and the debug console only: the SD report and the GUI's page capture still
 record the second pass, as a second `[Wi-Fi radio (...)]` block inside the
@@ -497,7 +501,11 @@ block before the handoff prints them.
 
 | `wifi_pcie` | Reason | When |
 | --- | --- | --- |
-| PASS | | the endpoint reads `14E4:43EC` |
+| PASS | | the endpoint reads `14E4:43EC` on the first attempt, every strict check below is clean, and so is every soak cycle |
+| FAIL | `OK only on attempt N after M stall(s)` | the ID came back, but only after earlier attempts stalled CPU0 and the AFI was reset under them. HOS gets one try per boot, so this is the intermittent link, not a pass |
+| WARN | `weak enum: <first> [+n more]` | the ID is right but a strict check is not; the `Checks` line lists them all |
+| FAIL | `soak N/M: <reason>` | soak cycle N of M failed, with that cycle's own reason (any FAIL in this table, or `bring-up incomplete`) |
+| WARN | `soak N/M weak: <reason>` | N soak cycles gave a weak enumeration, none failed; the reason is the first one's |
 | WARN | `endpoint is VVVV:DDDD` | the link is up and the endpoint reads any other ID. `FFFF:FFFF` is config reads returning all ones (what a bare handoff re-run reads) and `0001:FFFF` the CRS completion `0xFFFF0001` of an endpoint still in its ROM-phase init, so neither names another chip |
 | FAIL | `PCIE power partition would not ungate` | step 4 |
 | FAIL | `XUSB_PADCTL would not leave reset` | step 4 |
@@ -511,6 +519,69 @@ block before the handoff prints them.
 
 A build without the stub sets `wifi_pcie` only for the two step 4 failures,
 so its `Wireless` row otherwise reflects `bt_hci` alone.
+
+### Why the verdict is strict
+
+The orange screen repair shops trace to the CYW4356 is intermittent: the
+same console boots, then does not. Atmosphere's copy of Nintendo's boot
+error codes (`pkg1_error_types.hpp`) gives orange to `Exception`, the
+secure monitor catching a CPU exception, which fits a single PCIe access
+to the chip going wrong once in HOS. That is an inference, not a
+measurement. Until this check, the verdict let three things through that
+such a chip can produce:
+
+- **The retry.** The handoff's three attempts were there to land "a good
+  one" on a chip whose early config read wedges the fabric. A pass on
+  attempt 2 or 3 now fails.
+- **The paired reads.** Each value is read twice and the ID verdict takes
+  either read, a tolerance built on one Erista whose every second config
+  read was stale. Whether that console was healthy was never established,
+  and the healthy sample under [Reading the output](#reading-the-output)
+  has every pair agreeing. The strict checks below now count.
+- **One sample.** One enumeration of an intermittent fault proves little.
+  The soak repeats it.
+
+Strict checks, run after a first-attempt `14E4:43EC`, each one a WARN:
+
+| Check | Clean when |
+| --- | --- |
+| `ID reads differ` | both ID reads (`CFG baseline`) are `43EC14E4` |
+| `class reads differ` | both class reads are `028000xx` |
+| `cmd write needed retries` / `cmd write never verified` | the command write verified on round 0 (`CFG retries : cmd=0`); 25 rounds is the limit |
+| `end ID re-read bad` | both `CFG recheck` reads are `43EC14E4` |
+| `AFI error latched` | `AFI INTR` code is 0 |
+| `RP abort bits set` | the root port's secondary status gained no error bit (31, 30, 29, 28, 27 or 24) across the command write |
+
+These are WARN rather than FAIL because they have only been compared
+against the one healthy sample in this note. Run a known-good console or
+two before reading much into a single one.
+
+### The soak
+
+After the reported cycle, the link page repeats the whole thing,
+WL_REG_ON cold cycle, bring-up and CPU0 handoff, `WIFI_CFG_SOAK` more
+times (3 by default; the cycles post their steps again, so each one is
+prefixed `soak N/M:` and the repetition reads as a count rather than a
+wedge). `log_silence` keeps those cycles off the LCD, the
+SD report and the GUI capture, so the page and the report hold one cycle,
+not eleven. The debug console still gets each cycle's handoff lines in
+full (the bring-up stays muted there as in the first cycle), behind a
+`[step] Wireless: Wi-Fi soak cycle` marker, so a failing cycle's dump is
+on the UART if you are logging it. Each cycle's `wifi_pcie` is collected:
+
+- a FAIL ends the soak there and fails `wifi_pcie` with `soak N/M: ...`;
+- a WARN is counted and the soak goes on;
+- if the first cycle already failed, the soak is skipped.
+
+It prints one line, two when something went wrong:
+
+```
+  Soak          : 3 of 3 more cold cycles clean
+  Soak          : cycle 2 of 3 FAILED (1 clean before it)
+  Soak failure  : CPU0 stalled at stage 10
+```
+
+`cpu_complex` ends as the worst boot of all the cycles.
 
 | `cpu_complex` | Reason | When |
 | --- | --- | --- |
@@ -661,9 +732,16 @@ that stops somewhere tells you where. This is a healthy Erista, end to end;
   FPCI timeout  : TO=FFFF
   Result        : WLAN core enumerated on the PCIe bus
   CPU0          : powergated
+  Soak          : 3 of 3 more cold cycles clean
 ```
 
-Three lines decide `wifi_pcie`, in this order. A failed AFI witness ends
+On a weak enumeration a `Checks` line follows `Result`, naming every
+strict check that was not clean (see [Why the verdict is
+strict](#why-the-verdict-is-strict)). On a pass that needed a retry,
+`Result` itself turns red and reads `enumerated on attempt N only, after
+M stall(s)`.
+
+Three lines decide whether the endpoint was reached at all, in this order. A failed AFI witness ends
 the report there (only `CPU0 : powergated` follows). A link that is down
 still prints `RP1 id`, the `Result` line with its note and `PHY (CPU0)`.
 An unexpected endpoint ID still prints the `EP class/rev`, `CFG` and
@@ -714,6 +792,8 @@ The other lines:
 | `CFG retries` | rounds the command write needed, and the root port's secondary status before and after; its RMA/RTA bits mean the endpoint errored a downstream request |
 | `CFG recheck` | the ID re-read at the end: the path is still alive |
 | `AFI INTR`, `FPCI timeout` | the AFI's latched error code and signature after the config traffic (0 = nothing), and the armed FPCI timeout read back |
+| `Checks` | only on a weak enumeration: the strict checks that were not clean, then the command write's round count and the new secondary-status error bits when those are the reason |
+| `Soak`, `Soak failure`, `Soak weak` | the soak's tally, and the reason of the first failing or weak cycle |
 
 ### When it fails
 
@@ -806,6 +886,11 @@ behind.
   reads. The probe loads no firmware (step 10) and puts nothing on the
   air, so it says nothing about the firmware, the RF path or the antenna,
   and a PASS is not proof that Wi-Fi works.
+- It is a light load. The link stays at Gen1 (nothing asks for Gen2), the
+  traffic is a few dozen config accesses, and nothing moves data or keeps
+  the chip busy, so a solder joint that only fails at speed, under current
+  or warm can still pass, soak included. HOS loads firmware and runs the
+  link for real.
 - PH1's polarity is not established (see `WIFI_CFG_PH1_LEVEL` above), so
   a link that trains does not by itself show the core is out of reset.
 - The code records the stub's enumeration path as verified on the Erista.

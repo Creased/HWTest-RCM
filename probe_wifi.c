@@ -141,6 +141,23 @@
 #define WIFI_CFG_AUTORUN 1
 #endif
 
+/* Extra cold cycles after the reported one: WL_REG_ON cycle, bring-up and
+ * CPU0 handoff, silently, N more times, counting how many come back clean.
+ *
+ * The fault behind an orange screen is intermittent: the repair notes and
+ * the consoles that prompted this all describe a chip that works on some
+ * boots and not others. A single enumeration that happens to land a good
+ * boot says little, and HOS only gets one try per boot. So the link page
+ * repeats the whole sequence and fails on the first cycle that fails.
+ *
+ * About 1.5 s per clean cycle on an Erista. A failing cycle ends the soak,
+ * so a bad chip costs at most one more stall timeout, not N of them. 0 turns
+ * it off. Three catch what one cannot without the console looking wedged
+ * while it repeats its steps; raise it when chasing a fault that hides. */
+#ifndef WIFI_CFG_SOAK
+#define WIFI_CFG_SOAK 3
+#endif
+
 bool g_wifi_armed = false;
 /* Set when the SoC-side bring-up runs to completion; the link page will not
  * hand off without it. */
@@ -446,6 +463,73 @@ fail:
      * compiled out by CCPLEX_FLOWCTRL_POWERGATING 0). */
     ccplex_powergate_cpu0();
     return why;
+}
+
+/* After a 14E4:43EC enumeration: everything else the stub recorded, held
+ * to what a healthy link reads.
+ *
+ * Each value of interest is read twice (cpu_mbox.h), and the ID verdict is
+ * satisfied by either read. That tolerance was built for one Erista whose
+ * every second config read came back stale; whether that console was
+ * healthy is not established, and a degraded link is exactly what would
+ * corrupt reads. The healthy sample in docs/wireless.md has every pair
+ * agreeing, a clean command write, a clean AFI latch and no new abort bits,
+ * so anything else is a WARN with its reason, not a silent pass. */
+#define PCIE_EP_ID_DWORD    0x43EC14E4u  /* DID:VID as the stub reads it   */
+#define PCIE_EP_CLASS_NET   0x02800000u  /* network controller, rev masked */
+/* Root port Secondary Status error bits (config 0x1C, upper half):
+ * 31 parity error, 30 system error, 29 master abort, 28 target abort,
+ * 27 signalled target abort, 24 master data parity error. */
+#define PCIE_SECSTS_ERRMASK 0xF9000000u
+#define PCIE_CMD_ROUNDS_MAX 25u          /* cfg_wr_verify's round limit    */
+
+static void _pcie_strict_checks(volatile cpu_mbox_t *mb)
+{
+    const char *why[6];
+    u32 n = 0;
+    u32 rounds = mb->raw_cfg[19] & 0xFF;
+    u32 new_err = (mb->rp_secsts1 & ~mb->rp_secsts0) & PCIE_SECSTS_ERRMASK;
+
+    if (mb->raw_cfg[0] != PCIE_EP_ID_DWORD || mb->raw_cfg[1] != PCIE_EP_ID_DWORD)
+        why[n++] = "ID reads differ";
+    if ((mb->raw_cfg[3] & 0xFFFFFF00u) != PCIE_EP_CLASS_NET ||
+        (mb->raw_cfg[4] & 0xFFFFFF00u) != PCIE_EP_CLASS_NET)
+        why[n++] = "class reads differ";
+    if (rounds >= PCIE_CMD_ROUNDS_MAX)
+        why[n++] = "cmd write never verified";
+    else if (rounds)
+        why[n++] = "cmd write needed retries";
+    if (mb->raw_cfg[17] != PCIE_EP_ID_DWORD || mb->raw_cfg[18] != PCIE_EP_ID_DWORD)
+        why[n++] = "end ID re-read bad";
+    if (mb->afi_intr_code & 0x1F)
+        why[n++] = "AFI error latched";
+    if (new_err)
+        why[n++] = "RP abort bits set";
+
+    if (!n)
+        return;
+
+    char line[160];
+    u32 pos = 0;
+    line[0] = 0;
+    for (u32 i = 0; i < n; i++) {
+        u32 len = strlen(why[i]);
+        if (pos + len + 3 >= sizeof(line))
+            break;
+        if (i) { line[pos++] = ','; line[pos++] = ' '; }
+        memcpy(line + pos, why[i], len);
+        pos += len;
+        line[pos] = 0;
+    }
+    log_color(COL_WARN, "  Checks        : %s\n", line);
+    if (rounds && rounds < PCIE_CMD_ROUNDS_MAX)
+        LOG("  (cmd write took %d rounds)\n", rounds);
+    if (new_err)
+        LOG("  (RP SECSTS new error bits %08X)\n", new_err);
+    if (n == 1)
+        dx_set("wifi_pcie", DX_WARN, "weak enum: %s", why[0]);
+    else
+        dx_set("wifi_pcie", DX_WARN, "weak enum: %s +%d more", why[0], n - 1);
 }
 
 #endif
@@ -843,7 +927,18 @@ static void pcie_cpu_handoff(void)
         dx_set("wifi_pcie", is_4356 ? DX_PASS : DX_WARN,
                is_4356 ? "" : "endpoint is %04X:%04X", vid, did);
 
-        if (is_4356) {
+        if (is_4356 && attempt > 0) {
+            /* The ID came back, but only after earlier attempts wedged
+             * CPU0 and the AFI was reset under them. HOS gets one try per
+             * boot and has no such reset to fall back on, so a chip that
+             * needs the retry is the intermittent fault, not a pass. */
+            log_color(COL_ERR,
+                "  Result        : enumerated on attempt %d only, after %d stall(s)\n",
+                attempt + 1, attempt);
+            LOG("  (HOS does not retry: treat this as an intermittent link)\n");
+            dx_set("wifi_pcie", DX_FAIL, "OK only on attempt %d after %d stall(s)",
+                   attempt + 1, attempt);
+        } else if (is_4356) {
             /* Enumeration is the verdict: the chip answered config reads
              * with the right ID, took the command write and kept the path
              * alive - the WLAN core is present and on the bus. The die-
@@ -852,6 +947,7 @@ static void pcie_cpu_handoff(void)
              * probe's. */
             log_color(COL_OK,
                 "  Result        : WLAN core enumerated on the PCIe bus\n");
+            _pcie_strict_checks(mb);
         }
         break;
     }
@@ -1378,6 +1474,151 @@ void probe_wifi_pcie(void)
     g_wifi_brought_up = true;
 }
 
+/* One full cycle: the quiet bring-up (WL_REG_ON cold cycle included), then
+ * the CPU0 handoff. False when the bring-up stopped before the handoff. */
+static bool _wifi_link_cycle(void)
+{
+    /* The endpoint's config space only answers when the full bring-up
+     * precedes the handoff: a bare handoff re-run reads FFFF:FFFF,
+     * because the endpoint does not survive the PERST#/link re-train
+     * without the WL_REG_ON/PLLE/padctl sequence ahead of it. So the
+     * bring-up runs (quietly) before EVERY handoff. */
+    bool armed = g_wifi_armed;
+    g_wifi_armed = true;
+    log_mute(true);
+    probe_wifi_pcie();
+    log_mute(false);
+    g_wifi_armed = armed;
+    if (!g_wifi_brought_up)
+        return false;
+
+    /* Everything from MSELECT onwards has to be issued by a CPU-complex
+     * master, so CPU0 takes it from here and the BPMP supervises. */
+    pcie_cpu_handoff();
+    return true;
+}
+
+#if defined(HAVE_CPU_STUB) && WIFI_CFG_SOAK > 0
+/* A finding's severity and reason, copied out of the registry (dx_set
+ * overwrites in place, and each cycle sets the same keys again). */
+typedef struct {
+    dx_sev_t sev;
+    char     detail[48];
+} wifi_finding_t;
+
+static void _wifi_take(const char *key, wifi_finding_t *out)
+{
+    const dx_finding_t *f = dx_get(key);
+    out->sev = f ? f->sev : DX_WARN;
+    strcpy(out->detail, f ? f->detail : "no verdict");
+}
+
+/* Keep whichever is worse in *worst; ties keep the earlier one. */
+static void _wifi_worse(wifi_finding_t *worst, const wifi_finding_t *f)
+{
+    if (f->sev > worst->sev)
+        *worst = *f;
+}
+
+/* Repeat the cycle WIFI_CFG_SOAK times, silently, and fold the outcome
+ * into wifi_pcie (and cpu_complex, which every cycle sets again).
+ *
+ * A failing cycle ends the soak: one failure already decides the verdict,
+ * and a stalled cycle can cost up to three stall timeouts. A WARN cycle
+ * (a weak enumeration) is counted and the soak goes on. */
+static void _wifi_soak(void)
+{
+    wifi_finding_t first, worst, cpu_worst, f;
+    char weak_why[48] = "";
+    u32 run = 0, clean = 0, weak = 0, weak_first = 0;
+    bool failed = false;
+    /* Set by every handoff that reached the CPU0 boot; if the first one
+     * never did, leave the key alone rather than invent a verdict. */
+    bool have_cpu = dx_get("cpu_complex") != NULL;
+
+    _wifi_take("wifi_pcie", &first);
+    if (have_cpu)
+        _wifi_take("cpu_complex", &cpu_worst);
+
+    if (first.sev == DX_FAIL) {
+        LOG("  Soak          : skipped, the first cycle already failed\n");
+        return;
+    }
+
+    worst.sev = DX_PASS;
+    worst.detail[0] = 0;
+    char pfx[24];
+    for (run = 1; run <= WIFI_CFG_SOAK; run++) {
+        s_printf(pfx, "soak %d/%d: ", run, WIFI_CFG_SOAK);
+        status_prefix(pfx);
+        status_step("Wireless: Wi-Fi soak cycle");
+        /* A cycle that never reaches a verdict must not inherit the
+         * previous cycle's PASS. */
+        dx_set("wifi_pcie", DX_WARN, "soak cycle gave no verdict");
+        log_silence(true);
+        bool handed = _wifi_link_cycle();
+        log_silence(false);
+        if (!handed)
+            dx_set("wifi_pcie", DX_FAIL, "bring-up incomplete");
+
+        _wifi_take("wifi_pcie", &f);
+        if (have_cpu) {
+            wifi_finding_t c;
+            _wifi_take("cpu_complex", &c);
+            _wifi_worse(&cpu_worst, &c);
+        }
+
+        if (f.sev == DX_PASS) {
+            clean++;
+        } else if (f.sev == DX_WARN) {
+            if (!weak++) {
+                weak_first = run;
+                strcpy(weak_why, f.detail);
+            }
+        } else {
+            worst = f;
+            failed = true;
+            break;
+        }
+        uart_poll_reboot();
+    }
+    status_prefix(NULL);
+    if (run > WIFI_CFG_SOAK)
+        run = WIFI_CFG_SOAK;
+
+    if (failed) {
+        log_color(COL_ERR,
+            "  Soak          : cycle %d of %d FAILED (%d clean before it)\n",
+            run, WIFI_CFG_SOAK, clean);
+        log_color(COL_ERR, "  Soak failure  : %s\n", worst.detail);
+        dx_set("wifi_pcie", DX_FAIL, "soak %d/%d: %s",
+               run, WIFI_CFG_SOAK, worst.detail);
+    } else if (weak) {
+        log_color(COL_WARN,
+            "  Soak          : %d of %d cold cycles clean, %d weak (first: %d)\n",
+            clean, WIFI_CFG_SOAK, weak, weak_first);
+        log_color(COL_WARN, "  Soak weak     : %s\n", weak_why);
+        if (first.sev == DX_PASS)
+            dx_set("wifi_pcie", DX_WARN, "soak %d/%d weak: %s",
+                   weak, WIFI_CFG_SOAK, weak_why);
+        else
+            dx_set("wifi_pcie", first.sev, "%s", first.detail);
+    } else {
+        log_color(first.sev == DX_PASS ? COL_OK : COL_WARN,
+            "  Soak          : %d of %d more cold cycles clean\n",
+            clean, WIFI_CFG_SOAK);
+        dx_set("wifi_pcie", first.sev, first.detail[0] ? "%s" : NULL,
+               first.detail);
+    }
+
+    /* cpu_complex: every cycle's boot sets it again, a later PASS over an
+     * earlier FAIL included. Keep the worst seen. */
+    if (have_cpu)
+        dx_set("cpu_complex", cpu_worst.sev,
+               cpu_worst.detail[0] ? "%s" : NULL, cpu_worst.detail);
+}
+#endif
+
 /* Second half, on its own page: the CPU0 handoff and everything it reports.
  *
  * The two are split because together they overrun the 22 rows this display
@@ -1391,23 +1632,11 @@ void probe_wifi_link(void)
     HEADER("[Wi-Fi radio - PCIe link and endpoint]");
     status_step("Wireless: Wi-Fi link (CPU0)");
 
-    /* The endpoint's config space only answers when the full bring-up
-     * precedes the handoff: a bare handoff re-run reads FFFF:FFFF,
-     * because the endpoint does not survive the PERST#/link re-train
-     * without the WL_REG_ON/PLLE/padctl sequence ahead of it. So the
-     * bring-up runs (quietly) before EVERY handoff. */
-    bool armed = g_wifi_armed;
-    g_wifi_armed = true;
-    log_mute(true);
-    probe_wifi_pcie();
-    log_mute(false);
-    g_wifi_armed = armed;
-    if (!g_wifi_brought_up) {
+    if (!_wifi_link_cycle()) {
         log_color(COL_WARN, "  No handoff    : bring-up incomplete\n");
         return;
     }
-
-    /* Everything from MSELECT onwards has to be issued by a CPU-complex
-     * master, so CPU0 takes it from here and the BPMP supervises. */
-    pcie_cpu_handoff();
+#if defined(HAVE_CPU_STUB) && WIFI_CFG_SOAK > 0
+    _wifi_soak();
+#endif
 }

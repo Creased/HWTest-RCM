@@ -87,6 +87,7 @@ void uart_send_crlf(u32 idx, const u8 *buf, u32 n);
 void _log_emit(u32 color);
 void _log_color_impl(u32 color, const char *fmt, ...);
 void log_mute(bool on);
+void log_silence(bool on);
 
 /* The assert catches a format-string LITERAL that is already too wide for
  * the LCD; _log_emit folds longer RENDERED lines onto a continuation. */
@@ -159,6 +160,8 @@ bool panel_id_known(void);
 const char *_pmx_pull_str(u32 pmx);
 void status_set(const char *msg);
 void status_step(const char *msg);
+/* Prefix every following step line (see core.c); NULL clears it. */
+void status_prefix(const char *prefix);
 void uart_poll_reboot(void);
 void msleep_poll(u32 ms);
 int save_report(void);
