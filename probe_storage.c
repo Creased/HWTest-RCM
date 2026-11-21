@@ -461,7 +461,7 @@ static bool gpt_ptr_sane(const link_t *link)
            part_addr <= heap_hi - sizeof(emmc_part_t);
 }
 
-static void gpt_free_bounded(link_t *gpt)
+void gpt_free_bounded(link_t *gpt)
 {
     link_t *it = gpt->next;
 

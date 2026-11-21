@@ -30,6 +30,7 @@ static lv_res_t _act_ram(lv_obj_t *b)     { gui_show(gui_ram_test); return LV_RE
 static lv_res_t _act_gc(lv_obj_t *b)      { gui_show(gui_gamecard_test); return LV_RES_OK; }
 static lv_res_t _act_results(lv_obj_t *b) { gui_show(gui_results); return LV_RES_OK; }
 static lv_res_t _act_lockpick(lv_obj_t *b) { gui_lockpick(); return LV_RES_OK; }
+static lv_res_t _act_wifi(lv_obj_t *b)    { gui_show(gui_wifi_scan); return LV_RES_OK; }
 
 static lv_res_t _power_action(lv_obj_t *btns, const char *txt)
 {
@@ -104,10 +105,16 @@ void gui_home(void)
     const lv_coord_t dy = -(GUI_H - GUI_BOTTOM);
     lv_obj_t *custom = gui_text_button(tab, ICON_SLIDERS " Custom Check", _act_custom);
     lv_obj_align(custom, NULL, LV_ALIGN_IN_BOTTOM_LEFT, GUI_MARGIN - GUI_TEXT_PAD, dy);
+    lv_obj_t *last = custom;
     if (gui_report_ready()) {
         lv_obj_t *res = gui_text_button(tab, ICON_LIST " Last Results", _act_results);
         lv_obj_align(res, custom, LV_ALIGN_OUT_RIGHT_MID, GUI_TEXT_PAD, 0);
+        last = res;
     }
+    /* Not a big button: the grid is full, and this one takes the chip
+     * further than the health check, at its own pace (gui_wifi.c). */
+    lv_obj_t *wifi = gui_text_button(tab, ICON_WIFI " Wi-Fi Scan", _act_wifi);
+    lv_obj_align(wifi, last, LV_ALIGN_OUT_RIGHT_MID, GUI_TEXT_PAD, 0);
 
     /* Power Off sits on the right margin and Reboot is aligned to its left,
      * so Reboot has to be made second and then put back before it: the

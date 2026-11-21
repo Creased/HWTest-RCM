@@ -27,8 +27,14 @@ jobs:
       - name: Install an aarch64 compiler for the CPU0 stub
         run: |
           apt-get update -qq
-          apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gcc libc6-dev
           aarch64-linux-gnu-gcc --version | head -1
+
+      - name: Test the Wi-Fi firmware extraction's parsers
+        run: |
+          gcc -DWLANFW_HOST -Wall -Wextra -Werror -o /tmp/test_wlanfw \
+              host_tools/test_wlanfw.c gui/wlanfw_parse.c
+          /tmp/test_wlanfw
 
       - name: Build production payloads
         run: |
@@ -67,6 +73,17 @@ jobs:
           print('gui.bin: %d bytes, magic %08X, load %08X, end %08X' % (len(b), magic, start, end))
           sys.exit(0 if ok else 'FAIL: gui.bin header does not match what hwtest.bin checks')
           EOF
+
+      - name: Verify the GUI carries the Wi-Fi scan image
+        run: |
+          test -s build-gui/cpu_wifi.bin || { echo 'FAIL: build-gui/cpu_wifi.bin missing'; exit 1; }
+          grep -qa 'Wi-Fi Scan' build-gui/gui.bin || { echo 'FAIL: no Wi-Fi Scan screen in gui.bin'; exit 1; }
+          if grep -qa 'no CPU0 Wi-Fi image' build-gui/gui.bin; then
+            echo 'FAIL: gui.bin was built without the CPU0 Wi-Fi image'; exit 1
+          fi
+          if grep -qa 'Wi-Fi Scan' build/hwtest_unc.bin; then
+            echo 'FAIL: the Wi-Fi scan leaked into the RCM payload'; exit 1
+          fi
 
       - name: Check RCM injection size ceiling
         run: |

@@ -89,6 +89,14 @@ void _log_color_impl(u32 color, const char *fmt, ...);
 void log_mute(bool on);
 void log_silence(bool on);
 
+/* The Wi-Fi scan's CPU0 launch (probe_wifi.c): the bring-up, then CPU0 at
+ * `entry` running `img`. NULL on success, else why not. */
+const char *wifi_cpu0_launch(const void *img, u32 len, u32 entry);
+void wifi_cpu0_stop(void);
+
+/* A GPT list freed without trusting its links (probe_storage.c). */
+void gpt_free_bounded(link_t *gpt);
+
 /* The assert catches a format-string LITERAL that is already too wide for
  * the LCD; _log_emit folds longer RENDERED lines onto a continuation. */
 #define LOG(fmt, ...) do {                                \

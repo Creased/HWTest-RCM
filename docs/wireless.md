@@ -891,6 +891,8 @@ behind.
   the chip busy, so a solder joint that only fails at speed, under current
   or warm can still pass, soak included. HOS loads firmware and runs the
   link for real.
+  The GUI's [Wi-Fi Scan](wifi-scan.md) goes further: HOS's own firmware
+  downloaded and running, and a scan.
 - PH1's polarity is not established (see `WIFI_CFG_PH1_LEVEL` above), so
   a link that trains does not by itself show the core is out of reset.
 - The code records the stub's enumeration path as verified on the Erista.

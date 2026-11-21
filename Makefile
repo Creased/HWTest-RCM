@@ -322,7 +322,8 @@ LVGLDIR := $(BDKDIR)/libs/lvgl
 
 VPATH += gui $(LVGLDIR)/lv_core $(LVGLDIR)/lv_draw $(LVGLDIR)/lv_fonts \
          $(LVGLDIR)/lv_hal $(LVGLDIR)/lv_misc $(LVGLDIR)/lv_objx \
-         $(LVGLDIR)/lv_themes $(BDKDIR)/ianos $(BDKDIR)/ianos/elfload
+         $(LVGLDIR)/lv_themes $(BDKDIR)/ianos $(BDKDIR)/ianos/elfload \
+         $(BDKDIR)/libs/compr
 
 GUI_OBJS = \
     gui_start.o exception_handlers.o chain_reloc.o core.o ui_menu.o stubs.o emmcsn.o \
@@ -354,6 +355,7 @@ GUI_OBJS = \
     gui_main.o gui_theme.o gui_home.o gui_custom.o gui_tests.o gui_stick.o \
     gui_jcwire.o gui_jcattach.o gui_bt.o gui_btscreen.o gui_push.o gui_jcmotion.o gui_jcir.o gui_screen.o gui_shot.o gui_dock.o gui_gamecard.o gui_lockpick.o gui_dbg.o usbser.o usbser_xusb.o usbser_usb2.o usbpd.o dpout.o gui_ram.o \
     gui_run.o gui_results.o gui_text.o gui_clock.o \
+    gui_wifi.o gui_wlanfw.o wlanfw_parse.o lz4.o \
     gui_fonts.o gui_fonts_blob.o
 
 GUI_OBJS := $(addprefix $(GUI_DIR)/,$(GUI_OBJS))
@@ -399,6 +401,27 @@ ifneq ($(HAVE_A64),)
 GUI_CFLAGS += -DHAVE_CPU_STUB=1
 GUI_OBJS += $(GUI_DIR)/cpu_stub_bin.o
 $(GUI_DIR)/cpu_stub_bin.o: $(DEFAULT_DIR)/cpu_stub_bin.c | $(GUI_DIR)
+	$(CC) $(GUI_CFLAGS) -c -o $@ $<
+
+# The Wi-Fi scan's CPU0 image (cpu_wifi/, wifi_mbox.h): the stub's bring-up
+# compiled in, then a polled brcmfmac-style driver. GUI only - the RCM
+# payload never carries it. -mstrict-align: it parses firmware messages at
+# whatever offset they land, and SCTLR_EL3.A is not cleared on the way in.
+GUI_CFLAGS += -DHAVE_CPU_WIFI=1
+GUI_OBJS += $(GUI_DIR)/cpu_wifi_bin.o
+$(GUI_DIR)/cpu_wifi.elf: cpu_wifi/wifi.S cpu_wifi/wifi.c cpu_wifi/wifi.ld \
+                         cpu_stub/stub.c cpu_mbox.h wifi_mbox.h $(DEF_STAMP_D) | $(GUI_DIR)
+	$(A64_CC) $(A64_CFLAGS) -mstrict-align -fno-tree-loop-distribute-patterns \
+	    $(EXTRA_DEFINES) -T cpu_wifi/wifi.ld -o $@ cpu_wifi/wifi.S cpu_wifi/wifi.c -lgcc
+$(GUI_DIR)/cpu_wifi.bin: $(GUI_DIR)/cpu_wifi.elf
+	$(A64_OC) -O binary $< $@
+	@printf '   built %s (%s bytes)\n' $@ $$(stat -c%s $@)
+$(GUI_DIR)/cpu_wifi_bin.c: $(GUI_DIR)/cpu_wifi.bin
+	@printf '/* generated from cpu_wifi.bin - do not edit */\n' > $@
+	@od -An -v -tx1 $< | awk 'BEGIN{printf "const unsigned char cpu_wifi_bin[] = {\n"} \
+	    {for(i=1;i<=NF;i++) printf "0x%s,", $$i; printf "\n"} \
+	    END{printf "};\nconst unsigned int cpu_wifi_bin_size = sizeof(cpu_wifi_bin);\n"}' >> $@
+$(GUI_DIR)/cpu_wifi_bin.o: $(GUI_DIR)/cpu_wifi_bin.c | $(GUI_DIR)
 	$(CC) $(GUI_CFLAGS) -c -o $@ $<
 endif
 

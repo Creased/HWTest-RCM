@@ -961,6 +961,38 @@ static void pcie_cpu_handoff(void)
 #endif
 }
 
+/* For the GUI's Wi-Fi scan (gui/gui_wifi.c): the link page's bring-up, then
+ * CPU0 released at `entry` with `img` copied there, and left running. The
+ * caller supervises through its own mailbox and calls wifi_cpu0_stop().
+ * NULL when CPU0 is on its way; otherwise why not. */
+const char *wifi_cpu0_launch(const void *img, u32 len, u32 entry)
+{
+#ifndef HAVE_CPU_STUB
+    (void)img; (void)len; (void)entry;
+    return "built without the CPU0 path (devkitA64 absent)";
+#else
+    bool armed = g_wifi_armed;
+    g_wifi_armed = true;
+    log_mute(true);
+    probe_wifi_pcie();
+    log_mute(false);
+    g_wifi_armed = armed;
+    if (!g_wifi_brought_up)
+        return "the PCIe bring-up stopped early (see the Wi-Fi pages)";
+    memcpy((void *)entry, img, len);
+    memset((void *)CPU_MBOX_ADDR, 0, sizeof(cpu_mbox_t));
+    bpmp_mmu_maintenance(BPMP_MMU_MAINT_CLN_INV_WAY, false);
+    return _cpu0_boot_checked(entry, true);
+#endif
+}
+
+void wifi_cpu0_stop(void)
+{
+#ifdef HAVE_CPU_STUB
+    ccplex_powergate_cpu0();
+#endif
+}
+
 /* Bounded register poll. Everything that waits in this probe goes through
  * here, so the host's UART 'R' can still reclaim the console while a link
  * is training. */

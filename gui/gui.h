@@ -212,6 +212,7 @@ void gui_touch_test(void);
 void gui_screen_test(void);
 void gui_dock_test(void);
 void gui_gamecard_test(void);            /* the slot's card detect, live */
+void gui_wifi_scan(void);                /* the CYW4356 boots and scans  */
 bool gui_lockpick_found(void);           /* Lockpick_RCM.bin on the SD card */
 void gui_lockpick(void);                 /* asks, then starts it */
 void gui_ram_test(void);

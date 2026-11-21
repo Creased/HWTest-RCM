@@ -11,7 +11,7 @@ way hekate hands over to Nyx. The screens are listed in the
 in `gui/` calls `dx_set`): every result it shows comes from the probes,
 whose conditions are in their own notes. The Joy-Con screens and the
 attach glow are in [Joy-Con tests](joycon.md), the Bluetooth test in
-[The Bluetooth test](bluetooth.md), the Dock Test in [Dock Test](dock.md),
+[The Bluetooth test](bluetooth.md), the Wi-Fi Scan in [Wi-Fi Scan](wifi-scan.md), the Dock Test in [Dock Test](dock.md),
 and the GUI's clocks and fonts in [Internals](internals.md).
 
 ## Hand-over from hwtest.bin

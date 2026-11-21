@@ -161,7 +161,7 @@ closing box needs a tap or POWER.
 
 | Screen | What it does |
 |---|---|
-| **Home** | Health Check, Joy-Con, Touchscreen, Screen, Dock, Game Card, RAM Test and Lockpick_RCM, and along the bottom Custom Check, Last Results, and Reboot / Power Off (each asks first). |
+| **Home** | Health Check, Joy-Con, Touchscreen, Screen, Dock, Game Card, RAM Test and Lockpick_RCM, and along the bottom Custom Check, Last Results, Wi-Fi Scan, and Reboot / Power Off (each asks first). |
 | **Health Check** | The full sweep, with the steps ticked off. Then one row per part of the console saying in a few words whether it is fine; each opens to what was checked, what a problem means and what to try, and from there to the report pages behind it. The report is saved to the SD card. |
 | **Custom Check** | One checkbox per group of checks, then Run; what was not picked shows as "not checked". UART output moves the debug console for the session: UART-B on the right rail, UART-C on the left rail (not on a Lite), UART-A on the board's test pads (cluster C: pad 3 TX, pad 2 RX), all 115200 8N1 at 1.8 V, or USB serial over the USB-C port, which Windows 10 and later, Linux and macOS use without a driver (USB ID 1209:0001) and which is open beside any of them anyway. |
 | **Joy-Con** | Both Joy-Cons (or a Lite's built-in controls): every button reachable on the rail (not SL/SR) lights up when pressed and stays marked, and each stick is drawn live and judged against the Joy-Con's own calibration, read from its flash (or against its own travel when it has none). A connection that drops and comes back is counted, which is what a worn rail looks like. |
@@ -173,6 +173,7 @@ closing box needs a tap or POWER.
 | **Screen** | The whole panel in one colour at a time, then white while the backlight dims and brightens: dead pixels, lines, patches and an uneven or flickering backlight show against a flat field. |
 | **Dock Test** | The USB-C port's PD controller (BM92T36) watched live, then the handshake the console performs when it docks, step by step, and with a TV on the dock, this screen on the TV at 1280x720. Reset Chip restarts a controller that does not answer. Nothing of it runs from the health check; see [docs/dock.md](docs/dock.md). |
 | **Game Card** | Whether a cartridge is in the slot, live, from the slot's card-detect line, with the reader off: slide one in and out and the line follows. Nothing is sent to the reader or the cartridge, so the game's title is not shown. See [docs/gamecard.md](docs/gamecard.md). |
+| **Wi-Fi Scan** | Boots the Wi-Fi chip with the firmware this console's HOS carries (read from the eMMC with Lockpick_RCM's `prod.keys`), has it scan, and lists the networks with their signal: the firmware download, the chip's own ARM core, its DMA and the radio, which the health check never reaches. Not yet run on hardware. See [docs/wifi-scan.md](docs/wifi-scan.md). |
 | **Screenshot** | Two fingers on the panel save the screen as a BMP under `hwtest/screenshots/` on the SD card. |
 | **RAM Test** | Starts `hwtest_ram.bin` from the card, as the text launcher's RAM test does. |
 | **Lockpick_RCM** | Starts Lockpick_RCM from the card (`bootloader/payloads/Lockpick_RCM.bin` or `Lockpick_RCM_Pro.bin`, or the same at the root), after asking; it saves the console's keys as `switch/prod.keys`, which the health check uses to read the eMMC. Greyed out when it is not on the card. |
@@ -307,6 +308,7 @@ reach the card by hand. The commands are in
 | [docs/joycon.md](docs/joycon.md) | The Joy-Con Test, rumble, motion sensors, the IR camera and the attach glow |
 | [docs/bluetooth.md](docs/bluetooth.md) | The Bluetooth test: the host on the console's radio, pairing, what it took on real hardware, pairing mode from the rails |
 | [docs/dock.md](docs/dock.md) | The Dock Test's handshake and the TV picture |
+| [docs/wifi-scan.md](docs/wifi-scan.md) | The Wi-Fi Scan: the firmware out of HOS, the CPU0 driver, reading where it stopped |
 | [docs/ramtest.md](docs/ramtest.md) | The dedicated RAM test: starting it, training, menus, reading a failure |
 | [docs/internals.md](docs/internals.md) | The self-extracting loader, the GUI's clocks and fonts, BDK's SDRAM parameter scratch |
 | [docs/terms.md](docs/terms.md) | The terms and abbreviations used in the report, the README and these notes |

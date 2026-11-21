@@ -22,6 +22,13 @@
 
 #include "../cpu_mbox.h"
 
+/* The Wi-Fi scan image (cpu_wifi/wifi.c) compiles this file in for the
+ * bring-up and enumeration, and defines CPU_STUB_THEN to carry on from
+ * there instead of parking. The health check's stub never defines it. */
+#ifdef CPU_STUB_THEN
+void CPU_STUB_THEN(cpu_mbox_t *m);
+#endif
+
 /* The assembly fault handler addresses these by hand-written byte offset,
  * because it cannot see the struct. Prove the two agree at build time. */
 #define MBOX_OFFSET_OF(f) __builtin_offsetof(cpu_mbox_t, f)
@@ -1002,6 +1009,10 @@ void cpu_stub_main(void)
     step(m, CPU_STAGE_DONE);
     mbox_w(&m->done, CPU_MBOX_DONE);
     __asm__ volatile("dsb sy" ::: "memory");
+
+#ifdef CPU_STUB_THEN
+    CPU_STUB_THEN(m);
+#endif
 
     for (;;)
         __asm__ volatile("wfe");
