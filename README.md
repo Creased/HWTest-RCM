@@ -300,6 +300,35 @@ from the card, which brings up the new GUI. The first GUI with this has to
 reach the card by hand. The commands are in
 [docs/gui.md](docs/gui.md#commands-from-the-pc).
 
+## The screens on a PC (`host_tools/sim/`)
+
+The GUI's screens built for the host, drawn by the same LVGL, and checked
+and photographed there instead of over USB:
+
+```bash
+host_tools/sim/build.sh && build-sim/sim build-sim/shots
+```
+
+It needs a host `gcc` and zlib's headers (`zlib1g-dev`), nothing else - no
+cross compiler, no console.
+
+Each scenario writes a PNG of the whole 1280x720 screen and prints what it
+checked - what lies inside what, what overlaps, where the focus goes after
+a key, and the console's own `!BOUNDS` check - and the exit status is
+non-zero if a check failed. The Wi-Fi screen is what it covers today: a
+scan, a join and its card, the step log under a long run, a message box,
+the passphrase keypad's three maps and a saved passphrase, Radio Off, and
+stepping a row at a time through the list.
+
+It is the screen code itself, not a copy of it: `gui_theme.c`, `gui_main.c`
+and `gui_wifi.c` compile as they do for the console, LVGL's pool and the
+drawing buffer are mapped at the addresses the console gives them, and the
+display is brought up by the GUI's own `_display_init()`. What is stubbed
+is everything below that (`host_tools/sim/sim_stubs.c`): no touch panel, no
+Joy-Con, no Wi-Fi chip. Presses go in the way the USB console injects them,
+and the Wi-Fi mailbox is filled in by hand, so a screen that only appears
+after a join can be drawn without one.
+
 ## Technical notes
 
 | Note | Covers |
@@ -371,7 +400,7 @@ docs/                - technical notes
 third_party/hekate/  - pinned Hekate BDK git submodule
 third_party/Atmosphere/ - pinned Atmosphere MTC/timing-table git submodule
 ramtest/             - universal Erista/Mariko DRAM diagnostic + Atmosphere MTC adaptation patch
-host_tools/          - ImGui + pyserial UART viewer (parser, GUI, replay), and hwtest_push.py (over USB: the log, pushing and running builds, any console command, hwtest.ini, files and the report off the card, deleting the Dock Test logs)
+host_tools/          - ImGui + pyserial UART viewer (parser, GUI, replay), hwtest_push.py (over USB: the log, pushing and running builds, any console command, hwtest.ini, files and the report off the card, deleting the Dock Test logs), and sim/ (the GUI's screens built and checked on the host)
 .github/workflows/   - CI build (ci.yml) and the tagged release with hwtest-sd.zip (release.yml)
 img/                 - the pictures in this README
 ```

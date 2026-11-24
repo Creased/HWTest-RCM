@@ -54,7 +54,11 @@
 #define WIFI_DMA_SIZE      0x00200000u
 /* L2 index of the uncached block: (0xA0400000 - 0x80000000) / 2 MiB. */
 #define WIFI_DMA_L2_IDX    258u
+/* The host simulator (host_tools/sim/) points this at memory of its own, so
+ * the screens that read the mailbox can be drawn without a chip. */
+#ifndef WIFI_MBOX_ADDR
 #define WIFI_MBOX_ADDR     0xA05F0000u   /* last 64 KiB of the DMA block    */
+#endif
 
 #define WIFI_MBOX_MAGIC    0x57494649u   /* 'WIFI', CPU0 is running         */
 #define WIFI_MBOX_DONE     0x444F4E45u   /* 'DONE', it stopped: see result  */

@@ -2,6 +2,8 @@ build/
 build-jc/
 build-ram/
 build-gui/
+# The host simulator and the screens it renders (host_tools/sim/).
+build-sim/
 *.bin
 # ...except the GUI's rasterised fonts, generated once by tools/mkfont.py.
 !gui/res/fonts.bin
