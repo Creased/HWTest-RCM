@@ -153,8 +153,12 @@ static void _jc_status(jc_side_t *s)
     static const char *batt_name[] = { "empty", "very low", "low", "half", "full" };
     u8 lvl = s->batt >> 1;
     char buf[128];
-    s_printf(buf, "#" GUI_HEX_OK " Connected#, battery %s",
-             lvl < 5 ? batt_name[lvl] : "unknown");
+    /* A Lite's controls have no battery: the level reads as empty. */
+    if (gui_is_lite())
+        s_printf(buf, "#" GUI_HEX_OK " Connected#");
+    else
+        s_printf(buf, "#" GUI_HEX_OK " Connected#, battery %s",
+                 lvl < 5 ? batt_name[lvl] : "unknown");
     /* One line only, the stick ring sits right under it: "battery very low,
      * 12 drops" is the longest this gets, and it fits the panel. */
     if (s->drops)
