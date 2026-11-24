@@ -36,6 +36,30 @@ jobs:
               host_tools/test_wlanfw.c gui/wlanfw_parse.c
           /tmp/test_wlanfw
 
+      - name: Test the WPA2 key derivation
+        run: |
+          gcc -DWPA_HOST -Wall -Wextra -Werror -o /tmp/test_wpa \
+              host_tools/test_wpa.c cpu_wifi/wpa.c
+          /tmp/test_wpa
+
+      - name: Test the little IP stack
+        run: |
+          gcc -DNET_HOST -Wall -Wextra -Werror -o /tmp/test_net \
+              host_tools/test_net.c cpu_wifi/net.c
+          /tmp/test_net
+
+      # dbgcfg.c is the console's own, so it reads the SoC's registers; on a
+      # 64-bit host those casts are a width warning and nothing is run.
+      - name: Test the hwtest.ini parser
+        run: |
+          gcc -Wall -Wextra -Werror -Wno-int-to-pointer-cast \
+              -Wno-builtin-declaration-mismatch -include stdint.h \
+              -I. -Ithird_party/hekate/bdk -Igfx \
+              -Ithird_party/hekate/bootloader/gfx \
+              -Ithird_party/hekate/bootloader/libs/fatfs \
+              -o /tmp/test_dbgcfg host_tools/test_dbgcfg.c dbgcfg.c
+          /tmp/test_dbgcfg
+
       - name: Build production payloads
         run: |
           make all REQUIRE_A64=1 A64_CC=aarch64-linux-gnu-gcc A64_OC=aarch64-linux-gnu-objcopy

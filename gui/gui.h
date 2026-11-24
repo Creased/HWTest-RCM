@@ -42,6 +42,7 @@
 #define GUI_HEX_WARN      "FFDD00"
 #define GUI_HEX_FAIL      "FF3C28"
 #define GUI_HEX_HINT      "AAAAAA"
+#define GUI_HEX_TEXT      "FBFBFB"   /* GUI_COL_TEXT, in a recoloured run */
 
 /* ---- geometry ----
  *
@@ -96,6 +97,10 @@ void gui_focus_before(lv_obj_t *obj, lv_obj_t *before);
 /* UP/DOWN: the focus to the nearest object a row above or below, false
  * when there is none that way. */
 bool gui_focus_step_row(bool down);
+/* A widget that handles the directions itself (a button matrix) holds the
+ * keypad while it is focused: the row move stands aside. */
+void gui_keypad_grab(bool on);
+bool gui_keypad_grabbed(void);
 
 lv_obj_t *gui_label(lv_obj_t *parent, const lv_font_t *font, lv_color_t col,
                     const char *text);
@@ -120,6 +125,9 @@ lv_style_t *gui_box_style(lv_style_t *st, lv_color_t bg, lv_color_t border,
                           lv_coord_t radius, lv_coord_t border_w);
 lv_obj_t *gui_box(lv_obj_t *parent, lv_style_t *st, lv_coord_t x,
                   lv_coord_t y, lv_coord_t w, lv_coord_t h);
+/* The screen behind a card, darkened as a message box darkens it. The
+ * card is made on what this returns, and deleting it takes both away. */
+lv_obj_t *gui_dim(void);
 lv_obj_t *gui_divider(lv_obj_t *parent, lv_coord_t x, lv_coord_t y,
                       lv_coord_t h);
 

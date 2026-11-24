@@ -13,7 +13,8 @@
  * SYSTEM partition through bdk's BIS layer, a read-only FAT32 walk of
  * Contents/registered, each NCA's header decrypted until the wlan program
  * NCA turns up, its key area, its ExeFS (AES-CTR, PFS0), main's NSO header
- * and its LZ4 .data. Nothing is written anywhere but DRAM.
+ * and its LZ4 .data. Nothing is written anywhere but DRAM. A card carrying
+ * hwtest/wlan_fw.bin and hwtest/wlan_nvram.txt skips all of it.
  */
 #ifndef GUI_WLANFW_H
 #define GUI_WLANFW_H

@@ -3,6 +3,7 @@
  * Split from main.c: wifi probes
  */
 #include "hwtest.h"
+#include "wifi_mbox.h"
 
 
 /* ======================================================================== */
@@ -979,6 +980,9 @@ const char *wifi_cpu0_launch(const void *img, u32 len, u32 entry)
     g_wifi_armed = armed;
     if (!g_wifi_brought_up)
         return "the PCIe bring-up stopped early (see the Wi-Fi pages)";
+    /* This is the copy that would run past the image's window. */
+    if (entry != WIFI_IMG_ADDR || len > WIFI_IMG_MAX)
+        return "the CPU0 image does not fit its window";
     memcpy((void *)entry, img, len);
     memset((void *)CPU_MBOX_ADDR, 0, sizeof(cpu_mbox_t));
     bpmp_mmu_maintenance(BPMP_MMU_MAINT_CLN_INV_WAY, false);
@@ -991,6 +995,52 @@ void wifi_cpu0_stop(void)
 #ifdef HAVE_CPU_STUB
     ccplex_powergate_cpu0();
 #endif
+}
+
+/* Everything a Wi-Fi run powered, back down (see hwtest.h). A scan leaves
+ * the chip running and a join leaves it associated and transmitting, which
+ * is not a state to leave behind the next test.
+ *
+ * CPU0 first: it is the one on the PCIe bus, and a read of an endpoint that
+ * has just gone away is an abort it never returns from. Then PH1 low, which
+ * holds the WLAN section in reset (p143 s21.1.1), and its enable. BT_REG_ON
+ * (PH4) stays as it is, so the shared CBUCK and Bluetooth keep running.
+ *
+ * ccplex_powergate_cpu0() already drops CE0, C0NC and CRAIL and the CPU
+ * regulator; bdk leaves PLLX and the MSELECT clock running, so they go
+ * here, with the PCIe root port, its clocks and its partition - the
+ * bring-up powers all of it up from whatever state it finds. PLLE and the
+ * lane mux stay: the UPHY they drive is shared with USB. */
+void wifi_chip_stop(void)
+{
+    wifi_cpu0_stop();
+
+    PINMUX_AUX(PMX_PH1_WL_REG_ON) = PINMUX_INPUT_ENABLE | PINMUX_PULL_DOWN;
+    GP_MWR(GPH_MOUT, GPIO_PIN_1, 0);
+    GP_MWR(GPH_MCNF, GPIO_PIN_1, 1);
+    GP_MWR(GPH_MOE,  GPIO_PIN_1, 1);
+#if WIFI_CFG_DRIVE_PH0
+    PINMUX_AUX(PMX_PH0_WIFI_EN) = PINMUX_INPUT_ENABLE | PINMUX_PULL_DOWN;
+    GP_MWR(GPH_MOUT, GPIO_PIN_0, 0);
+    GP_MWR(GPH_MCNF, GPIO_PIN_0, 1);
+    GP_MWR(GPH_MOE,  GPIO_PIN_0, 1);
+#endif
+    (void)GPIO(GPH_OUT);
+
+    /* The cluster's clock sources, which the powergate does not touch. */
+    CLOCK(CLK_RST_CONTROLLER_PLLX_BASE)   &= ~PLL_BASE_ENABLE;
+    CLOCK(CLK_RST_CONTROLLER_PLLX_MISC_3) |= PLLX_MISC3_IDDQ;
+    CLOCK(CLK_RST_CONTROLLER_RST_DEV_V_SET) = BIT(CLK_V_MSELECT);
+    CLOCK(CLK_RST_CONTROLLER_CLK_ENB_V_CLR) = BIT(CLK_V_MSELECT);
+
+    /* The root port: resets asserted, clocks off, partition gated. */
+    CLOCK(CLK_RST_CONTROLLER_RST_DEV_U_SET) =
+        BIT(CLK_U_PCIE) | BIT(CLK_U_AFI) | BIT(CLK_U_PCIEXCLK);
+    CLOCK(CLK_RST_CONTROLLER_CLK_ENB_U_CLR) = BIT(CLK_U_PCIE) | BIT(CLK_U_AFI);
+    pmc_domain_pwrgate_set(POWER_RAIL_PCIE, 0);
+
+    /* Whatever was enumerated is gone with it. */
+    g_wifi_brought_up = false;
 }
 
 /* Bounded register poll. Everything that waits in this probe goes through

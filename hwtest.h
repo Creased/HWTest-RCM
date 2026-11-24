@@ -93,6 +93,12 @@ void log_silence(bool on);
  * `entry` running `img`. NULL on success, else why not. */
 const char *wifi_cpu0_launch(const void *img, u32 len, u32 entry);
 void wifi_cpu0_stop(void);
+/* Everything a Wi-Fi run powered, back down once it is done with: CPU0 and
+ * its rail, WL_REG_ON and the enable, the cluster's PLLX and MSELECT, and
+ * the PCIe root port and its partition. Worth about 40 mA off the battery.
+ * Bluetooth and the UPHY the console's USB shares are not touched, and the
+ * next bring-up starts all of it from cold. */
+void wifi_chip_stop(void);
 
 /* A GPT list freed without trusting its links (probe_storage.c). */
 void gpt_free_bounded(link_t *gpt);

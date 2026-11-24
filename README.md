@@ -173,7 +173,7 @@ closing box needs a tap or POWER.
 | **Screen** | The whole panel in one colour at a time, then white while the backlight dims and brightens: dead pixels, lines, patches and an uneven or flickering backlight show against a flat field. |
 | **Dock Test** | The USB-C port's PD controller (BM92T36) watched live, then the handshake the console performs when it docks, step by step, and with a TV on the dock, this screen on the TV at 1280x720. Reset Chip restarts a controller that does not answer. Nothing of it runs from the health check; see [docs/dock.md](docs/dock.md). |
 | **Game Card** | Whether a cartridge is in the slot, live, from the slot's card-detect line, with the reader off: slide one in and out and the line follows. Nothing is sent to the reader or the cartridge, so the game's title is not shown. See [docs/gamecard.md](docs/gamecard.md). |
-| **Wi-Fi Scan** | Boots the Wi-Fi chip with the firmware this console's HOS carries (read from the eMMC with Lockpick_RCM's `prod.keys`), has it scan, and lists the networks with their signal: the firmware download, the chip's own ARM core, its DMA and the radio, which the health check never reaches. Not yet run on hardware. See [docs/wifi-scan.md](docs/wifi-scan.md). |
+| **Wi-Fi Scan** | Boots the Wi-Fi chip with the firmware this console's HOS carries (read from the eMMC with Lockpick_RCM's `prod.keys`), has it scan, and lists the networks with their signal: the firmware download, the chip's own ARM core, its DMA and the radio, which the health check never reaches. A network picked from the list is joined, with its passphrase typed on screen or taken from `hwtest/hwtest.ini`; **Radio Off**, which is in the header only while the radio is up, puts the chip, CPU0 and the PCIe root port back once the test is done - about 40 mA off the battery - and so does leaving the screen. See [docs/wifi-scan.md](docs/wifi-scan.md). |
 | **Screenshot** | Two fingers on the panel save the screen as a BMP under `hwtest/screenshots/` on the SD card. |
 | **RAM Test** | Starts `hwtest_ram.bin` from the card, as the text launcher's RAM test does. |
 | **Lockpick_RCM** | Starts Lockpick_RCM from the card (`bootloader/payloads/Lockpick_RCM.bin` or `Lockpick_RCM_Pro.bin`, or the same at the root), after asking; it saves the console's keys as `switch/prod.keys`, which the health check uses to read the eMMC. Greyed out when it is not on the card. |
@@ -230,6 +230,17 @@ gui_usb=1
 # STDP2550: if a Nintendo dock trains with dp_pol=1, the console's DP pairs are swapped.
 dp_pol=0
 dp_swap=0
+# THE GUI'S WI-FI SCAN ONLY: the networks this console is tested against.
+# Each wifi_ssid starts another one and the wifi_psk under it is its
+# passphrase (none = an open network); up to eight. The first is the one a
+# scan associates with on its own; picking any of them in the list the scan
+# found fills its passphrase in, instead of typing it on the on-screen
+# keypad. Both values run to the end of the line, spaces included, and no
+# # or ; comment follows them. They are stored in clear.
+wifi_ssid=home network
+wifi_psk=the passphrase
+wifi_ssid=bench hotspot
+wifi_psk=another one
 ```
 
 All three UARTs run at 115200 8N1 with 1.8 V levels. Both stages read

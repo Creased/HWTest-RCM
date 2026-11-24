@@ -24,6 +24,9 @@
  *                                is: it brings up the gui.bin now there
  *   !BT OPEN|SCAN|LIST|CONNECT <n>|DISCONNECT|STATE|CLOSE|RAILPAIR
  *                                the Bluetooth test, driven from the PC
+ *   !WIFI OFF                    the WLAN section back into reset, for a
+ *                                script done with the radio; Bluetooth is
+ *                                left running
  *
  * Anything that goes wrong answers -ERR and a reason. Only the four files
  * a release puts on the card, and hwtest/hwtest.ini (the console setting),
@@ -33,6 +36,7 @@
  */
 #include "gui.h"
 #include "gui_bt.h"
+#include <power/max17050.h>
 #include "../ui_menu.h"
 
 #define PUT_MAX       (8 * 1024 * 1024)
@@ -507,6 +511,17 @@ static void _command(const char *line)
         _run();
     } else if (!strncmp(line, "BT ", 3)) {
         _bt(line + 3);
+    } else if (!strcmp(line, "WIFI OFF")) {
+        /* With the battery's draw before and after; the gauge updates
+         * every 176 ms, so the second read waits for a fresh one. */
+        int before = 0, after = 0;
+        max17050_get_property(MAX17050_Current, &before);
+        wifi_chip_stop();
+        msleep(700);
+        max17050_get_property(MAX17050_Current, &after);
+        s_printf(buf, "+OK the WLAN section is off (battery %d mA -> %d mA)\n",
+                 before / 1000, after / 1000);
+        _reply(buf);
     } else {
         _reply("-ERR unknown command\n");
     }

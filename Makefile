@@ -410,9 +410,11 @@ $(GUI_DIR)/cpu_stub_bin.o: $(DEFAULT_DIR)/cpu_stub_bin.c | $(GUI_DIR)
 GUI_CFLAGS += -DHAVE_CPU_WIFI=1
 GUI_OBJS += $(GUI_DIR)/cpu_wifi_bin.o
 $(GUI_DIR)/cpu_wifi.elf: cpu_wifi/wifi.S cpu_wifi/wifi.c cpu_wifi/wifi.ld \
+                         cpu_wifi/wpa.c cpu_wifi/wpa.h cpu_wifi/net.c cpu_wifi/net.h \
                          cpu_stub/stub.c cpu_mbox.h wifi_mbox.h $(DEF_STAMP_D) | $(GUI_DIR)
 	$(A64_CC) $(A64_CFLAGS) -mstrict-align -fno-tree-loop-distribute-patterns \
-	    $(EXTRA_DEFINES) -T cpu_wifi/wifi.ld -o $@ cpu_wifi/wifi.S cpu_wifi/wifi.c -lgcc
+	    $(EXTRA_DEFINES) -T cpu_wifi/wifi.ld -o $@ cpu_wifi/wifi.S cpu_wifi/wifi.c \
+	    cpu_wifi/wpa.c cpu_wifi/net.c -lgcc
 $(GUI_DIR)/cpu_wifi.bin: $(GUI_DIR)/cpu_wifi.elf
 	$(A64_OC) -O binary $< $@
 	@printf '   built %s (%s bytes)\n' $@ $$(stat -c%s $@)

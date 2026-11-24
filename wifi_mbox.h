@@ -32,9 +32,10 @@
  *                                    the rings and buffers the chip DMAs
  *                                    into, and this mailbox at its end
  *
- * The DMA block is uncached on CPU0's side so neither direction needs cache
- * maintenance; the BPMP still cleans/invalidates its own cache around the
- * mailbox, as for cpu_mbox_t.
+ * The DMA block is mapped uncached on CPU0's side, which should make cache
+ * maintenance unnecessary there; cpu_wifi/wifi.c cleans the mailbox all the
+ * same (see mbox_flush). The BPMP cleans/invalidates its own cache around
+ * the mailbox, as for cpu_mbox_t.
  */
 
 #ifndef WIFI_MBOX_H
@@ -74,7 +75,19 @@
 #define WIFI_ST_IOCTL       13u   /* first ioctls: version, MAC            */
 #define WIFI_ST_UP          14u   /* event mask, mpc, UP                   */
 #define WIFI_ST_SCAN        15u   /* escan running                         */
-#define WIFI_ST_DONE        16u
+#define WIFI_ST_JOIN        16u   /* associating with the named network    */
+#define WIFI_ST_LINKED      17u   /* link up, waiting for the handshake    */
+#define WIFI_ST_4WAY        18u   /* running the four-way ourselves        */
+#define WIFI_ST_NET         19u   /* address, then the ping                */
+#define WIFI_ST_DONE        20u
+
+/* How far the little IP stack got, for the connection screen. */
+#define WIFI_NET_IDLE        0u
+#define WIFI_NET_ARP         1u   /* finding the gateway's address         */
+#define WIFI_NET_DHCP        2u   /* discover/offer/request/ack            */
+#define WIFI_NET_BOUND       3u   /* an address of our own                 */
+#define WIFI_NET_PING        4u   /* echo requests out                     */
+#define WIFI_NET_REACHED     5u   /* at least one echo reply back          */
 
 /* Results. 0 is success; anything else ends the run at `step`. */
 #define WIFI_OK              0u
@@ -93,6 +106,9 @@
 #define WIFI_E_FWERR        13u   /* the firmware refused an ioctl         */
 #define WIFI_E_SCAN         14u   /* escan ended with an error status      */
 #define WIFI_E_SCANTIME     15u   /* no final escan event in time          */
+#define WIFI_E_JOIN         16u   /* no link to the named network in time  */
+#define WIFI_E_PSK          17u   /* linked, but the key handshake failed  */
+#define WIFI_E_4WAY         18u   /* the handshake did not finish          */
 
 #define WIFI_BSS_MAX        64u
 #define WIFI_CONSOLE_MAX  3072u   /* tail of the firmware's own log        */
@@ -150,19 +166,62 @@ typedef struct {
     volatile unsigned int console_len;
     char                  console[WIFI_CONSOLE_MAX];
 
+    /* The join, when one was asked for. */
+    volatile unsigned int scan_tries;  /* escans run; >1 means a retry     */
+    volatile unsigned int join_ms;     /* set_ssid to link up              */
+    volatile unsigned int link_up;     /* an E_LINK said the link is up    */
+    volatile unsigned int keyed;       /* E_PSK_SUP reached WLC_SUP_KEYED  */
+    volatile int          join_status; /* the last E_SET_SSID status       */
+    volatile unsigned int join_reason; /* a deauth/disassoc reason, if any */
+    unsigned char         join_bssid[8];
+    /* What the handshake saw, which is what tells a firmware that keeps
+     * the key frames to itself from a network that never sent any. */
+    volatile unsigned int sw_sup;      /* the handshake was ours to run    */
+    volatile unsigned int rx_frames;   /* data frames up from the chip     */
+    volatile unsigned int rx_eapol;    /* of those, key frames             */
+    volatile unsigned int tx_eapol;    /* key frames sent back             */
+    volatile unsigned int rx_posted;   /* receive buffers the chip took    */
+    volatile unsigned int ring_idx[10];/* w/r: 3 D2H rings, then ctrl, rxpost */
+    volatile unsigned int max_rxbufpost;/* what the firmware asked for      */
+    /* What the join's own ioctls answered, in order: wsec, wpa_auth,
+     * sup_wpa on, the PMK, sup_wpa off. */
+    volatile int          join_rc[5];
+    volatile unsigned int m1_info;     /* message 1's key info word         */
+
+    /* The network, once the link is keyed: what the connection screen
+     * shows below the handshake. Addresses are host order. */
+    volatile unsigned int net_step;    /* WIFI_NET_*                       */
+    volatile unsigned int ip_addr;     /* ours, from DHCP                  */
+    volatile unsigned int ip_mask;
+    volatile unsigned int ip_gw;
+    volatile unsigned int ip_dns;
+    volatile unsigned int dhcp_ms;     /* discover to ack                  */
+    volatile unsigned int ping_sent;
+    volatile unsigned int ping_recv;
+    volatile unsigned int ping_ms;     /* the best round trip of those     */
+    volatile unsigned int ping_target; /* who was pinged                   */
+    char                  net_why[96]; /* where the stack stopped, if it did */
+
     /* ---- written by the BPMP before CPU0 is released ---- */
     volatile unsigned int in_magic;    /* WIFI_MBOX_MAGIC: the inputs below */
     volatile unsigned int fw_len;      /* at WIFI_FW_ADDR                   */
     volatile unsigned int nvram_len;   /* at WIFI_NVRAM_ADDR, binary form   */
     volatile unsigned int scan_time_ms;/* how long to wait for the scan     */
+    /* Ask for a join after the scan: the network to associate with, and
+     * its passphrase (empty for an open one). The scan alone proves the
+     * receive path; associating puts the transmitter, the rates and the
+     * firmware's supplicant through their paces as well. */
+    volatile unsigned int join_req;
+    char                  join_ssid[33];
+    char                  join_psk[65];
 } wifi_mbox_t;
 
 /* The same bytes on both sides: checked with both compilers when this was
  * written, and held there so a field added on one side only fails the
  * build rather than reading the other side's data. */
 _Static_assert(sizeof(wifi_bss_t) == 48, "wifi_bss_t layout");
-_Static_assert(sizeof(wifi_mbox_t) == 6776, "wifi_mbox_t layout");
-_Static_assert(__builtin_offsetof(wifi_mbox_t, in_magic) == 6760,
+_Static_assert(sizeof(wifi_mbox_t) == 7136, "wifi_mbox_t layout");
+_Static_assert(__builtin_offsetof(wifi_mbox_t, in_magic) == 7016,
                "wifi_mbox_t layout");
 _Static_assert(sizeof(wifi_mbox_t) <= 0x10000, "wifi_mbox_t past its 64 KiB");
 

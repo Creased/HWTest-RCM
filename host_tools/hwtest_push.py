@@ -330,6 +330,16 @@ console=%s
 # console over the USB-C port, a serial port on the PC (the default);
 # 0 leaves USB off.
 gui_usb=%d
+#
+# THE GUI'S WI-FI SCAN ONLY: the networks this console is tested against.
+# Each wifi_ssid starts another one and the wifi_psk under it is its
+# passphrase (leave it out for an open network); up to eight. The first is
+# the one a scan associates with on its own; picking any of them in the
+# list the scan found fills its passphrase in, rather than typing it on
+# the on-screen keypad. Both values run to the end of the line, spaces
+# included, and are stored here in clear.
+#wifi_ssid=my network
+#wifi_psk=its passphrase
 """
 
 
@@ -344,7 +354,8 @@ def _ini_key(line):
 
 def _ini_update(old, port_name, gui_usb):
     """The card's hwtest.ini with console= and gui_usb= set, every other
-    line (the Dock Test's dp_pol/dp_swap, comments) kept as it was."""
+    line (the Dock Test's dp_pol/dp_swap, the Wi-Fi networks, comments)
+    kept as it was, repeats included."""
     want = {"console": "console=%s" % port_name,
             "gui-usb": "gui_usb=%d" % gui_usb}
     out, done = [], set()

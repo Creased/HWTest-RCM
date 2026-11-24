@@ -503,15 +503,21 @@ static bool _keys_read(lv_indev_data_t *data)
             step = true;
         }
         /* A message box holds the focus to itself, and picks between its
-         * buttons with LEFT/RIGHT: a row move there would walk off it. */
+         * buttons with LEFT/RIGHT: a row move there would walk off it. The
+         * passphrase keypad walks its own keys with UP/DOWN, so for it the
+         * key goes through unchanged. */
+        bool grabbed = gui_keypad_grabbed();
         bool moved = !step || gui_mbox_open() ||
-                     gui_focus_step_row(key == LV_GROUP_KEY_DOWN);
+                     (!grabbed &&
+                      gui_focus_step_row(key == LV_GROUP_KEY_DOWN));
         if (moved) {
             data->key = last;
             data->state = LV_INDEV_STATE_REL;
             return false;
         }
-        key = key == LV_GROUP_KEY_DOWN ? LV_GROUP_KEY_NEXT : LV_GROUP_KEY_PREV;
+        if (!grabbed)
+            key = key == LV_GROUP_KEY_DOWN ? LV_GROUP_KEY_NEXT
+                                           : LV_GROUP_KEY_PREV;
     } else {
         v_held = 0;
     }
@@ -529,9 +535,9 @@ static bool _keys_read(lv_indev_data_t *data)
         repeated = now;
     }
 
-    /* A message box takes the focus while it is open, and picks between
-     * its own buttons with LEFT/RIGHT. */
-    if (gui_mbox_open()) {
+    /* A message box, or the keypad, holds the focus and picks between its
+     * own buttons with LEFT/RIGHT: the walk's NEXT/PREV become those. */
+    if (gui_mbox_open() || gui_keypad_grabbed()) {
         if (key == LV_GROUP_KEY_NEXT)
             key = LV_GROUP_KEY_RIGHT;
         else if (key == LV_GROUP_KEY_PREV)

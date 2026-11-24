@@ -48,14 +48,32 @@ static int _word(const char *s, u32 n)
 
 static bool _blank(char c) { return c == ' ' || c == '\t'; }
 
+/* A value that runs to the end of its line, trailing blanks trimmed: an
+ * SSID or a passphrase may hold spaces, # and ;, so none of them ends it. */
+static void _rest(char *dst, u32 cap, const char *src, u32 n)
+{
+    while (n && _blank(src[n - 1]))
+        n--;
+    if (n > cap - 1)
+        n = cap - 1;
+    memcpy(dst, src, n);
+    dst[n] = 0;
+}
+
 void dbg_cfg_read(dbg_cfg_t *c)
 {
     c->uart = c->gui_usb = c->dp_pol = c->dp_swap = -1;
     c->bad[0] = 0;
+    c->wifi_n = 0;
+    c->wifi[0].ssid[0] = c->wifi[0].psk[0] = 0;
     u32 size = 0;
     char *t = sd_file_read(DBG_CFG_PATH, &size);
     if (!t)
         return;
+    /* The network a wifi_psk belongs to, as index + 1; 0 before the first
+     * wifi_ssid and once the table is full, so a dropped network's
+     * passphrase does not land on the last one kept. */
+    u32 cur = 0;
     for (u32 i = 0; i < size; ) {
         u32 e = i;
         while (e < size && t[e] != '\n' && t[e] != '\r')
@@ -87,10 +105,30 @@ void dbg_cfg_read(dbg_cfg_t *c)
             c->dp_pol = s_word_val[w];
         } else if (_is(t + k, ke - k, "dp-swap") && w >= 8) {
             c->dp_swap = s_word_val[w];
+        } else if (_is(t + k, ke - k, "wifi-ssid")) {
+            cur = c->wifi_n < DBG_WIFI_MAX ? ++c->wifi_n : 0;
+            if (cur) {
+                dbg_wifi_t *net = &c->wifi[cur - 1];
+                _rest(net->ssid, sizeof(net->ssid), t + v, e - v);
+                net->psk[0] = 0;
+            }
+        } else if (_is(t + k, ke - k, "wifi-psk") && cur) {
+            dbg_wifi_t *net = &c->wifi[cur - 1];
+            _rest(net->psk, sizeof(net->psk), t + v, e - v);
         }
         i = e + 1;
     }
     free(t);
+}
+
+const char *dbg_cfg_psk(const dbg_cfg_t *c, const char *ssid)
+{
+    if (!ssid[0])
+        return NULL;
+    for (u32 i = 0; i < c->wifi_n; i++)
+        if (c->wifi[i].ssid[0] && !strcmp(c->wifi[i].ssid, ssid))
+            return c->wifi[i].psk;
+    return NULL;
 }
 
 void dbg_uart_up(u32 u)

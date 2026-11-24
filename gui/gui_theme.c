@@ -37,6 +37,10 @@ lv_theme_t *gui_th(void)    { return s_th; }
 lv_group_t *gui_group(void) { return s_group; }
 const char *gui_console_name(void) { return s_name; }
 
+static bool s_keypad_grab;      /* see gui.h */
+void gui_keypad_grab(bool on) { s_keypad_grab = on; }
+bool gui_keypad_grabbed(void) { return s_keypad_grab; }
+
 /* A focused object looks like a pressed hekate button: a turquoise
  * outline. */
 static void _focus_style(lv_style_t *st)
@@ -151,6 +155,17 @@ void gui_focus_before(lv_obj_t *obj, lv_obj_t *before)
         ll->head = (void *)n;
 }
 
+/* Where an object sits for "the row below this one". A list's rows are
+ * measured as if it were scrolled to the top, so a step into the list
+ * lands on its first row rather than whichever one is under the header
+ * now, and the page scrolls to follow. */
+static lv_coord_t _step_y(lv_obj_t *o, const lv_area_t *a)
+{
+    if (s_page && lv_obj_get_parent(o) == lv_page_get_scrl(s_page))
+        return a->y1 - lv_obj_get_y(lv_page_get_scrl(s_page));
+    return a->y1;
+}
+
 /* A row at a time, for UP/DOWN: the focus goes to the nearest object
  * straight above or below the focused one - the tile over this one, or
  * from the bottom tiles down to the text buttons under them. A screen
@@ -165,6 +180,7 @@ bool gui_focus_step_row(bool down)
     lv_area_t fa;
     lv_obj_get_coords(f, &fa);
     lv_coord_t fx = (fa.x1 + fa.x2) / 2;
+    lv_coord_t fy = _step_y(f, &fa);
 
     lv_obj_t *best = NULL;
     s32 best_cost = 0;
@@ -178,7 +194,8 @@ bool gui_focus_step_row(bool down)
         /* Another row: its top edge clears the focused one's, the way the
          * key points. Tiles of a row share a top edge, so a few pixels
          * are enough to tell a row from its own. */
-        s32 dy = down ? ca.y1 - fa.y1 : fa.y1 - ca.y1;
+        lv_coord_t cy = _step_y(c, &ca);
+        s32 dy = down ? cy - fy : fy - cy;
         if (dy < 8)
             continue;
         s32 dx = (ca.x1 + ca.x2) / 2 - fx;
@@ -617,6 +634,17 @@ lv_obj_t *gui_panel(lv_obj_t *parent, lv_coord_t x, lv_coord_t y,
     lv_obj_set_pos(c, x, y);
     lv_obj_set_size(c, w, h);
     return c;
+}
+
+/* Behind a message box and the Wi-Fi screen's cards alike. */
+lv_obj_t *gui_dim(void)
+{
+    lv_obj_t *bg = lv_obj_create(lv_scr_act(), NULL);
+    lv_obj_set_style(bg, &st_darken);
+    lv_obj_set_size(bg, GUI_W, GUI_H);
+    lv_obj_set_pos(bg, 0, 0);
+    gui_sentinel_raise();
+    return bg;
 }
 
 lv_style_t *gui_box_style(lv_style_t *st, lv_color_t bg, lv_color_t border,

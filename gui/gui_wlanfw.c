@@ -19,6 +19,7 @@
 #include "wlanfw_parse.h"
 #include <libs/compr/lz4.h>
 #include <storage/nx_emmc_bis.h>
+#include <storage/sd.h>
 
 #define WLAN_TITLE_ID   0x0100000000000016ULL
 #define KS_BIS_CRYPT    4
@@ -124,9 +125,9 @@ static int _fat_mount(fat_t *f)
 {
     u8 *b = f->fat_buf;
     if (_bis(0, 1, b))
-        return _fail("SYSTEM: cannot read its first sector");
+        return _fail("SYSTEM: sector 0 unreadable");
     if (b[510] != 0x55 || b[511] != 0xAA)
-        return _fail("SYSTEM: no boot sector (wrong BIS key?)");
+        return _fail("SYSTEM: no boot sector");
     u32 bps = b[11] | (b[12] << 8);
     f->spc = b[13];
     u32 rsvd = b[14] | (b[15] << 8);
@@ -136,7 +137,7 @@ static int _fat_mount(fat_t *f)
     u32 total = b[32] | (b[33] << 8) | (b[34] << 16) | ((u32)b[35] << 24);
     if (bps != SECTOR || !f->spc || (f->spc & (f->spc - 1)) || f->spc > 128 ||
         !nfats || !fatsz || f->root < 2)
-        return _fail("SYSTEM: not FAT32 (wrong BIS key?)");
+        return _fail("SYSTEM: not FAT32 (BIS key?)");
     f->fat_lba = rsvd;
     f->data_lba = rsvd + nfats * fatsz;
     f->nclus = (total - f->data_lba) / f->spc + 2;
@@ -257,6 +258,8 @@ typedef struct {
     const char *body;    /* prod.keys */
     nca_t      *hit;
     u32         seen;
+    u32         decoded; /* headers that came out as NCA3 under header_key */
+    u32         program; /* of those, content type 0 (a program NCA)       */
     int         depth;
     int         err;
 } scan_t;
@@ -268,11 +271,24 @@ static int _nca_check(fat_t *f, u32 first, u32 size, scan_t *sc)
     if (size < 0xC00 || _fat_read(f, first, 0, enc, 0xC00))
         return 0;
     sc->seen++;
-    if (se_aes_crypt_xts(KS_HDR_TWEAK, KS_HDR_CRYPT, DECRYPT, 0, n->hdr, enc,
-                         0x200, 6))
-        return 0;
-    if (nca_parse(n->hdr, &n->ni) || n->ni.title_id != WLAN_TITLE_ID ||
-        n->ni.content_type != 0)
+    /* The header is XTS over 0x200-byte sectors numbered from 0, with the
+     * tweak advanced little-endian, as standard XTS does. bdk's
+     * se_aes_crypt_xts() advances it big-endian, which decrypts only the
+     * first 16 bytes of each sector; the _nx variant, the BIS layer's, is
+     * right. */
+    for (u32 sec = 0; sec < 6; sec++) {
+        u8 tweak[16] __attribute__((aligned(4)));
+        if (se_aes_crypt_xts_sec_nx(KS_HDR_TWEAK, KS_HDR_CRYPT, DECRYPT, sec,
+                                    tweak, true, 0, n->hdr + sec * 0x200,
+                                    enc + sec * 0x200, 0x200))
+            return 0;
+    }
+    if (nca_parse(n->hdr, &n->ni))
+        return 0;                       /* not NCA3: the header_key is wrong */
+    sc->decoded++;
+    if (n->ni.content_type == 0)
+        sc->program++;
+    if (n->ni.title_id != WLAN_TITLE_ID || n->ni.content_type != 0)
         return 0;
     n->first = first;
     n->size = size;
@@ -380,6 +396,29 @@ int wlanfw_extract(wlanfw_t *out, char *why, u32 why_len,
     u8 *nso = NULL, *data = NULL;
     char line[96];
 
+    /* Blobs on the card are used as they are: a bench without this
+     * console's prod.keys, or the emulator with no eMMC, can still scan.
+     * hwtest writes neither file. */
+    {
+        u32 fl = 0, nl = 0;
+        u8 *f = (u8 *)sd_file_read("hwtest/wlan_fw.bin", &fl);
+        if (f && fl >= 0x100) {
+            u8 *nv = (u8 *)sd_file_read("hwtest/wlan_nvram.txt", &nl);
+            if (!nv) {
+                free(f);
+                return _fail("wlan_fw.bin but no NVRAM");
+            }
+            _step("firmware from the SD card");
+            out->fw = f;
+            out->fw_len = fl;
+            out->nvram = nv;
+            out->nvram_len = nl;
+            s_printf(out->fw_tail, "sd:/hwtest/wlan_fw.bin");
+            return 0;
+        }
+        free(f);
+    }
+
     _step("reading sd:/switch/prod.keys");
     gui_hw_prepare();
     if (!g_sd_ok || sd_mount()) {
@@ -388,7 +427,7 @@ int wlanfw_extract(wlanfw_t *out, char *why, u32 why_len,
     }
     char *raw = sd_file_read("switch/prod.keys", &ksz);
     if (!raw) {
-        _fail("no sd:/switch/prod.keys - run Lockpick_RCM first");
+        _fail("no prod.keys (Lockpick_RCM)");
         goto out;
     }
     body = malloc(ksz + 1);
@@ -428,7 +467,7 @@ int wlanfw_extract(wlanfw_t *out, char *why, u32 why_len,
     u32 sec_cnt = emmc_storage.sec_cnt;
     if (!part || !part->lba_start || part->lba_end < part->lba_start ||
         (sec_cnt && part->lba_end >= sec_cnt)) {
-        _fail("no usable SYSTEM partition in the GPT");
+        _fail("no SYSTEM partition in GPT");
         goto out;
     }
     nx_emmc_bis_init(part, false, 0);
@@ -446,17 +485,24 @@ int wlanfw_extract(wlanfw_t *out, char *why, u32 why_len,
     fat_dirent_t d;
     if (_fat_lookup(f, f->root, "Contents", &d) || !(d.attr & FAT_ATTR_DIR) ||
         _fat_lookup(f, d.clus, "registered", &d) || !(d.attr & FAT_ATTR_DIR)) {
-        _fail("SYSTEM has no Contents/registered");
+        _fail("no Contents/registered");
         goto out;
     }
 
-    _step("looking for the wlan sysmodule's NCA");
-    scan_t sc = { body, n, 0, 0, 0 };
+    _step("looking for the wlan NCA");
+    scan_t sc = { body, n, 0, 0, 0, 0, 0 };
     _scan_dir(f, d.clus, &sc);
     out->nca_count = sc.seen;
     if (!n->first) {
-        s_printf(line, "no wlan program NCA among %d (wrong header_key?)",
-                 sc.seen);
+        /* The counts to the console; the step column fits a short line. */
+        char det[96];
+        s_printf(det, "[wlanfw] %d NCAs, %d decoded, %d program, none is "
+                 "0100000000000016\n", sc.seen, sc.decoded, sc.program);
+        DBG_SEND((u8 *)det, strlen(det));
+        if (!sc.decoded)
+            s_printf(line, "%d NCAs, none decoded", sc.seen);
+        else
+            s_printf(line, "no wlan NCA in %d decoded", sc.decoded);
         _fail(line);
         goto out;
     }
@@ -464,7 +510,7 @@ int wlanfw_extract(wlanfw_t *out, char *why, u32 why_len,
     if (n->ni.has_rights_id || n->ni.sec0_fs_type != 1 ||
         n->ni.sec0_hash_type != 2 || n->ni.sec0_enc_type != 3 ||
         n->ni.kak_index > 2) {
-        _fail("wlan NCA: unexpected ExeFS layout");
+        _fail("wlan NCA: odd ExeFS layout");
         goto out;
     }
 
@@ -535,14 +581,14 @@ int wlanfw_extract(wlanfw_t *out, char *why, u32 why_len,
         int got = LZ4_decompress_safe((const char *)nso, (char *)data,
                                       seg.comp_size, seg.size);
         if (got != (int)seg.size) {
-            _fail("main's .data did not decompress");
+            _fail("main's .data won't unpack");
             goto out;
         }
     } else {
         memcpy(data, nso, seg.size);
     }
 
-    _step("finding the firmware and NVRAM");
+    _step("finding firmware and NVRAM");
     wlan_blobs_t b;
     int lr = wlanfw_locate(data, seg.size, &b);
     if (lr) {
@@ -568,7 +614,7 @@ int wlanfw_extract(wlanfw_t *out, char *why, u32 why_len,
         tl = sizeof(out->fw_tail) - 1;
     memcpy(out->fw_tail, data + b.tail_off, tl);
     out->fw_tail[tl] = 0;
-    s_printf(line, "firmware %d bytes, NVRAM %d bytes", b.fw_len, b.nv_len);
+    s_printf(line, "NVRAM %d bytes", b.nv_len);   /* the caller logs the fw */
     _step(line);
     ret = 0;
 
