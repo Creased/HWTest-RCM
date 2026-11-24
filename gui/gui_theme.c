@@ -671,15 +671,18 @@ lv_obj_t *gui_box(lv_obj_t *parent, lv_style_t *st, lv_coord_t x,
     return o;
 }
 
-/* The grey line Nyx draws between two columns. The points have to outlive
- * the line, and there is one such line on a screen at a time. */
+/* The grey line Nyx draws between two columns, h tall. The points have to
+ * outlive the line, and there is one such line on a screen at a time. A
+ * line's box is its last point plus its width, so the point stops that
+ * much short of h. */
 lv_obj_t *gui_divider(lv_obj_t *parent, lv_coord_t x, lv_coord_t y, lv_coord_t h)
 {
     static lv_point_t pts[2];
-    pts[1].y = h;
+    lv_style_t *st = s_th->line.decor;
+    pts[1].y = h > st->line.width ? h - st->line.width : 0;
     lv_obj_t *l = lv_line_create(parent, NULL);
     lv_line_set_points(l, pts, 2);
-    lv_line_set_style(l, s_th->line.decor);
+    lv_line_set_style(l, st);
     lv_obj_set_pos(l, x, y);
     return l;
 }
@@ -736,14 +739,115 @@ lv_obj_t *gui_focus_row(lv_obj_t *page, lv_coord_t y, lv_coord_t w)
     return c;
 }
 
+/* ---- what is on screen, measured against the grid --------------------
+ *
+ * Screens are laid out by hand, so a string that outgrows its slot is cut
+ * off by what holds it or runs under the status bar, and nothing says so
+ * at build time. This walks what is drawn (gui_push.c's BOUNDS) and holds
+ * every visible leaf - a label, a bar, an image - to two rules: inside
+ * what holds it, and above the status bar's line. Containers may be any
+ * size (a page's scrollable, a tab view's row of tabs), and so may
+ * anything as large as the screen (the dim behind a card). */
+
+/* 1 and a line on the console when `over` is past the edge, else 0. */
+static u32 _bounds_over(const char *path, lv_obj_t *o, lv_coord_t over,
+                        const char *edge)
+{
+    if (over <= 0)
+        return 0;
+    char buf[160];
+    s_printf(buf, "gui: bounds: %s at %d,%d..%d,%d is %d px past %s\n",
+             path, o->coords.x1, o->coords.y1, o->coords.x2, o->coords.y2,
+             over, edge);
+    gui_uart_puts(buf);
+    return 1;
+}
+
+static bool _bounds_vis(const lv_area_t *a, const lv_area_t *clip,
+                        lv_area_t *out)
+{
+    out->x1 = a->x1 > clip->x1 ? a->x1 : clip->x1;
+    out->y1 = a->y1 > clip->y1 ? a->y1 : clip->y1;
+    out->x2 = a->x2 < clip->x2 ? a->x2 : clip->x2;
+    out->y2 = a->y2 < clip->y2 ? a->y2 : clip->y2;
+    return out->x1 <= out->x2 && out->y1 <= out->y2;
+}
+
+static u32 _bounds_walk(lv_obj_t *parent, lv_area_t clip, const char *path)
+{
+    u32 bad = 0, i = 0;
+    /* What of this parent's children can be seen at all: a page shows a
+     * window onto a scrollable taller than itself. */
+    lv_area_t inner;
+    if (!_bounds_vis(&parent->coords, &clip, &inner))
+        return 0;
+    lv_obj_t *c = lv_obj_get_child_back(parent, NULL);
+    for (; c; c = lv_obj_get_child_back(parent, c), i++) {
+        if (lv_obj_get_hidden(c) || c == lv_layer_top() || c == lv_layer_sys())
+            continue;
+        char sub[40];
+        s_printf(sub, "%s%s%d", path, path[0] ? "." : "", (int)i);
+        const lv_area_t *a = &c->coords, *pa = &parent->coords;
+        lv_area_t vis;
+        bool leaf = lv_obj_get_child(c, NULL) == NULL;
+        bool cover = lv_obj_get_width(c) >= GUI_W && lv_obj_get_height(c) >= GUI_H;
+        bool seen = _bounds_vis(a, &inner, &vis);
+        if (leaf && !cover && seen) {
+            bad += _bounds_over(sub, c, a->x2 - pa->x2, "its parent's right");
+            bad += _bounds_over(sub, c, pa->x1 - a->x1, "its parent's left");
+            bad += _bounds_over(sub, c, a->y2 - pa->y2, "its parent's bottom");
+            bad += _bounds_over(sub, c, pa->y1 - a->y1, "its parent's top");
+            /* A screen that hides the status bar owns the whole height. */
+            if (!lv_obj_get_hidden(s_bar))
+                bad += _bounds_over(sub, c, vis.y2 - GUI_BOTTOM,
+                                    "the status bar's line");
+        }
+        bad += _bounds_walk(c, inner, sub);
+    }
+    return bad;
+}
+
+static bool _bounds_in_tree(lv_obj_t *parent, const lv_obj_t *o)
+{
+    lv_obj_t *c = lv_obj_get_child_back(parent, NULL);
+    for (; c; c = lv_obj_get_child_back(parent, c))
+        if (c == o || _bounds_in_tree(c, o))
+            return true;
+    return false;
+}
+
+u32 gui_bounds_report(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+    return _bounds_walk(scr, scr->coords, "");
+}
+
+/* The focus group holds pointers: an entry a screen left behind is a step
+ * into freed memory for whatever walks the group next. Should be none. */
+u32 gui_group_ghosts(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+    u32 ghost = 0, held = 0;
+    lv_obj_t **o;
+    LL_READ(s_group->obj_ll, o) {
+        held++;
+        if (!_bounds_in_tree(scr, *o))
+            ghost++;
+    }
+    if (ghost) {
+        char buf[96];
+        s_printf(buf, "gui: bounds: %d of the %d in the focus group are not "
+                 "on screen\n", ghost, held);
+        gui_uart_puts(buf);
+    }
+    return ghost;
+}
+
 /* ---- message boxes ---------------------------------------------------- */
 
 void gui_mbox(const char *text, const char **btns, lv_btnm_action_t action)
 {
-    s_mbox_bg = lv_obj_create(lv_scr_act(), NULL);
-    lv_obj_set_style(s_mbox_bg, &st_darken);
-    lv_obj_set_size(s_mbox_bg, GUI_W, GUI_H);
-    gui_sentinel_raise();
+    s_mbox_bg = gui_dim();
 
     s_mbox = lv_mbox_create(s_mbox_bg, NULL);
     lv_mbox_set_recolor_text(s_mbox, true);

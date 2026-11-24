@@ -138,6 +138,13 @@ void gui_mbox(const char *text, const char **btns, lv_btnm_action_t action);
 void gui_mbox_close(lv_obj_t *btnm);
 bool gui_mbox_open(void);
 
+/* Everything drawn, against the two rules the grid asks of it: inside
+ * what holds it, and clear of the status bar. The offenders go to the
+ * debug console; the count comes back (gui_push.c's BOUNDS). */
+u32 gui_bounds_report(void);
+/* And what the focus group holds that is no longer on screen. */
+u32 gui_group_ghosts(void);
+
 void gui_statusbar_init(void);
 void gui_statusbar_hide(bool hide);
 void gui_uart_puts(const char *s);       /* a line for the debug console */

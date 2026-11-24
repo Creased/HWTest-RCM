@@ -670,6 +670,7 @@ answer is one line, `+...` or `-ERR <reason>`:
 | `!RMLOGS` | `+OK removed <n>`: every Dock Test log, `hwtest/tvlink_*.txt`, deleted and nothing else (`-ERR removed <n>, the rest would not go` if some stay) |
 | `!RUN` | `+OK starting hwtest.bin, <n> bytes`, then `bootloader/payloads/hwtest.bin` is started from the card, which brings up the `hwtest/gui.bin` now there |
 | `!BT OPEN`, `SCAN`, `LIST`, `CONNECT <n>`, `DISCONNECT`, `STATE`, `CLOSE`, `RAILPAIR` | the [Bluetooth test](bluetooth.md#from-a-pc), without the confirmation box |
+| `!BOUNDS` | `+OK <n> over the lines`: the screen now, measured. Every label, bar or image drawn outside what holds it, or past the status bar's line, and every focus-group entry whose object is no longer on screen, is listed on the debug console. For walking the screens after a string has changed |
 | `!WIFI OFF` | `+OK the WLAN section is off (battery <n> mA -> <n> mA)`: CPU0 and its rail, WL_REG_ON and the enable, PLLX and MSELECT, and the PCIe root port, all back down, for a script that has finished with the radio. The two figures are the fuel gauge before and after, about 700 ms apart. Bluetooth is left running and the next scan brings it all up from cold |
 
 `!PUT` writes only the four files a release puts on the card

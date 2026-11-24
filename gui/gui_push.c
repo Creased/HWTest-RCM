@@ -27,6 +27,8 @@
  *   !WIFI OFF                    the WLAN section back into reset, for a
  *                                script done with the radio; Bluetooth is
  *                                left running
+ *   !BOUNDS                      what is drawn outside its lines, and the
+ *                                focus group's stale entries, to the log
  *
  * Anything that goes wrong answers -ERR and a reason. Only the four files
  * a release puts on the card, and hwtest/hwtest.ini (the console setting),
@@ -511,6 +513,10 @@ static void _command(const char *line)
         _run();
     } else if (!strncmp(line, "BT ", 3)) {
         _bt(line + 3);
+    } else if (!strcmp(line, "BOUNDS")) {
+        u32 bad = gui_bounds_report() + gui_group_ghosts();
+        s_printf(buf, "+OK %d over the lines\n", bad);
+        _reply(buf);
     } else if (!strcmp(line, "WIFI OFF")) {
         /* With the battery's draw before and after; the gauge updates
          * every 176 ms, so the second read waits for a fresh one. */
