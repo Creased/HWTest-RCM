@@ -168,6 +168,13 @@ void gui_set_back(gui_screen_fn_t screen); /* where B / Close leads (home */
 void gui_back(void);
 void gui_refresh_now(void);              /* draw pending changes now    */
 void gui_input_sample(void);             /* latch VOL presses (long work) */
+/* Pressed from the debug console (gui_push.c's TAP and KEY), for driving a
+ * build from a PC. `frames` is how many input reads the press lasts, 0 for
+ * the default. See the note in gui_main.c: this exercises the GUI, not the
+ * touchscreen or the buttons themselves. */
+void gui_inject_tap(u32 x, u32 y, u32 frames);
+void gui_inject_key(u32 key, u32 frames);
+bool gui_inject_busy(void);
 u32  gui_tv_fb(void);                    /* the TV's copy of the screen  */
 void gui_sentinel_raise(void);           /* after creating on the screen */
 

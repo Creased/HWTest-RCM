@@ -8,6 +8,9 @@ on the SD card and started from the PC with nobody at the console:
 
     hwtest_push.py log [--seconds N] [--out FILE]   the debug log, live
     hwtest_push.py ping                              which build is running
+    hwtest_push.py tap X Y [--follow N]              touch the screen there
+    hwtest_push.py key p|u|d|du|dd [--follow N]      POWER, VOL+, VOL-, D-pad
+    hwtest_push.py shot                              take a screenshot
     hwtest_push.py cmd BT SCAN [--follow N]          any command, then the log
     hwtest_push.py console uart-b|uart-c|uart-a [--gui-usb 0|1]
                                                      write hwtest/hwtest.ini
@@ -250,6 +253,30 @@ def cmd_cmd(args):
     con.close()
 
 
+def cmd_tap(args):
+    """A touch where a finger would land, in the 1280x720 picture."""
+    con = open_console(args)
+    print(con.command("TAP %d %d" % (args.x, args.y)) or "no answer")
+    if args.follow:
+        follow(con, args.follow, args.out)
+    con.close()
+
+
+def cmd_key(args):
+    """POWER, VOL+ or VOL- (P, U, D), or the D-pad up and down (DU, DD)."""
+    con = open_console(args)
+    print(con.command("KEY %s" % args.key.upper()) or "no answer")
+    if args.follow:
+        follow(con, args.follow, args.out)
+    con.close()
+
+
+def cmd_shot(args):
+    con = open_console(args)
+    print(con.command("SHOT", timeout=10) or "no answer")
+    con.close()
+
+
 def cmd_ping(args):
     con = open_console(args)
     print(con.command("PING") or "no answer")
@@ -385,6 +412,17 @@ def main():
     p.add_argument("--timeout", type=float, default=5, help="wait for the answer")
     p.add_argument("--follow", type=float, default=0, help="then log this long")
     p.add_argument("--out", help="append the followed log to this file")
+    p = sub.add_parser("tap", help="touch the screen at x,y (the GUI only)")
+    p.add_argument("x", type=int)
+    p.add_argument("y", type=int)
+    p.add_argument("--follow", type=float, default=0, help="then log this long")
+    p.add_argument("--out", help="append the followed log to this file")
+    p = sub.add_parser("key", help="press POWER (p), VOL+ (u), VOL- (d), "
+                       "or the D-pad up (du) or down (dd)")
+    p.add_argument("key", type=str.lower, choices=["p", "u", "d", "du", "dd"])
+    p.add_argument("--follow", type=float, default=0, help="then log this long")
+    p.add_argument("--out", help="append the followed log to this file")
+    sub.add_parser("shot", help="take a screenshot, no fingers needed")
     p = sub.add_parser("put", help="files onto the SD card")
     p.add_argument("files", nargs="+", metavar="SRC DEST")
     p = sub.add_parser("ls", help="list a folder on the card (backup/, hwtest/)")
@@ -408,7 +446,8 @@ def main():
     {"log": cmd_log, "ping": cmd_ping, "cmd": cmd_cmd, "put": cmd_put,
      "console": cmd_console, "run": cmd_run, "release": cmd_release,
      "ls": cmd_ls, "get": cmd_get, "report": cmd_report,
-     "clearlogs": cmd_clearlogs}[args.cmd](args)
+     "clearlogs": cmd_clearlogs, "tap": cmd_tap, "key": cmd_key,
+     "shot": cmd_shot}[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,9 @@
  * console (host_tools/hwtest_push.py drives it):
  *
  *   !PING                        +PONG hwtest GUI <version>, console on <port>
+ *   !TAP <x> <y> [frames]        a touch at x,y on the 1280x720 screen
+ *   !KEY <P|U|D|DU|DD> [frames]  POWER, VOL+, VOL-, Joy-Con D-pad up/down
+ *   !SHOT                        a screenshot into hwtest/screenshots/
  *   !LS <folder> [skip]          +OK <folder>: name size, sub/, ...; a
  *                                full line ends "... next <n>"
  *   !GET <path>                  +DATA <size> <crc32>, =<hex> lines, +END
@@ -417,6 +420,67 @@ static void _bt(const char *a)
     }
 }
 
+/* TAP and KEY answer once the press is queued, not when what it started
+ * has finished: a caller that needs to wait watches the log. */
+static u32 _num(const char **p)
+{
+    const char *s = *p;
+    while (*s == ' ')
+        s++;
+    u32 v = 0;
+    bool any = false;
+    while (*s >= '0' && *s <= '9') {
+        v = v * 10 + (u32)(*s++ - '0');
+        any = true;
+    }
+    *p = s;
+    return any ? v : 0xFFFFFFFFu;
+}
+
+static void _tap(const char *args)
+{
+    const char *p = args;
+    u32 x = _num(&p), y = _num(&p), frames = _num(&p);
+    if (x == 0xFFFFFFFFu || y == 0xFFFFFFFFu || x >= GUI_W || y >= GUI_H) {
+        _reply("-ERR TAP <x> <y> [frames], inside 1280x720\n");
+        return;
+    }
+    gui_inject_tap(x, y, frames == 0xFFFFFFFFu ? 0 : frames);
+    char buf[64];
+    s_printf(buf, "+OK tap %d,%d\n", x, y);
+    _reply(buf);
+}
+
+static void _key(const char *args)
+{
+    while (*args == ' ')
+        args++;
+    u32 key;
+    u32 taken = 1;
+    char c = *args | 0x20, c2 = *args ? (args[1] | 0x20) : 0;
+    if (c == 'd' && (c2 == 'u' || c2 == 'd')) {   /* the D-pad: row steps */
+        key = c2 == 'd' ? LV_GROUP_KEY_DOWN : LV_GROUP_KEY_UP;
+        taken = 2;
+    } else if (c == 'p')
+        key = LV_GROUP_KEY_ENTER;          /* POWER selects */
+    else if (c == 'u')
+        key = LV_GROUP_KEY_NEXT;           /* VOL+ moves on */
+    else if (c == 'd')
+        key = LV_GROUP_KEY_PREV;           /* VOL- moves back */
+    else {
+        _reply("-ERR KEY <P|U|D|DU|DD> [frames]\n");
+        return;
+    }
+    const char *p = args + taken;
+    u32 frames = _num(&p);
+    gui_inject_key(key, frames == 0xFFFFFFFFu ? 0 : frames);
+    char buf[32];
+    s_printf(buf, "+OK key %s\n",
+             taken == 2 ? (c2 == 'd' ? "dpad down" : "dpad up")
+                        : (c == 'p' ? "power" : c == 'u' ? "vol+" : "vol-"));
+    _reply(buf);
+}
+
 static void _command(const char *line)
 {
     char buf[96];
@@ -424,6 +488,13 @@ static void _command(const char *line)
         s_printf(buf, "+PONG hwtest GUI %s, console on %s\n", GUI_VERSION,
                  gui_dbg_name(gui_dbg_port()));
         _reply(buf);
+    } else if (!strncmp(line, "TAP ", 4)) {
+        _tap(line + 4);
+    } else if (!strncmp(line, "KEY ", 4)) {
+        _key(line + 4);
+    } else if (!strcmp(line, "SHOT")) {
+        gui_screenshot();
+        _reply("+OK screenshot written to hwtest/screenshots\n");
     } else if (!strncmp(line, "PUT ", 4)) {
         _put(line + 4);
     } else if (!strncmp(line, "LS ", 3)) {

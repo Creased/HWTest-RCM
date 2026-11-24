@@ -661,6 +661,9 @@ answer is one line, `+...` or `-ERR <reason>`:
 | Command | Answer, and what it does |
 |---|---|
 | `!PING` | `+PONG hwtest GUI <version>, console on <port>` |
+| `!TAP <x> <y> [frames]` | `+OK tap <x>,<y>`: a touch at that point of the 1280x720 screen, held for `frames` input reads (3 by default). It goes in where LVGL reads the panel, so it drives the GUI and proves nothing about the touchscreen |
+| `!KEY <P\|U\|D\|DU\|DD> [frames]` | `+OK key <name>`: POWER, VOL+, VOL-, or the Joy-Con D-pad up and down (a row at a time through a list), the same way |
+| `!SHOT` | `+OK screenshot written to hwtest/screenshots`: what two fingers on the panel do |
 | `!PUT <path> <size> <crc32 hex>` | `+READY <size>`, then exactly `<size>` raw bytes; `+OK <path> <size> <crc>` once the file is on the card |
 | `!LS <folder> [skip]` | `+OK <folder>: <name> <size> ... <sub>/ ...` on one line of at most 1 KB, from the `skip`-th entry on; a line that cannot hold the rest ends `... next <n>`, the skip to ask with next (`hwtest_push.py ls` does that); only `backup` and `hwtest` and what is under them |
 | `!GET <path>` | `+DATA <size> <crc32 hex>`, the file as `=<hex>` lines of 48 bytes, then `+END`; only under `backup/` and `hwtest/`, up to 4 MiB. The lines go over USB alone when it is up, paced by the PC |

@@ -236,8 +236,47 @@ void gui_input_hold(bool hold) { s_input_hold = hold; }
 void gui_jc_nav(bool on) { s_jc_nav = on; }
 void gui_touch_sink(gui_touch_sink_t sink) { s_touch_sink = sink; }
 
+/* ---- input from the debug console ------------------------------------
+ *
+ * Presses from a PC (gui_push.c's TAP and KEY), fed in where LVGL reads the
+ * panel and the buttons, so they travel the path a finger does. They drive
+ * the software and prove nothing about the hardware: use them to reach the
+ * Touchscreen, Joy-Con and button tests, never to pass them. */
+static struct {
+    u16  x, y;
+    u32  touch_frames;      /* reads left with the finger down */
+    u32  key, key_frames;
+} s_inj;
+
+void gui_inject_tap(u32 x, u32 y, u32 frames)
+{
+    s_inj.x = (u16)x;
+    s_inj.y = (u16)y;
+    s_inj.touch_frames = frames ? frames : 3;
+}
+
+void gui_inject_key(u32 key, u32 frames)
+{
+    s_inj.key = key;
+    s_inj.key_frames = frames ? frames : 3;
+}
+
+bool gui_inject_busy(void)
+{
+    return s_inj.touch_frames || s_inj.key_frames;
+}
+
 static bool _touch_read(lv_indev_data_t *data)
 {
+    /* Pressed for a few reads, then released: the release is the click. */
+    if (s_inj.touch_frames) {
+        s_inj.touch_frames--;
+        data->point.x = s_inj.x;
+        data->point.y = s_inj.y;
+        data->state = s_inj.touch_frames ? LV_INDEV_STATE_PR
+                                         : LV_INDEV_STATE_REL;
+        return false;
+    }
     if (!s_touch_ok || s_input_hold) {
         data->state = LV_INDEV_STATE_REL;
         return false;
@@ -409,7 +448,11 @@ static bool _keys_read(lv_indev_data_t *data)
     static bool b_held;
     u32 key = 0;
 
-    if (!s_input_hold) {
+    if (s_inj.key_frames) {
+        /* The same for a button. */
+        s_inj.key_frames--;
+        key = s_inj.key_frames ? s_inj.key : 0;
+    } else if (!s_input_hold) {
         u8 btn = btn_read();
         gui_input_sample();
         if (btn & BTN_VOL_UP)
